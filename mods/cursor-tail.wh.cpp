@@ -169,8 +169,8 @@ beyond the current buffer.
   $name: Trail color mode
   $description: Choose a fixed color or automatically sample the cursor image.
   $options:
-  - manual: Manual color
-  - auto: Auto-sample cursor colors
+    - manual: Manual color
+    - auto: Auto-sample cursor colors
 - trail_color_manual: "#FFFFFF"
   $name: Manual trail color
   $description: >-
@@ -179,8 +179,8 @@ beyond the current buffer.
   $name: Outline color mode
   $description: Choose an automatically derived outline or a fixed color.
   $options:
-  - auto: Auto-derive from trail color
-  - manual: Manual color
+    - auto: Auto-derive from trail color
+    - manual: Manual color
 - outline_color_manual: "#000000"
   $name: Manual outline color
   $description: >-
@@ -200,7 +200,7 @@ beyond the current buffer.
   $name: Enable hotkey
   $description: Register Ctrl+Alt+T to suspend or resume the trail.
 */
-// ==WindhawkModSettings==
+// ==/WindhawkModSettings==
 
 #include <windows.h>
 #include <d2d1.h>
