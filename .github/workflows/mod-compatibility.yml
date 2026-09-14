@@ -50,7 +50,7 @@ jobs:
       - name: Cache Windhawk
         id: cache
         if: steps.changed.outputs.count != '0'
-        uses: actions/cache@v5
+        uses: actions/cache@v6
         with:
           path: ${{ runner.temp }}/windhawk
           key: windhawk-${{ runner.os }}-${{ matrix.version }}
@@ -66,23 +66,27 @@ jobs:
             installer_args='/DEVTOOLS'
           fi
           installer_url="https://github.com/ramensoftware/windhawk/releases/download/$release_tag/windhawk_setup.exe"
-          installer_path="${{ runner.temp }}\windhawk_setup.exe"
+          installer_path="${{ runner.temp }}\\windhawk_setup.exe"
           curl -L --fail --retry 3 "$installer_url" -o "$installer_path"
-          extract_path="${{ runner.temp }}\windhawk"
+          extract_path="${{ runner.temp }}\\windhawk"
           MSYS_NO_PATHCONV=1 "$installer_path" /S /PORTABLE $installer_args "/D=$extract_path"
+
+      - name: Download compile_mod.py
+        if: steps.changed.outputs.count != '0' && startsWith(matrix.version, '1.')
+        run: |
+          curl -L --fail --retry 3 \
+            https://raw.githubusercontent.com/ramensoftware/windhawk-mods/main/scripts/compile_mod.py \
+            -o "${{ runner.temp }}/compile_mod.py"
 
       - name: Compile changed mods
         if: steps.changed.outputs.count != '0'
         env:
           CHANGED_FILES: ${{ steps.changed.outputs.files }}
         run: |
-          windhawk_path="${{ runner.temp }}\windhawk"
+          windhawk_path="${{ runner.temp }}\\windhawk"
           for file in $CHANGED_FILES; do
             echo "Compiling $file against Windhawk ${{ matrix.version }}"
             if [[ "${{ matrix.version }}" == 1.* ]]; then
-              curl -L --fail --retry 3 \
-                https://raw.githubusercontent.com/ramensoftware/windhawk-mods/main/scripts/compile_mod.py \
-                -o "${{ runner.temp }}/compile_mod.py"
               python -u "${{ runner.temp }}/compile_mod.py" \
                 -w "$windhawk_path" \
                 -f "$file" \
@@ -90,12 +94,12 @@ jobs:
                 -o64 "${{ runner.temp }}/mod_64.dll" \
                 -oarm64 "${{ runner.temp }}/mod_arm64.dll"
             else
-              cli="$windhawk_path\windhawk-cli.exe"
+              cli="$windhawk_path\\windhawk-cli.exe"
               result="${{ runner.temp }}/compile_result.json"
               if ! MSYS_NO_PATHCONV=1 "$cli" --json \
                 mod install --disabled --arch all --file "$file" \
                 > "$result"; then
-                jq -r '"::error::\(.error.code): \(.error.message)"' "$result" || cat "$result"
+                jq -r '\"::error::\\(.error.code): \\(.error.message)\"' "$result" || cat "$result"
                 exit 1
               fi
               if jq -e '.data.warnings' "$result" >/dev/null; then
