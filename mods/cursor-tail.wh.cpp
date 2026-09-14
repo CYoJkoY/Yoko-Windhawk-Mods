@@ -72,9 +72,12 @@ reduces flicker during application transitions.
 
 ## Performance
 
-Rendering targets 125 frames per second. The back buffer and Direct2D resources
-are reused between frames and resized only when the required trail bounds grow
-beyond the current buffer.
+Cursor state is still sampled at the original 125 Hz rate so velocity,
+trail history, and fade timing retain their existing behavior. The expensive
+layered-window submission is paced separately: 60 FPS while actively moving,
+30 FPS while fading, and no layered-window updates while the trail is idle.
+The back buffer and Direct2D resources are reused between frames and resized
+only when the required trail bounds grow beyond the current buffer.
 */
 // ==/WindhawkModReadme==
 
@@ -222,6 +225,8 @@ beyond the current buffer.
 constexpr UINT kSettingsChangedMessage = WM_APP + 1;
 constexpr int kHotkeyId = 0xCAFE;
 constexpr int kTargetFrameRate = 125;
+constexpr int kActiveRenderFrameRate = 60;
+constexpr int kFadeRenderFrameRate = 30;
 constexpr DWORD kFullscreenStrongCheckIntervalMs = 100;
 constexpr int kFullscreenExitConfirmSamples = 3;
 constexpr LONG kFullscreenTolerancePx = 2;
@@ -623,22 +628,27 @@ void UpdateTrailState(const POINT& point, float velocity) {
     else if (velocity < g_stopVelocity && g_isSmearing) { if (++g_lowVelocityFrames > 2) { g_isSmearing = false; g_frozenSpeedNorm = g_smoothedSpeedNorm; } }
     else if (g_isSmearing) g_lowVelocityFrames = 0;
     if (g_isSmearing) {
-        const float target = std::clamp((velocity - g_stopVelocity) / (g_triggerVelocity * 2.0f), 0.0f, 1.0f);
-        g_smoothedSpeedNorm = g_smoothedSpeedNorm * 0.55f + target * 0.45f; int effectiveLength = g_tailLength;
+        const float target = std::clamp((velocity - g_stopVelocity) / (g_triggerVelocity * 2.0f), 0.0f, 1.0f); int effectiveLength = g_tailLength;
+        g_smoothedSpeedNorm = g_smoothedSpeedNorm * 0.55f + target * 0.45f;
         if (g_speedScaling) effectiveLength = std::max(2, static_cast<int>(g_tailLength * (0.55f + 0.45f * g_smoothedSpeedNorm)));
         HistoryPushFront(point, effectiveLength); while (g_historyCount > g_tailLength) HistoryPopBack();
     } else if (g_fadeEnabled) { g_fadeAlpha *= g_fadeDecay; if (g_fadeAlpha < kFadeCutoff || g_historyCount < 2) { HistoryClear(); g_fadeAlpha = 0.0f; } }
     else { if (g_historyCount > 0) HistoryPopBack(); if (g_historyCount > 0) HistoryPopBack(); g_fadeAlpha = 1.0f; }
 }
 
-void SmearFrame(HWND hwnd, DWORD now) {
+void SmearFrame(HWND hwnd, DWORD now, bool renderFrame) {
     if (g_hotkeySuspended) return; POINT point = {}; if (!GetCursorPos(&point)) return; HWND foreground = GetForegroundWindow(); const int appRule = CheckAppRuleCached(foreground);
     if (appRule < 0) { HistoryClear(); g_isSmearing = false; g_lowVelocityFrames = 0; g_fadeAlpha = 0.0f; HideOverlay(); return; }
     if (appRule == 0 && UpdateFullscreenState(now, foreground)) return;
+    const bool wasSmearing = g_isSmearing;
+    const int previousHistoryCount = g_historyCount;
     const int dx = point.x - g_lastPos.x, dy = point.y - g_lastPos.y; const float velocity = sqrtf(static_cast<float>(dx * dx + dy * dy)); g_currentVelocity = velocity; g_lastPos = point;
     UpdateTrailState(point, velocity);
     if (g_isSmearing || g_historyCount >= 2) UpdateTrailColorIfNeeded(now);
-    if (g_historyCount < 2) { HideOverlay(); return; } if (!RenderTrail(hwnd)) { HideOverlay(); return; } ShowOverlay();
+    const bool stateChanged = wasSmearing != g_isSmearing || (previousHistoryCount < 2) != (g_historyCount >= 2);
+    if (!g_historyCount || g_historyCount < 2) { HideOverlay(); return; }
+    if (!renderFrame && !stateChanged) return;
+    if (!RenderTrail(hwnd)) { HideOverlay(); return; } ShowOverlay();
 }
 
 LRESULT CALLBACK OverlayWndProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam) {
@@ -660,6 +670,9 @@ static bool ArmFrameTimer(HANDLE timer, LONGLONG deadline, LONGLONG frequency) {
     const LONGLONG due100ns = std::max<LONGLONG>(1, ticks * 10000000LL / frequency); LARGE_INTEGER due = {}; due.QuadPart = -due100ns;
     return SetWaitableTimer(timer, &due, 0, nullptr, nullptr, FALSE) != FALSE;
 }
+static LONGLONG FrameIntervalTicks(LONGLONG frequency, int frameRate) {
+    return std::max<LONGLONG>(1, frequency / frameRate);
+}
 
 DWORD WINAPI OverlayThreadProc(LPVOID) {
     const HRESULT coResult = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED); if (FAILED(coResult)) return 0;
@@ -676,15 +689,40 @@ DWORD WINAPI OverlayThreadProc(LPVOID) {
     HANDLE frameTimer = CreateWaitableTimerExW(nullptr, nullptr, CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, TIMER_ALL_ACCESS);
     if (!frameTimer) frameTimer = CreateWaitableTimerW(nullptr, FALSE, nullptr);
     if (!frameTimer) { if (hotkeyRegistered) UnregisterHotKey(hwnd, kHotkeyId); DestroyWindow(hwnd); g_overlayHwnd.store(nullptr); UnregisterClassW(className, instance); g_pD2DFactory->Release(); g_pD2DFactory = nullptr; CoUninitialize(); return 0; }
-    const LONGLONG frameTicks = std::max<LONGLONG>(1, qpcFrequency.QuadPart / kTargetFrameRate); LONGLONG nextDeadline = QpcNow(); MSG message = {}; bool running = true;
+    const LONGLONG simulationTicks = FrameIntervalTicks(qpcFrequency.QuadPart, kTargetFrameRate);
+    const LONGLONG activeRenderTicks = FrameIntervalTicks(qpcFrequency.QuadPart, kActiveRenderFrameRate);
+    const LONGLONG fadeRenderTicks = FrameIntervalTicks(qpcFrequency.QuadPart, kFadeRenderFrameRate);
+    LONGLONG nextSimulationDeadline = QpcNow();
+    LONGLONG nextRenderDeadline = nextSimulationDeadline;
+    MSG message = {};
+    bool running = true;
     while (running) {
-        nextDeadline += frameTicks;
-        if (!ArmFrameTimer(frameTimer, nextDeadline, qpcFrequency.QuadPart)) break;
+        nextSimulationDeadline += simulationTicks;
+        const LONGLONG nowBeforeWait = QpcNow();
+        if (nextSimulationDeadline <= nowBeforeWait) {
+            const LONGLONG skipped = (nowBeforeWait - nextSimulationDeadline) / simulationTicks + 1;
+            nextSimulationDeadline += skipped * simulationTicks;
+        }
+        if (!ArmFrameTimer(frameTimer, nextSimulationDeadline, qpcFrequency.QuadPart)) break;
         HANDLE handles[] = {frameTimer};
         const DWORD waitResult = MsgWaitForMultipleObjectsEx(1, handles, INFINITE, QS_ALLINPUT, MWMO_INPUTAVAILABLE);
         if (waitResult == WAIT_OBJECT_0) {
-            SmearFrame(hwnd, GetTickCount());
-            const LONGLONG now = QpcNow(); if (nextDeadline <= now) { const LONGLONG skipped = (now - nextDeadline) / frameTicks + 1; nextDeadline += skipped * frameTicks; }
+            const LONGLONG sampleNow = QpcNow();
+            bool renderFrame = false;
+            if (g_isSmearing || g_historyCount >= 2) renderFrame = sampleNow >= nextRenderDeadline;
+            SmearFrame(hwnd, GetTickCount(), renderFrame);
+            const bool active = g_isSmearing;
+            const bool fading = !active && g_historyCount >= 2;
+            if (active || fading) {
+                const LONGLONG interval = active ? activeRenderTicks : fadeRenderTicks;
+                if (renderFrame) {
+                    nextRenderDeadline = sampleNow + interval;
+                } else if (sampleNow >= nextRenderDeadline) {
+                    nextRenderDeadline = sampleNow + interval;
+                }
+            } else {
+                nextRenderDeadline = sampleNow + fadeRenderTicks;
+            }
         } else if (waitResult == WAIT_OBJECT_0 + 1) {
             while (PeekMessageW(&message, nullptr, 0, 0, PM_REMOVE)) { if (message.message == WM_QUIT) { running = false; break; } TranslateMessage(&message); DispatchMessageW(&message); }
         } else break;
