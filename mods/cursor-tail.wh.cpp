@@ -1,8 +1,10 @@
 // ==WindhawkMod==
 // @id              cursor-tail
 // @name            Cursor Tail
+// @name:zh-CN      Cursor Tail
 // @description     Adds a smooth, speed-reactive motion-blur trail to the mouse cursor.
-// @version         3.8
+// @description:zh-CN 为鼠标指针添加平滑、随速度变化的运动模糊拖尾。
+// @version         3.9
 // @author          CYoJkoY
 // @github          https://github.com/CYoJkoY
 // @license         MIT
@@ -30,7 +32,6 @@ with Direct2D, so it works independently of the application under the pointer.
   colors with sufficient contrast against the screen background.
 - **Fade-out:** Smoothly fade the trail after the pointer slows down.
 - **Per-app rules:** Enable or disable the trail for selected executables.
-- **Hotkey toggle:** Optionally use `Ctrl+Alt+T` to suspend or resume the trail.
 - **Fullscreen suppression:** Automatically hide the trail for exclusive or
   borderless fullscreen applications and restore it after fullscreen ends.
 
@@ -83,152 +84,167 @@ beyond the current buffer.
 
 // ==WindhawkModSettings==
 /*
-- trigger_velocity: 25
-  $name: Trigger speed
-  $description: >-
-    Minimum pointer speed in pixels per sample required to start the trail.
+- Behavior:
+    - trigger_velocity: 25
+      $name: Trigger speed
+      $name:zh-CN: 触发速度
+      $description: Minimum pointer speed in pixels per sample required to start the trail.
+      $description:zh-CN: 开始显示拖尾所需的最低指针速度，单位为每个采样的像素数。
+    - stop_velocity: 10
+      $name: Stop speed
+      $name:zh-CN: 停止速度
+      $description: Pointer speed below which an active trail begins fading. If this is set to the trigger speed or higher, it is automatically reduced to half the trigger speed.
+      $description:zh-CN: 指针速度低于此值时，正在显示的拖尾开始淡出。如果该值大于或等于触发速度，会自动降低为触发速度的一半。
+    - tail_length: 10
+      $name: Tail length
+      $name:zh-CN: 拖尾长度
+      $description: Number of cursor samples kept for the trail. Higher values make the trail longer.
+      $description:zh-CN: 保留的指针采样数量。数值越大，拖尾越长。
+    - tail_offset_x: 6
+      $name: Trail X offset
+      $name:zh-CN: 拖尾 X 偏移
+      $description: Horizontal offset from the cursor hotspot to the trail head, in pixels.
+      $description:zh-CN: 拖尾起点相对于指针热点的水平偏移量，单位为像素。
+    - tail_offset_y: 10
+      $name: Trail Y offset
+      $name:zh-CN: 拖尾 Y 偏移
+      $description: Vertical offset from the cursor hotspot to the trail head, in pixels.
+      $description:zh-CN: 拖尾起点相对于指针热点的垂直偏移量，单位为像素。
+    - speed_scaling: true
+      $name: Speed-reactive shape
+      $name:zh-CN: 随速度变化的形状
+      $description: Increase or decrease trail width, opacity, and effective length according to pointer speed.
+      $description:zh-CN: 根据指针速度动态调整拖尾宽度、不透明度和实际长度。
+    - fade_enabled: true
+      $name: Fade-out
+      $name:zh-CN: 淡出
+      $description: Smoothly fade the trail after the pointer slows down.
+      $description:zh-CN: 指针减速后平滑淡出拖尾。
+    - fade_decay: 90
+      $name: Fade speed
+      $name:zh-CN: 淡出速度
+      $description: Controls how quickly the trail fades. 90 means the remaining opacity is multiplied by 0.90 for each simulation sample.
+      $description:zh-CN: 控制拖尾的淡出速度。90 表示每个模拟采样都会将剩余不透明度乘以 0.90。
 
-- stop_velocity: 10
-  $name: Stop speed
-  $description: >-
-    Pointer speed below which an active trail begins fading. If this is set to
-    the trigger speed or higher, it is automatically reduced to half the trigger speed.
+- Appearance:
+    - width_min: 4
+      $name: Minimum trail width
+      $name:zh-CN: 最小拖尾宽度
+      $description: Half-width of the outer trail at lower speeds, in pixels.
+      $description:zh-CN: 低速时外层拖尾的半宽，单位为像素。
+    - width_max: 14
+      $name: Maximum trail width
+      $name:zh-CN: 最大拖尾宽度
+      $description: Half-width of the outer trail at higher speeds, in pixels.
+      $description:zh-CN: 高速时外层拖尾的半宽，单位为像素。
+    - core_width_min: 2
+      $name: Minimum core width
+      $name:zh-CN: 最小核心宽度
+      $description: Half-width of the inner core at lower speeds, in pixels.
+      $description:zh-CN: 低速时内部核心的半宽，单位为像素。
+    - core_width_max: 9
+      $name: Maximum core width
+      $name:zh-CN: 最大核心宽度
+      $description: Half-width of the inner core at higher speeds, in pixels.
+      $description:zh-CN: 高速时内部核心的半宽，单位为像素。
+    - alpha_min: 45
+      $name: Minimum opacity
+      $name:zh-CN: 最小不透明度
+      $description: Trail opacity at lower speeds, from 0 to 100 percent.
+      $description:zh-CN: 低速时的拖尾不透明度，范围为 0 到 100%。
+    - alpha_max: 90
+      $name: Maximum opacity
+      $name:zh-CN: 最大不透明度
+      $description: Trail opacity at higher speeds, from 0 to 100 percent.
+      $description:zh-CN: 高速时的拖尾不透明度，范围为 0 到 100%。
+    - taper_power: 10
+      $name: Tail taper
+      $name:zh-CN: 拖尾渐缩
+      $description: Controls how quickly the trail narrows toward its tail. 10 is linear; larger values produce a sharper taper. Range 5-30.
+      $description:zh-CN: 控制拖尾向末端收窄的速度。10 为线性效果；数值越大，收窄越明显。范围 5-30。
+    - smooth_iterations: 2
+      $name: Smoothing iterations
+      $name:zh-CN: 平滑迭代次数
+      $description: Number of Chaikin subdivision passes. Higher values produce a smoother trail at the cost of more points to render. Range 0-4.
+      $description:zh-CN: Chaikin 细分次数。数值越高，拖尾越平滑，但需要绘制更多点。范围 0-4。
 
-- tail_length: 10
-  $name: Tail length
-  $description: >-
-    Number of cursor samples kept for the trail. Higher values make the trail longer.
+- Color:
+    - trail_color_mode: manual
+      $name: Trail color mode
+      $name:zh-CN: 拖尾颜色模式
+      $description: Choose a fixed trail color or automatically sample the cursor image.
+      $description:zh-CN: 选择固定的拖尾颜色，或自动从当前指针图像采样颜色。
+      $options:
+        - manual: Manual color
+        - auto: Auto-sample cursor colors
+      $options:zh-CN:
+        - manual: 手动颜色
+        - auto: 自动采样指针颜色
+    - trail_color_manual: "#FFFFFF"
+      $name: Manual trail color
+      $name:zh-CN: 手动拖尾颜色
+      $description: Hexadecimal RGB color used when Trail color mode is Manual.
+      $description:zh-CN: 拖尾颜色模式设为“手动颜色”时使用的十六进制 RGB 颜色。
+    - outline_color_mode: auto
+      $name: Outline color mode
+      $name:zh-CN: 轮廓颜色模式
+      $description: Choose an automatic outline color or a fixed manual color.
+      $description:zh-CN: 选择自动轮廓颜色或固定的手动颜色。
+      $options:
+        - auto: Automatic outline
+        - manual: Manual color
+      $options:zh-CN:
+        - auto: 自动轮廓
+        - manual: 手动颜色
+    - outline_color_manual: "#000000"
+      $name: Manual outline color
+      $name:zh-CN: 手动轮廓颜色
+      $description: Hexadecimal RGB color used when Outline color mode is Manual.
+      $description:zh-CN: 轮廓颜色模式设为“手动颜色”时使用的十六进制 RGB 颜色。
+    - auto_resample_interval: 0
+      $name: Auto-color refresh interval
+      $name:zh-CN: 自动颜色刷新间隔
+      $description: How often Auto color mode resamples the cursor color, in milliseconds. Set to 0 to resample only when the cursor image changes.
+      $description:zh-CN: 自动颜色模式重新采样指针颜色的间隔，单位为毫秒。设为 0 时，仅在指针图像发生变化时重新采样。
 
-- tail_offset_x: 6
-  $name: Trail X offset
-  $description: >-
-    Horizontal offset from the cursor hotspot to the trail head, in pixels.
+- Effects:
+    - gradient_enabled: false
+      $name: Tail gradient
+      $name:zh-CN: 拖尾渐变
+      $description: Fade the core color toward the configured tail color.
+      $description:zh-CN: 将核心颜色向设定的末端颜色渐变。
+    - gradient_tail_color: "#FF00FF"
+      $name: Gradient tail color
+      $name:zh-CN: 渐变末端颜色
+      $description: Hexadecimal RGB color used at the tail end when Tail gradient is enabled.
+      $description:zh-CN: 启用拖尾渐变时，拖尾末端使用的十六进制 RGB 颜色。
+    - glow_enabled: false
+      $name: Glow
+      $name:zh-CN: 发光
+      $description: Draw an additional soft glow around the trail.
+      $description:zh-CN: 在拖尾周围绘制额外的柔和光晕。
+    - glow_color: "#FFFFFF"
+      $name: Glow color
+      $name:zh-CN: 光晕颜色
+      $description: Hexadecimal RGB color used for the glow.
+      $description:zh-CN: 光晕使用的十六进制 RGB 颜色。
+    - glow_width_factor: 18
+      $name: Glow width
+      $name:zh-CN: 光晕宽度
+      $description: Glow width relative to the outer trail width. 18 means 1.8 times the outer width.
+      $description:zh-CN: 光晕相对于外层拖尾宽度的比例。18 表示外层宽度的 1.8 倍。
+    - glow_alpha: 25
+      $name: Glow opacity
+      $name:zh-CN: 光晕不透明度
+      $description: Glow opacity, from 0 to 100 percent.
+      $description:zh-CN: 光晕不透明度，范围为 0 到 100%。
 
-- tail_offset_y: 10
-  $name: Trail Y offset
-  $description: >-
-    Vertical offset from the cursor hotspot to the trail head, in pixels.
-
-- speed_scaling: true
-  $name: Speed-reactive shape
-  $description: >-
-    Increase or decrease trail width, opacity, and effective length according to pointer speed.
-
-- width_min: 4
-  $name: Minimum trail width
-  $description: >-
-    Half-width of the outer trail at lower speeds, in pixels.
-
-- width_max: 14
-  $name: Maximum trail width
-  $description: >-
-    Half-width of the outer trail at higher speeds, in pixels.
-
-- core_width_min: 2
-  $name: Minimum core width
-  $description: >-
-    Half-width of the inner core at lower speeds, in pixels.
-
-- core_width_max: 9
-  $name: Maximum core width
-  $description: >-
-    Half-width of the inner core at higher speeds, in pixels.
-
-- alpha_min: 45
-  $name: Minimum opacity
-  $description: Trail opacity at lower speeds, from 0 to 100 percent.
-
-- alpha_max: 90
-  $name: Maximum opacity
-  $description: Trail opacity at higher speeds, from 0 to 100 percent.
-
-- taper_power: 10
-  $name: Tail taper
-  $description: >-
-    Controls how quickly the trail narrows toward its tail. 10 is linear; larger values
-    produce a sharper taper. Range 5-30.
-
-- smooth_iterations: 2
-  $name: Smoothing iterations
-  $description: >-
-    Number of Chaikin subdivision passes. Higher values produce a smoother trail
-    at the cost of more points to render. Range 0-4.
-
-- gradient_enabled: false
-  $name: Tail gradient
-  $description: Fade the core color toward the configured tail color.
-
-- gradient_tail_color: "#FF00FF"
-  $name: Gradient tail color
-  $description: >-
-    Hexadecimal RGB color used at the tail end when Tail gradient is enabled.
-
-- glow_enabled: false
-  $name: Glow
-  $description: Draw an additional soft glow around the trail.
-
-- glow_color: "#FFFFFF"
-  $name: Glow color
-  $description: Hexadecimal RGB color used for the glow.
-
-- glow_width_factor: 18
-  $name: Glow width
-  $description: >-
-    Glow width relative to the outer trail width. 18 means 1.8 times the outer width.
-
-- glow_alpha: 25
-  $name: Glow opacity
-  $description: Glow opacity, from 0 to 100 percent.
-
-- fade_enabled: true
-  $name: Fade-out
-  $description: Smoothly fade the trail after the pointer slows down.
-
-- fade_decay: 90
-  $name: Fade speed
-  $description: >-
-    Controls how quickly the trail fades. 90 means the remaining opacity is multiplied
-    by 0.90 for each simulation sample.
-
-- trail_color_mode: manual
-  $name: Trail color mode
-  $description: Choose a fixed trail color or automatically sample the cursor image.
-  $options:
-    - manual: Manual color
-    - auto: Auto-sample cursor colors
-
-- trail_color_manual: "#FFFFFF"
-  $name: Manual trail color
-  $description: >-
-    Hexadecimal RGB color used when Trail color mode is Manual.
-
-- outline_color_mode: auto
-  $name: Outline color mode
-  $description: Choose an automatic outline color or a fixed manual color.
-  $options:
-    - auto: Automatic outline
-    - manual: Manual color
-
-- outline_color_manual: "#000000"
-  $name: Manual outline color
-  $description: >-
-    Hexadecimal RGB color used when Outline color mode is Manual.
-
-- auto_resample_interval: 0
-  $name: Auto-color refresh interval
-  $description: >-
-    How often Auto color mode resamples the cursor color, in milliseconds. Set to 0 to
-    resample only when the cursor image changes.
-
-- app_rules: ""
-  $name: Per-app rules
-  $description: >-
-    One rule per line using `exe=on` or `exe=off`. Lines beginning with `#` are comments.
-    Executable names are matched case-insensitively.
-
-- hotkey_enabled: false
-  $name: Enable hotkey
-  $description: Register Ctrl+Alt+T to temporarily suspend or resume the trail.
+- Application:
+    - app_rules: ""
+      $name: Per-app rules
+      $name:zh-CN: 按应用规则
+      $description: One rule per line using `exe=on` or `exe=off`. Lines beginning with `#` are comments. Executable names are matched case-insensitively.
+      $description:zh-CN: 每行一个规则，格式为 `exe=on` 或 `exe=off`。以 `#` 开头的行为注释。可执行文件名不区分大小写。
 */
 // ==/WindhawkModSettings==
 
@@ -254,7 +270,6 @@ beyond the current buffer.
 // -----------------------------------------------------------------------------
 
 constexpr UINT kSettingsChangedMessage = WM_APP + 1;
-constexpr int kHotkeyId = 0xCAFE;
 
 constexpr int kTargetFrameRate = 125;
 constexpr int kActiveRenderFrameRate = 60;
@@ -300,7 +315,6 @@ float g_currentVelocity = 0.0f;
 float g_smoothedSpeedNorm = 0.0f;
 float g_frozenSpeedNorm = 0.5f;
 
-bool g_hotkeySuspended = false;
 bool g_windowVisible = false;
 
 // -----------------------------------------------------------------------------
@@ -364,7 +378,6 @@ int g_outlineColorMode = 0;
 uint32_t g_manualOutlineRGB = 0x00000000;
 int g_autoResampleInterval = 0;
 
-int g_hotkeyEnabled = 0;
 uint32_t g_currentCoreRGB = kFallbackCoreColor;
 uint32_t g_currentOuterRGB = kFallbackOuterColor;
 
@@ -776,37 +789,37 @@ static int CheckAppRuleCached(HWND foreground) {
 
 void LoadSettings() {
     g_triggerVelocity = static_cast<float>(
-        std::clamp(Wh_GetIntSetting(L"trigger_velocity"), 1, 500));
+        std::clamp(Wh_GetIntSetting(L"Behavior.trigger_velocity"), 1, 500));
     g_stopVelocity = static_cast<float>(
-        std::clamp(Wh_GetIntSetting(L"stop_velocity"), 1, 500));
+        std::clamp(Wh_GetIntSetting(L"Behavior.stop_velocity"), 1, 500));
 
     if (g_stopVelocity >= g_triggerVelocity) {
         g_stopVelocity = std::max(1.0f, g_triggerVelocity * 0.5f);
     }
 
     g_tailOffsetX = std::clamp(
-        Wh_GetIntSetting(L"tail_offset_x"), -64, 64);
+        Wh_GetIntSetting(L"Behavior.tail_offset_x"), -64, 64);
     g_tailOffsetY = std::clamp(
-        Wh_GetIntSetting(L"tail_offset_y"), -64, 64);
+        Wh_GetIntSetting(L"Behavior.tail_offset_y"), -64, 64);
     g_tailLength = std::clamp(
-        Wh_GetIntSetting(L"tail_length"), 2, kMaxTailLength);
+        Wh_GetIntSetting(L"Behavior.tail_length"), 2, kMaxTailLength);
 
     g_speedScaling = std::clamp(
-        Wh_GetIntSetting(L"speed_scaling"), 0, 1);
+        Wh_GetIntSetting(L"Behavior.speed_scaling"), 0, 1);
     g_widthMin = static_cast<float>(
-        std::clamp(Wh_GetIntSetting(L"width_min"), 1, 40));
+        std::clamp(Wh_GetIntSetting(L"Appearance.width_min"), 1, 40));
     g_widthMax = static_cast<float>(
-        std::clamp(Wh_GetIntSetting(L"width_max"), 1, 60));
+        std::clamp(Wh_GetIntSetting(L"Appearance.width_max"), 1, 60));
     g_coreWidthMin = static_cast<float>(
-        std::clamp(Wh_GetIntSetting(L"core_width_min"), 1, 40));
+        std::clamp(Wh_GetIntSetting(L"Appearance.core_width_min"), 1, 40));
     g_coreWidthMax = static_cast<float>(
-        std::clamp(Wh_GetIntSetting(L"core_width_max"), 1, 60));
+        std::clamp(Wh_GetIntSetting(L"Appearance.core_width_max"), 1, 60));
     g_alphaMin = std::clamp(
-        Wh_GetIntSetting(L"alpha_min"), 0, 100) / 100.0f;
+        Wh_GetIntSetting(L"Appearance.alpha_min"), 0, 100) / 100.0f;
     g_alphaMax = std::clamp(
-        Wh_GetIntSetting(L"alpha_max"), 0, 100) / 100.0f;
+        Wh_GetIntSetting(L"Appearance.alpha_max"), 0, 100) / 100.0f;
     g_taperPower = std::clamp(
-        Wh_GetIntSetting(L"taper_power"), 5, 30) / 10.0f;
+        Wh_GetIntSetting(L"Appearance.taper_power"), 5, 30) / 10.0f;
 
     if (g_widthMax < g_widthMin) {
         std::swap(g_widthMin, g_widthMax);
@@ -816,12 +829,12 @@ void LoadSettings() {
     }
 
     g_smoothIterations = std::clamp(
-        Wh_GetIntSetting(L"smooth_iterations"), 0, 4);
+        Wh_GetIntSetting(L"Appearance.smooth_iterations"), 0, 4);
 
     g_gradientEnabled = std::clamp(
-        Wh_GetIntSetting(L"gradient_enabled"), 0, 1);
+        Wh_GetIntSetting(L"Effects.gradient_enabled"), 0, 1);
     {
-        PCWSTR value = Wh_GetStringSetting(L"gradient_tail_color");
+        PCWSTR value = Wh_GetStringSetting(L"Effects.gradient_tail_color");
         uint32_t parsed = 0;
         g_gradientTailRGB =
             value && ParseHexColor(value, parsed) ? parsed : 0x00FF00FF;
@@ -829,44 +842,44 @@ void LoadSettings() {
     }
 
     g_glowEnabled = std::clamp(
-        Wh_GetIntSetting(L"glow_enabled"), 0, 1);
+        Wh_GetIntSetting(L"Effects.glow_enabled"), 0, 1);
     {
-        PCWSTR value = Wh_GetStringSetting(L"glow_color");
+        PCWSTR value = Wh_GetStringSetting(L"Effects.glow_color");
         uint32_t parsed = 0;
         g_glowRGB =
             value && ParseHexColor(value, parsed) ? parsed : 0x00FFFFFF;
         if (value) Wh_FreeStringSetting(value);
     }
     g_glowWidthFactor = std::clamp(
-        Wh_GetIntSetting(L"glow_width_factor"), 10, 30) / 10.0f;
+        Wh_GetIntSetting(L"Effects.glow_width_factor"), 10, 30) / 10.0f;
     g_glowAlpha = std::clamp(
-        Wh_GetIntSetting(L"glow_alpha"), 0, 100) / 100.0f;
+        Wh_GetIntSetting(L"Effects.glow_alpha"), 0, 100) / 100.0f;
 
     g_fadeEnabled = std::clamp(
-        Wh_GetIntSetting(L"fade_enabled"), 0, 1);
+        Wh_GetIntSetting(L"Behavior.fade_enabled"), 0, 1);
     g_fadeDecay = std::clamp(
-        Wh_GetIntSetting(L"fade_decay"), 50, 99) / 100.0f;
+        Wh_GetIntSetting(L"Behavior.fade_decay"), 50, 99) / 100.0f;
 
     {
-        PCWSTR value = Wh_GetStringSetting(L"trail_color_mode");
+        PCWSTR value = Wh_GetStringSetting(L"Color.trail_color_mode");
         g_trailColorMode = value && _wcsicmp(value, L"auto") == 0 ? 1 : 0;
         if (value) Wh_FreeStringSetting(value);
     }
     {
-        PCWSTR value = Wh_GetStringSetting(L"trail_color_manual");
+        PCWSTR value = Wh_GetStringSetting(L"Color.trail_color_manual");
         uint32_t parsed = 0;
         g_manualColorRGB =
             value && ParseHexColor(value, parsed) ? parsed : kFallbackCoreColor;
         if (value) Wh_FreeStringSetting(value);
     }
     {
-        PCWSTR value = Wh_GetStringSetting(L"outline_color_mode");
+        PCWSTR value = Wh_GetStringSetting(L"Color.outline_color_mode");
         g_outlineColorMode =
             value && _wcsicmp(value, L"manual") == 0 ? 1 : 0;
         if (value) Wh_FreeStringSetting(value);
     }
     {
-        PCWSTR value = Wh_GetStringSetting(L"outline_color_manual");
+        PCWSTR value = Wh_GetStringSetting(L"Color.outline_color_manual");
         uint32_t parsed = 0;
         g_manualOutlineRGB =
             value && ParseHexColor(value, parsed) ? parsed : kFallbackOuterColor;
@@ -874,20 +887,18 @@ void LoadSettings() {
     }
 
     g_autoResampleInterval = std::clamp(
-        Wh_GetIntSetting(L"auto_resample_interval"),
+        Wh_GetIntSetting(L"Color.auto_resample_interval"),
         0,
         kAutoResampleIntervalMaxMs);
 
     {
-        PCWSTR value = Wh_GetStringSetting(L"app_rules");
+        PCWSTR value = Wh_GetStringSetting(L"Application.app_rules");
         ParseAppRules(value);
         if (value) Wh_FreeStringSetting(value);
     }
 
     g_cachedForegroundWindow = nullptr;
     g_cachedAppRule = 0;
-    g_hotkeyEnabled = std::clamp(
-        Wh_GetIntSetting(L"hotkey_enabled"), 0, 1);
 
     g_renderCache.ReserveForTailLength(g_tailLength);
 }
@@ -1729,8 +1740,6 @@ bool RenderTrail(HWND hwnd) {
 // -----------------------------------------------------------------------------
 
 void SmearFrame(HWND hwnd, DWORD now, bool renderFrame) {
-    if (g_hotkeySuspended) return;
-
     POINT point = {};
     if (!GetCursorPos(&point)) return;
 
@@ -1797,19 +1806,6 @@ LRESULT CALLBACK OverlayWndProc(
     switch (message) {
     case kSettingsChangedMessage:
         LoadSettings();
-        return 0;
-
-    case WM_HOTKEY:
-        if (wParam == kHotkeyId) {
-            g_hotkeySuspended = !g_hotkeySuspended;
-
-            if (g_hotkeySuspended) {
-                HistoryClear();
-                g_isSmearing = false;
-                g_fadeAlpha = 0.0f;
-                HideOverlay();
-            }
-        }
         return 0;
 
     case WM_DISPLAYCHANGE:
@@ -1954,18 +1950,6 @@ DWORD WINAPI OverlayThreadProc(LPVOID) {
     g_fullscreenStrongSignal = false;
     g_fullscreenSuppressed = false;
 
-    bool hotkeyRegistered = false;
-    if (g_hotkeyEnabled) {
-        hotkeyRegistered = RegisterHotKey(
-            hwnd,
-            kHotkeyId,
-            MOD_CONTROL | MOD_ALT | MOD_NOREPEAT,
-            'T') != FALSE;
-        if (!hotkeyRegistered) {
-            Wh_Log(L"RegisterHotKey failed: %lu", GetLastError());
-        }
-    }
-
     HANDLE frameTimer = CreateWaitableTimerExW(
         nullptr,
         nullptr,
@@ -1980,9 +1964,6 @@ DWORD WINAPI OverlayThreadProc(LPVOID) {
 
     if (!frameTimer) {
         Wh_Log(L"CreateWaitableTimer failed: %lu", GetLastError());
-        if (hotkeyRegistered) {
-            UnregisterHotKey(hwnd, kHotkeyId);
-        }
         DestroyWindow(hwnd);
         g_overlayHwnd.store(nullptr);
         UnregisterClassW(className, instance);
@@ -2081,10 +2062,6 @@ DWORD WINAPI OverlayThreadProc(LPVOID) {
 
     CancelWaitableTimer(frameTimer);
     CloseHandle(frameTimer);
-
-    if (hotkeyRegistered) {
-        UnregisterHotKey(hwnd, kHotkeyId);
-    }
 
     HideOverlay();
     ReleaseBackbuffer();
