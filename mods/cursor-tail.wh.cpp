@@ -398,6 +398,7 @@ bool g_fullscreenStrongSignal = false;
 struct TrailRenderCache {
     std::vector<D2D1_POINT_2F> smoothed;
     std::vector<D2D1_POINT_2F> subdivision;
+    std::vector<float> taper;
 
     void ReserveForTailLength(int tailLength) {
         const size_t baseCount = static_cast<size_t>(std::max(tailLength, 2));
@@ -405,6 +406,24 @@ struct TrailRenderCache {
 
         smoothed.reserve(maxPointCount);
         subdivision.reserve(maxPointCount);
+        taper.reserve(maxPointCount);
+    }
+
+    void PrepareTaper() {
+        taper.resize(smoothed.size());
+        if (smoothed.size() <= 1) {
+            if (!taper.empty()) taper[0] = 0.0f;
+            return;
+        }
+
+        const float denominator = static_cast<float>(smoothed.size() - 1);
+        for (size_t i = 0; i + 1 < smoothed.size(); ++i) {
+            const float ratio = static_cast<float>(i) / denominator;
+            taper[i] = powf(
+                std::max(0.0f, 1.0f - ratio),
+                g_taperPower);
+        }
+        taper.back() = 0.0f;
     }
 };
 
@@ -1169,6 +1188,8 @@ void SmoothTrail(int iterations) {
         next.push_back(current.back());
         current.swap(next);
     }
+
+    g_renderCache.PrepareTaper();
 }
 
 RECT CalculateTrailBounds(float maxHalfWidth) {
@@ -1206,28 +1227,21 @@ RECT CalculateTrailBounds(float maxHalfWidth) {
     return result;
 }
 
-static inline float TrailTaper(size_t index, size_t count) {
-    if (count <= 1 || index + 1 >= count) return 0.0f;
-
-    const float ratio = static_cast<float>(index)
-        / static_cast<float>(count - 1);
-    return powf(
-        std::max(0.0f, 1.0f - ratio),
-        g_taperPower);
-}
-
 static void DrawTrailStroke(
     ID2D1RenderTarget* target,
     ID2D1Brush* brush,
     float halfWidth,
     bool drawHead) {
     const auto& points = g_renderCache.smoothed;
-    if (points.size() < 2 || !brush) return;
+    const auto& taper = g_renderCache.taper;
+    if (points.size() < 2 || taper.size() < points.size() || !brush) {
+        return;
+    }
 
     for (size_t i = 0; i + 1 < points.size(); ++i) {
         const float width = std::max(
             0.1f,
-            halfWidth * TrailTaper(i, points.size()) * 2.0f);
+            halfWidth * taper[i] * 2.0f);
         target->DrawLine(
             points[i],
             points[i + 1],
