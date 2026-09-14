@@ -1,8 +1,8 @@
 // ==WindhawkMod==
 // @id              cursor-tail
 // @name            Cursor Tail
-// @description     Adaptive motion-blur trail for the mouse pointer, colored by sampling the cursor image.
-// @version         3.7
+// @description     Adds a smooth, speed-reactive motion-blur trail to the mouse cursor.
+// @version         3.8
 // @author          CYoJkoY
 // @github          https://github.com/CYoJkoY
 // @license         MIT
@@ -13,133 +13,192 @@
 // ==WindhawkModReadme==
 /*
 # Cursor Tail
-Replaces your standard Windows cursor with a smooth, tapered motion-blur trail
-when moving at high speeds. Hardware accelerated via Direct2D.
 
-### Features
-* **Adaptive Trail Color:** Pick a fixed hex color, or let the mod sample the
-  current cursor image and choose the most visible color against the live
-  screen background.
-* **Independent Outline Color:** Auto-derive the outer ring color from the
-  core color, or pick it manually.
-* **Dynamic 2D Ribbon:** Procedurally generates a continuous ribbon with a
-  rounded head.
-* **Direct2D Rendering:** Uses Direct2D anti-aliased strokes without rebuilding
-  COM geometry objects every frame.
-* **Speed-Reactive Shape:** Trail width, alpha and length scale with speed.
-* **Gradient / Glow:** Optional tail gradient and outer glow.
-* **Smooth Fade-Out:** Trail fades when the pointer stops.
-* **Per-App Rules:** Force the trail on or off for specific executables.
-* **Hotkey Toggle:** Ctrl+Alt+T temporarily suspends/restores the trail.
-* **Stable Fullscreen Suppression:** Fullscreen state is detected quickly for
-  borderless monitor-covering windows and confirmed with stronger fullscreen
-  signals without repeatedly showing and hiding the overlay.
+Cursor Tail adds a smooth, tapered motion-blur trail behind the mouse pointer
+when it moves quickly. The trail is rendered in a transparent overlay window
+with Direct2D, so it works independently of the application under the pointer.
 
-### Game / Fullscreen Detection
-The trail is suppressed automatically when fullscreen software is detected.
-Borderless fullscreen is recognized for non-maximized, captionless windows that
-cover the whole monitor. Exclusive/D3D fullscreen is additionally recognized
-through Windows' D3D fullscreen state. Suppression enters immediately and leaves
-only after several consecutive non-fullscreen samples to avoid flicker.
+## Features
+
+- **Speed-reactive trail:** Width, opacity, and effective length respond to
+  pointer velocity.
+- **Smooth motion:** Historical cursor samples can be smoothed with Chaikin
+  subdivision for a continuous ribbon.
+- **Custom appearance:** Configure trail color, outline color, gradient, and
+  optional glow.
+- **Adaptive color:** Automatically sample the active cursor image and prefer
+  colors with sufficient contrast against the screen background.
+- **Fade-out:** Smoothly fade the trail after the pointer slows down.
+- **Per-app rules:** Enable or disable the trail for selected executables.
+- **Hotkey toggle:** Optionally use `Ctrl+Alt+T` to suspend or resume the trail.
+- **Fullscreen suppression:** Automatically hide the trail for exclusive or
+  borderless fullscreen applications and restore it after fullscreen ends.
+
+## Usage
+
+Move the pointer quickly enough to cross the configured trigger velocity. The
+trail length, width, smoothing, and opacity can then be tuned in the settings.
+Lower the trigger velocity for a more sensitive effect; increase it for fewer
+trails on the desktop.
+
+## Color modes
+
+**Manual** mode uses the configured hexadecimal trail color. **Auto** mode
+samples the current cursor image and chooses a visible color based on the
+luminance around the pointer. Automatic resampling can be disabled or limited
+to a custom interval.
+
+The outline can either be derived automatically from the trail luminance or set
+to a fixed hexadecimal color.
+
+## Per-app rules
+
+Use one rule per line:
+
+`program.exe=on`
+
+`program.exe=off`
+
+Lines beginning with `#` are comments. Executable names are matched
+case-insensitively.
+
+## Fullscreen behavior
+
+The trail is suppressed when the foreground application reports a D3D
+fullscreen state or when a borderless, captionless window covers its monitor.
+Entering fullscreen suppresses the overlay immediately. Leaving fullscreen
+must remain stable for several samples before the trail is shown again, which
+reduces flicker during application transitions.
+
+## Performance
+
+Rendering targets 125 frames per second. The back buffer and Direct2D resources
+are reused between frames and resized only when the required trail bounds grow
+beyond the current buffer.
 */
-// ==WindhawkModReadme==
+// ==/WindhawkModReadme==
 
 // ==WindhawkModSettings==
 /*
 - trigger_velocity: 25
-  $name: Trigger Velocity
-  $description: How fast the mouse needs to move to start the trail (pixels per frame).
+  $name: Trigger velocity
+  $description: >-
+    Minimum pointer velocity in pixels per frame required to start the trail.
 - stop_velocity: 10
-  $name: Stop Velocity
-  $description: Velocity threshold to fade the trail. Must be lower than Trigger Velocity.
+  $name: Stop velocity
+  $description: >-
+    Velocity below which the trail begins fading. Values at or above the trigger
+    velocity are automatically reduced to a safe value.
 - tail_offset_x: 6
-  $name: Tail Offset X
-  $description: X-axis offset from the cursor hotspot to the head of the ribbon.
+  $name: Trail X offset
+  $description: >-
+    Horizontal offset from the cursor hotspot to the trail head, in pixels.
 - tail_offset_y: 10
-  $name: Tail Offset Y
-  $description: Y-axis offset from the cursor hotspot to the head of the ribbon.
+  $name: Trail Y offset
+  $description: >-
+    Vertical offset from the cursor hotspot to the trail head, in pixels.
 - tail_length: 10
-  $name: Tail Length
-  $description: How many historical cursor samples the trail retains (2-64).
+  $name: Tail length
+  $description: >-
+    Number of historical cursor samples retained for the trail, from 2 to 64.
 
-- speed_scaling: 1
-  $name: Speed-Reactive Shape
-  $description: Scale width, alpha and length with pointer velocity (0 = off, 1 = on).
+- speed_scaling: true
+  $name: Speed-reactive shape
+  $description: >-
+    Scale trail width, opacity, and effective length with pointer velocity.
 - width_min: 4
-  $name: Outer Width (min)
-  $description: Outer ribbon half-width at low speed, in pixels.
+  $name: Outer width (minimum)
+  $description: Outer ribbon half-width at lower speeds, in pixels.
 - width_max: 14
-  $name: Outer Width (max)
-  $description: Outer ribbon half-width at high speed, in pixels.
+  $name: Outer width (maximum)
+  $description: Outer ribbon half-width at higher speeds, in pixels.
 - core_width_min: 2
-  $name: Core Width (min)
-  $description: Inner ribbon half-width at low speed, in pixels.
+  $name: Core width (minimum)
+  $description: Inner ribbon half-width at lower speeds, in pixels.
 - core_width_max: 9
-  $name: Core Width (max)
-  $description: Inner ribbon half-width at high speed, in pixels.
+  $name: Core width (maximum)
+  $description: Inner ribbon half-width at higher speeds, in pixels.
 - alpha_min: 45
-  $name: Alpha (min)
-  $description: Trail opacity at low speed, 0-100.
+  $name: Opacity (minimum)
+  $description: Trail opacity at lower speeds, from 0 to 100 percent.
 - alpha_max: 90
-  $name: Alpha (max)
-  $description: Trail opacity at high speed, 0-100.
+  $name: Opacity (maximum)
+  $description: Trail opacity at higher speeds, from 0 to 100 percent.
 - taper_power: 10
-  $name: Taper Power (x0.1)
-  $description: 10 = linear taper, higher = sharper tip. Range 5-30 (0.5-3.0).
-
+  $name: Taper power (x0.1)
+  $description: >-
+    Controls how quickly the trail narrows toward its tail. 10 is linear;
+    larger values produce a sharper taper. Range 5-30.
 - smooth_iterations: 2
-  $name: Smooth Iterations
-  $description: Chaikin subdivision passes. 0 = raw polyline, 4 = very smooth.
+  $name: Smoothing iterations
+  $description: >-
+    Number of Chaikin subdivision passes. Higher values produce a smoother
+    ribbon at the cost of more points to render. Range 0-4.
 
-- gradient_enabled: 0
-  $name: Gradient Tail
-  $description: Fade the core color toward a second color at the tail.
+- gradient_enabled: false
+  $name: Gradient tail
+  $description: Fade the core color toward the configured tail color.
 - gradient_tail_color: "#FF00FF"
-  $name: Gradient Tail Color
-  $description: Core color at the tail end when Gradient is enabled. Format "#RRGGBB".
-
-- glow_enabled: 0
+  $name: Gradient tail color
+  $description: >-
+    Hexadecimal RGB color used at the tail end when Gradient tail is enabled.
+- glow_enabled: false
   $name: Glow
-  $description: Draw an outer soft glow ring behind the trail.
+  $description: Draw an additional soft glow around the trail.
 - glow_color: "#FFFFFF"
-  $name: Glow Color
-  $description: Color of the glow ring. Format "#RRGGBB".
+  $name: Glow color
+  $description: Hexadecimal RGB color used for the glow ring.
 - glow_width_factor: 18
-  $name: Glow Width Factor (x0.1)
-  $description: Glow width relative to the outer ribbon width, x0.1. 18 = 1.8x.
+  $name: Glow width factor (x0.1)
+  $description: >-
+    Glow width relative to the outer trail width. 18 means 1.8 times the outer
+    width.
 - glow_alpha: 25
-  $name: Glow Alpha
-  $description: Glow opacity, 0-100.
+  $name: Glow opacity
+  $description: Glow opacity, from 0 to 100 percent.
 
-- fade_enabled: 1
-  $name: Fade-Out
-  $description: Trail fades smoothly when the pointer stops instead of snapping off.
+- fade_enabled: true
+  $name: Fade-out
+  $description: Smoothly fade the trail after the pointer slows down.
 - fade_decay: 90
-  $name: Fade Decay (x0.01)
-  $description: Per-frame alpha multiplier during fade-out, x0.01. 90 = 0.90.
+  $name: Fade decay (x0.01)
+  $description: >-
+    Per-frame opacity multiplier during fade-out. 90 means 0.90 per frame.
 
-- trail_color_mode: 0
-  $name: Trail Color Mode
-  $description: 0 = Manual hex color. 1 = Auto sample the cursor image and pick a visible color.
+- trail_color_mode: manual
+  $name: Trail color mode
+  $description: Choose a fixed color or automatically sample the cursor image.
+  $options:
+  - manual: Manual color
+  - auto: Auto-sample cursor colors
 - trail_color_manual: "#FFFFFF"
-  $name: Manual Trail Color
-  $description: Core trail color in Manual mode. Format "#RRGGBB".
-- outline_color_mode: 0
-  $name: Outline Color Mode
-  $description: 0 = Auto derive from the core luminance. 1 = Manual hex color.
+  $name: Manual trail color
+  $description: >-
+    Hexadecimal RGB color used when Trail color mode is Manual.
+- outline_color_mode: auto
+  $name: Outline color mode
+  $description: Choose an automatically derived outline or a fixed color.
+  $options:
+  - auto: Auto-derive from trail color
+  - manual: Manual color
 - outline_color_manual: "#000000"
-  $name: Manual Outline Color
-  $description: Outer ring color when Outline Color Mode is Manual. Format "#RRGGBB".
+  $name: Manual outline color
+  $description: >-
+    Hexadecimal RGB color used when Outline color mode is Manual.
 - auto_resample_interval: 0
-  $name: Auto Resample Interval
-  $description: How often to re-sample the cursor color in Auto mode (ms). 0 = only when the cursor image changes.
+  $name: Auto resample interval
+  $description: >-
+    How often Auto color mode resamples the cursor color, in milliseconds.
+    Set to 0 to resample only when the cursor image changes.
 
 - app_rules: ""
-  $name: Per-App Rules
-  $description: One rule per line, "exe=on" or "exe=off". "#" starts a comment.
-- hotkey_enabled: 0
-  $name: Enable Hotkey
-  $description: Register Ctrl+Alt+T to temporarily suspend/resume the trail.
+  $name: Per-app rules
+  $description: >-
+    One rule per line using `exe=on` or `exe=off`. Lines beginning with `#`
+    are comments. Executable names are matched case-insensitively.
+- hotkey_enabled: false
+  $name: Enable hotkey
+  $description: Register Ctrl+Alt+T to suspend or resume the trail.
 */
 // ==WindhawkModSettings==
 
@@ -353,9 +412,9 @@ void LoadSettings() {
     g_glowEnabled = std::clamp(Wh_GetIntSetting(L"glow_enabled"), 0, 1);
     { PCWSTR value = Wh_GetStringSetting(L"glow_color"); uint32_t parsed = 0; g_glowRGB = value && ParseHexColor(value, parsed) ? parsed : 0x00FFFFFF; if (value) Wh_FreeStringSetting(value); }
     g_glowWidthFactor = std::clamp(Wh_GetIntSetting(L"glow_width_factor"), 10, 30) / 10.0f; g_glowAlpha = std::clamp(Wh_GetIntSetting(L"glow_alpha"), 0, 100) / 100.0f; g_fadeEnabled = std::clamp(Wh_GetIntSetting(L"fade_enabled"), 0, 1); g_fadeDecay = std::clamp(Wh_GetIntSetting(L"fade_decay"), 50, 99) / 100.0f;
-    g_trailColorMode = std::clamp(Wh_GetIntSetting(L"trail_color_mode"), 0, 1);
+    { PCWSTR value = Wh_GetStringSetting(L"trail_color_mode"); g_trailColorMode = value && _wcsicmp(value, L"auto") == 0 ? 1 : 0; if (value) Wh_FreeStringSetting(value); }
     { PCWSTR value = Wh_GetStringSetting(L"trail_color_manual"); uint32_t parsed = 0; g_manualColorRGB = value && ParseHexColor(value, parsed) ? parsed : kFallbackCoreColor; if (value) Wh_FreeStringSetting(value); }
-    g_outlineColorMode = std::clamp(Wh_GetIntSetting(L"outline_color_mode"), 0, 1);
+    { PCWSTR value = Wh_GetStringSetting(L"outline_color_mode"); g_outlineColorMode = value && _wcsicmp(value, L"manual") == 0 ? 1 : 0; if (value) Wh_FreeStringSetting(value); }
     { PCWSTR value = Wh_GetStringSetting(L"outline_color_manual"); uint32_t parsed = 0; g_manualOutlineRGB = value && ParseHexColor(value, parsed) ? parsed : kFallbackOuterColor; if (value) Wh_FreeStringSetting(value); }
     g_autoResampleInterval = std::clamp(Wh_GetIntSetting(L"auto_resample_interval"), 0, kAutoResampleIntervalMaxMs);
     { PCWSTR value = Wh_GetStringSetting(L"app_rules"); ParseAppRules(value); if (value) Wh_FreeStringSetting(value); }
