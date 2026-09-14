@@ -1,0 +1,106 @@
+name: Mod compatibility check
+
+defaults:
+  run:
+    shell: bash
+
+on:
+  workflow_dispatch:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - 'mods/*.wh.cpp'
+      - '.github/workflows/mod-compatibility.yml'
+
+env:
+  PYTHONUTF8: '1'
+
+jobs:
+  compile:
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        version:
+          - '1.7.3'
+          - '2.0.0-alpha.5'
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Get changed mods
+        id: changed
+        run: |
+          if [[ "${{ github.event_name }}" == "pull_request" ]]; then
+            base="${{ github.event.pull_request.base.sha }}"
+            head="${{ github.event.pull_request.head.sha }}"
+          else
+            base="${{ github.event.before }}"
+            head="${{ github.sha }}"
+          fi
+          mapfile -t files < <(git diff --name-only "$base" "$head" -- 'mods/*.wh.cpp')
+          echo "count=${#files[@]}" >> "$GITHUB_OUTPUT"
+          printf 'files=%s\n' "$(IFS=' '; echo "${files[*]}")" >> "$GITHUB_OUTPUT"
+          printf 'Changed mods:\n%s\n' "${files[@]}"
+
+      - name: Cache Windhawk
+        id: cache
+        if: steps.changed.outputs.count != '0'
+        uses: actions/cache@v5
+        with:
+          path: ${{ runner.temp }}/windhawk
+          key: windhawk-${{ runner.os }}-${{ matrix.version }}
+
+      - name: Download Windhawk
+        if: steps.changed.outputs.count != '0' && steps.cache.outputs.cache-hit != 'true'
+        run: |
+          if [[ "${{ matrix.version }}" == 1.* ]]; then
+            release_tag="v${{ matrix.version }}"
+            installer_args=''
+          else
+            release_tag="${{ matrix.version }}"
+            installer_args='/DEVTOOLS'
+          fi
+          installer_url="https://github.com/ramensoftware/windhawk/releases/download/$release_tag/windhawk_setup.exe"
+          installer_path="${{ runner.temp }}\windhawk_setup.exe"
+          curl -L --fail --retry 3 "$installer_url" -o "$installer_path"
+          extract_path="${{ runner.temp }}\windhawk"
+          MSYS_NO_PATHCONV=1 "$installer_path" /S /PORTABLE $installer_args "/D=$extract_path"
+
+      - name: Compile changed mods
+        if: steps.changed.outputs.count != '0'
+        env:
+          CHANGED_FILES: ${{ steps.changed.outputs.files }}
+        run: |
+          windhawk_path="${{ runner.temp }}\windhawk"
+          for file in $CHANGED_FILES; do
+            echo "Compiling $file against Windhawk ${{ matrix.version }}"
+            if [[ "${{ matrix.version }}" == 1.* ]]; then
+              curl -L --fail --retry 3 \
+                https://raw.githubusercontent.com/ramensoftware/windhawk-mods/main/scripts/compile_mod.py \
+                -o "${{ runner.temp }}/compile_mod.py"
+              python -u "${{ runner.temp }}/compile_mod.py" \
+                -w "$windhawk_path" \
+                -f "$file" \
+                -o32 "${{ runner.temp }}/mod_32.dll" \
+                -o64 "${{ runner.temp }}/mod_64.dll" \
+                -oarm64 "${{ runner.temp }}/mod_arm64.dll"
+            else
+              cli="$windhawk_path\windhawk-cli.exe"
+              result="${{ runner.temp }}/compile_result.json"
+              if ! MSYS_NO_PATHCONV=1 "$cli" --json \
+                mod install --disabled --arch all --file "$file" \
+                > "$result"; then
+                jq -r '"::error::\(.error.code): \(.error.message)"' "$result" || cat "$result"
+                exit 1
+              fi
+              if jq -e '.data.warnings' "$result" >/dev/null; then
+                echo "::error::The mod compiled with warnings: $file"
+                exit 1
+              fi
+            fi
+          done
