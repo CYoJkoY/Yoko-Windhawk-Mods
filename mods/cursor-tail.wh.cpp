@@ -555,7 +555,7 @@ bool RenderTrail(HWND hwnd) {
     if (hr == D2DERR_RECREATE_TARGET) { ReleaseRenderResources(); return false; }
     if (FAILED(hr)) return false;
     BLENDFUNCTION blend = {}; blend.BlendOp = AC_SRC_OVER; blend.SourceConstantAlpha = 255; blend.AlphaFormat = AC_SRC_ALPHA;
-    POINT pos = {bounds.left, bounds.top}; const SIZE size = {width, height}; POINT source = {0, 0};
+    POINT pos = {bounds.left, bounds.top}; SIZE size = {width, height}; POINT source = {0, 0};
     return UpdateLayeredWindow(hwnd, screen, &pos, &size, g_hdcMem, &source, 0, &blend, ULW_ALPHA) != FALSE;
 }
 
