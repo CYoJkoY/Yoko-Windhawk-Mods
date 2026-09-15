@@ -63,8 +63,6 @@ This mod is derived in part from the Windhawk **Cursor Motion Blur** mod by Thea
 // ==WindhawkModSettings==
 /*
 - Behavior:
-    $name: Behavior
-    $name:zh-CN: 行为
     - trigger_velocity: 25
       $name: Trigger speed
       $name:zh-CN: 触发速度
@@ -107,8 +105,6 @@ This mod is derived in part from the Windhawk **Cursor Motion Blur** mod by Thea
       $description:zh-CN: 控制拖尾的淡出速度。90 表示每个模拟采样都会将剩余不透明度乘以 0.90。
 
 - Appearance:
-    $name: Appearance
-    $name:zh-CN: 外观
     - width_min: 4
       $name: Minimum trail width
       $name:zh-CN: 最小拖尾宽度
@@ -151,8 +147,6 @@ This mod is derived in part from the Windhawk **Cursor Motion Blur** mod by Thea
       $description:zh-CN: Chaikin 细分次数。数值越高，拖尾越平滑，但需要绘制更多点。范围 0-4。
 
 - Color:
-    $name: Color
-    $name:zh-CN: 颜色
     - trail_color_mode: manual
       $name: Trail color mode
       $name:zh-CN: 拖尾颜色模式
@@ -192,8 +186,6 @@ This mod is derived in part from the Windhawk **Cursor Motion Blur** mod by Thea
       $description:zh-CN: 自动颜色模式重新采样指针颜色的间隔，单位为毫秒。设为 0 时，仅在指针图像发生变化时重新采样。
 
 - Effects:
-    $name: Effects
-    $name:zh-CN: 效果
     - gradient_enabled: false
       $name: Tail gradient
       $name:zh-CN: 拖尾渐变
@@ -213,7 +205,7 @@ This mod is derived in part from the Windhawk **Cursor Motion Blur** mod by Thea
       $name: Glow color
       $name:zh-CN: 光晕颜色
       $description: Hexadecimal RGB color used for the glow.
-      $description:zh-CN: 光晕使用的颜色。
+      $description:zh-CN: 光晕使用的十六进制 RGB 颜色。
     - glow_width_factor: 18
       $name: Glow width
       $name:zh-CN: 光晕宽度
@@ -226,8 +218,6 @@ This mod is derived in part from the Windhawk **Cursor Motion Blur** mod by Thea
       $description:zh-CN: 光晕不透明度，范围为 0 到 100%。
 
 - Application:
-    $name: Application
-    $name:zh-CN: 应用
     - app_rules: ""
       $name: Per-app rules
       $name:zh-CN: 按应用规则
@@ -342,10 +332,7 @@ DWORD g_lastAutoColorUpdate = 0;
 HCURSOR g_lastAutoColorCursor = nullptr;
 bool g_autoColorInitialized = false;
 
-struct AppRule {
-    std::wstring exe;
-    bool enabled;
-};
+struct AppRule { std::wstring exe; bool enabled; };
 std::vector<AppRule> g_appRules;
 HWND g_cachedForegroundWindow = nullptr;
 int g_cachedAppRule = 0;
@@ -417,14 +404,9 @@ static inline D2D1_COLOR_F ToColorF(uint32_t rgb, float alpha) {
 
 static bool ParseHexColor(const wchar_t* str, uint32_t& out) {
     if (!str) return false;
-
     while (*str == L' ' || *str == L'\t') ++str;
-    if (*str == L'#') {
-        ++str;
-    } else if (str[0] == L'0' && (str[1] == L'x' || str[1] == L'X')) {
-        str += 2;
-    }
-
+    if (*str == L'#') ++str;
+    else if (str[0] == L'0' && (str[1] == L'x' || str[1] == L'X')) str += 2;
     uint32_t value = 0;
     int digits = 0;
     while (digits < 6) {
@@ -433,12 +415,10 @@ static bool ParseHexColor(const wchar_t* str, uint32_t& out) {
         if (c >= L'0' && c <= L'9') digit = c - L'0';
         else if (c >= L'a' && c <= L'f') digit = c - L'a' + 10;
         else if (c >= L'A' && c <= L'F') digit = c - L'A' + 10;
-
         if (digit < 0) break;
         value = (value << 4) | static_cast<uint32_t>(digit);
         ++digits;
     }
-
     if (digits != 6) return false;
     out = value;
     return true;
@@ -452,34 +432,13 @@ static std::wstring ToLowerW(std::wstring value) {
 static uint32_t ResolveOutlineColor(uint32_t core);
 
 void ReleaseRenderResources() {
-    if (g_gradientBrush) {
-        g_gradientBrush->Release();
-        g_gradientBrush = nullptr;
-    }
-    if (g_gradientStops) {
-        g_gradientStops->Release();
-        g_gradientStops = nullptr;
-    }
-    if (g_strokeStyle) {
-        g_strokeStyle->Release();
-        g_strokeStyle = nullptr;
-    }
-    if (g_glowBrush) {
-        g_glowBrush->Release();
-        g_glowBrush = nullptr;
-    }
-    if (g_coreBrush) {
-        g_coreBrush->Release();
-        g_coreBrush = nullptr;
-    }
-    if (g_outerBrush) {
-        g_outerBrush->Release();
-        g_outerBrush = nullptr;
-    }
-    if (g_renderTarget) {
-        g_renderTarget->Release();
-        g_renderTarget = nullptr;
-    }
+    if (g_gradientBrush) { g_gradientBrush->Release(); g_gradientBrush = nullptr; }
+    if (g_gradientStops) { g_gradientStops->Release(); g_gradientStops = nullptr; }
+    if (g_strokeStyle) { g_strokeStyle->Release(); g_strokeStyle = nullptr; }
+    if (g_glowBrush) { g_glowBrush->Release(); g_glowBrush = nullptr; }
+    if (g_coreBrush) { g_coreBrush->Release(); g_coreBrush = nullptr; }
+    if (g_outerBrush) { g_outerBrush->Release(); g_outerBrush = nullptr; }
+    if (g_renderTarget) { g_renderTarget->Release(); g_renderTarget = nullptr; }
     g_gradientHeadCache = 0xFFFFFFFFu;
     g_gradientTailCache = 0xFFFFFFFFu;
     g_dcBound = false;
@@ -488,17 +447,11 @@ void ReleaseRenderResources() {
 void ReleaseBackbuffer() {
     ReleaseRenderResources();
     if (g_backBufferDc) {
-        if (g_originalBitmap) {
-            SelectObject(g_backBufferDc, g_originalBitmap);
-            g_originalBitmap = nullptr;
-        }
+        if (g_originalBitmap) { SelectObject(g_backBufferDc, g_originalBitmap); g_originalBitmap = nullptr; }
         DeleteDC(g_backBufferDc);
         g_backBufferDc = nullptr;
     }
-    if (g_backBufferBitmap) {
-        DeleteObject(g_backBufferBitmap);
-        g_backBufferBitmap = nullptr;
-    }
+    if (g_backBufferBitmap) { DeleteObject(g_backBufferBitmap); g_backBufferBitmap = nullptr; }
     g_cachedWidth = 0;
     g_cachedHeight = 0;
 }
@@ -541,10 +494,7 @@ void ShowOverlay() {
     g_windowVisible = true;
 }
 
-void HistoryClear() {
-    g_historyHead = 0;
-    g_historyCount = 0;
-}
+void HistoryClear() { g_historyHead = 0; g_historyCount = 0; }
 
 void HistoryPushFront(const POINT& point, int maxLength) {
     if (g_historyCount == kHistoryCapacity) --g_historyCount;
@@ -554,13 +504,9 @@ void HistoryPushFront(const POINT& point, int maxLength) {
     if (g_historyCount > maxLength) g_historyCount = maxLength;
 }
 
-void HistoryPopBack() {
-    if (g_historyCount > 0) --g_historyCount;
-}
+void HistoryPopBack() { if (g_historyCount > 0) --g_historyCount; }
 
-const POINT& HistoryAt(int index) {
-    return g_history[(g_historyHead + index) % kHistoryCapacity];
-}
+const POINT& HistoryAt(int index) { return g_history[(g_historyHead + index) % kHistoryCapacity]; }
 
 static bool GetProcessExeName(DWORD pid, std::wstring& out) {
     HANDLE process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
@@ -598,12 +544,7 @@ static void ParseAppRules(const wchar_t* text) {
             };
             trim(exe);
             trim(value);
-            if (!exe.empty()) {
-                g_appRules.push_back({
-                    ToLowerW(exe),
-                    value == L"on" || value == L"1" || value == L"true" || value == L"yes",
-                });
-            }
+            if (!exe.empty()) g_appRules.push_back({ToLowerW(exe), value == L"on" || value == L"1" || value == L"true" || value == L"yes"});
         }
         if (end == input.size()) break;
         start = input.find_first_not_of(L"\r\n", end);
@@ -956,9 +897,7 @@ static bool ExtractCursorColorCandidates(std::vector<ColorCandidate>& out) {
             if (screen && GetDIBits(screen, iconInfo.hbmColor, 0, height, pixels.data(), &info, DIB_RGB_COLORS) == height) {
                 std::unordered_map<uint32_t, int> histogram;
                 histogram.reserve(64);
-                for (uint32_t pixel : pixels) {
-                    if (((pixel >> 24) & 0xFF) >= kCursorAlphaThreshold) ++histogram[pixel & 0x00FFFFFF];
-                }
+                for (uint32_t pixel : pixels) if (((pixel >> 24) & 0xFF) >= kCursorAlphaThreshold) ++histogram[pixel & 0x00FFFFFF];
                 out.reserve(histogram.size());
                 for (const auto& entry : histogram) out.push_back({entry.first, entry.second});
                 std::sort(out.begin(), out.end(), [](const ColorCandidate& a, const ColorCandidate& b) { return a.count > b.count; });
