@@ -1481,7 +1481,7 @@ void Wh_ModAfterInit() {
         DWORD dwCreationFlags,
         LPVOID lpEnvironment,
         LPCWSTR lpCurrentDirectory,
-        LPSTARTUPINFO lpStartupInfo,
+        LPSTARTUPINFOW lpStartupInfo,
         LPPROCESS_INFORMATION lpProcessInformation,
         PHANDLE hRestrictedUserToken);
     CreateProcessInternalW_t pCreateProcessInternalW =
