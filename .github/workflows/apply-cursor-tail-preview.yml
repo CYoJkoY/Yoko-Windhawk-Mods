@@ -1,0 +1,70 @@
+name: Apply Cursor Tail preview move
+
+on:
+  push:
+    branches:
+      - fix/cursor-tail-preview-27
+    paths:
+      - .automation/cursor-tail-preview-27
+      - .github/workflows/apply-cursor-tail-preview.yml
+
+permissions:
+  contents: write
+
+jobs:
+  move-preview:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out branch
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Move preview into embedded mod README
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          preview = "![Cursor Tail Demo](https://i.imgur.com/mbiW6QU.gif)"
+
+          readme_path = Path("README.md")
+          readme = readme_path.read_text(encoding="utf-8")
+          root_block = (
+              "## Cursor Tail Preview\n\n"
+              f"{preview}\n\n"
+              "The preview shows the speed-reactive cursor trail used by [`cursor-tail.wh.cpp`](mods/cursor-tail.wh.cpp).\n"
+          )
+          if root_block not in readme:
+              raise SystemExit("Expected Cursor Tail preview block was not found in README.md")
+          readme_path.write_text(readme.replace(root_block, "", 1), encoding="utf-8")
+
+          mod_path = Path("mods/cursor-tail.wh.cpp")
+          source = mod_path.read_text(encoding="utf-8")
+          marker = "# Cursor Tail\n\n"
+          preview_block = f"## Preview\n\n{preview}\n\n"
+          if preview_block not in source:
+              if marker not in source:
+                  raise SystemExit("Cursor Tail embedded README marker was not found")
+              source = source.replace(marker, marker + preview_block, 1)
+              mod_path.write_text(source, encoding="utf-8")
+
+          Path(".automation/cursor-tail-preview-27").unlink()
+          Path(".github/workflows/apply-cursor-tail-preview.yml").unlink()
+          PY
+
+      - name: Validate diff
+        run: git diff --check
+
+      - name: Commit final changes
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A -- README.md mods/cursor-tail.wh.cpp .automation/cursor-tail-preview-27 .github/workflows/apply-cursor-tail-preview.yml
+          git diff --cached --check
+          git diff --cached --quiet && exit 0
+          git commit -m "docs(cursor-tail): move preview into mod readme"
+          git push origin HEAD:fix/cursor-tail-preview-27
+
+# Issue #27: relocate the preview into the embedded Windhawk mod README.
