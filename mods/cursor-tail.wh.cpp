@@ -213,7 +213,7 @@ This mod is derived in part from the Windhawk **Cursor Motion Blur** mod by Thea
       $name: Glow color
       $name:zh-CN: 光晕颜色
       $description: Hexadecimal RGB color used for the glow.
-      $description:zh-CN: 光晕使用的十六进制 RGB 颜色。
+      $description:zh-CN: 光晕使用的颜色。
     - glow_width_factor: 18
       $name: Glow width
       $name:zh-CN: 光晕宽度
@@ -480,7 +480,6 @@ void ReleaseRenderResources() {
         g_renderTarget->Release();
         g_renderTarget = nullptr;
     }
-
     g_gradientHeadCache = 0xFFFFFFFFu;
     g_gradientTailCache = 0xFFFFFFFFu;
     g_dcBound = false;
@@ -488,7 +487,6 @@ void ReleaseRenderResources() {
 
 void ReleaseBackbuffer() {
     ReleaseRenderResources();
-
     if (g_backBufferDc) {
         if (g_originalBitmap) {
             SelectObject(g_backBufferDc, g_originalBitmap);
@@ -501,14 +499,12 @@ void ReleaseBackbuffer() {
         DeleteObject(g_backBufferBitmap);
         g_backBufferBitmap = nullptr;
     }
-
     g_cachedWidth = 0;
     g_cachedHeight = 0;
 }
 
 HBITMAP Create32BitDIB(int width, int height) {
     if (width <= 0 || height <= 0) return nullptr;
-
     BITMAPINFO info = {};
     info.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
     info.bmiHeader.biWidth = width;
@@ -516,7 +512,6 @@ HBITMAP Create32BitDIB(int width, int height) {
     info.bmiHeader.biPlanes = 1;
     info.bmiHeader.biBitCount = 32;
     info.bmiHeader.biCompression = BI_RGB;
-
     void* bits = nullptr;
     return CreateDIBSection(nullptr, &info, DIB_RGB_COLORS, &bits, nullptr, 0);
 }
@@ -570,13 +565,11 @@ const POINT& HistoryAt(int index) {
 static bool GetProcessExeName(DWORD pid, std::wstring& out) {
     HANDLE process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
     if (!process) return false;
-
     WCHAR path[512] = {};
     DWORD size = ARRAYSIZE(path);
     const BOOL success = QueryFullProcessImageNameW(process, 0, path, &size);
     CloseHandle(process);
     if (!success) return false;
-
     const wchar_t* name = wcsrchr(path, L'\\');
     out = ToLowerW(name ? name + 1 : path);
     return true;
@@ -585,31 +578,24 @@ static bool GetProcessExeName(DWORD pid, std::wstring& out) {
 static void ParseAppRules(const wchar_t* text) {
     g_appRules.clear();
     if (!text) return;
-
     const std::wstring input(text);
     size_t start = 0;
     while (start <= input.size()) {
         size_t end = input.find_first_of(L"\r\n", start);
         if (end == std::wstring::npos) end = input.size();
-
         std::wstring line = input.substr(start, end - start);
         const size_t comment = line.find(L'#');
         if (comment != std::wstring::npos) line.resize(comment);
-
         const size_t equals = line.find(L'=');
         if (equals != std::wstring::npos) {
             std::wstring exe = line.substr(0, equals);
             std::wstring value = line.substr(equals + 1);
             const auto trim = [](std::wstring& value) {
                 const size_t first = value.find_first_not_of(L" \t");
-                if (first == std::wstring::npos) {
-                    value.clear();
-                    return;
-                }
+                if (first == std::wstring::npos) { value.clear(); return; }
                 const size_t last = value.find_last_not_of(L" \t");
                 value = value.substr(first, last - first + 1);
             };
-
             trim(exe);
             trim(value);
             if (!exe.empty()) {
@@ -619,7 +605,6 @@ static void ParseAppRules(const wchar_t* text) {
                 });
             }
         }
-
         if (end == input.size()) break;
         start = input.find_first_not_of(L"\r\n", end);
         if (start == std::wstring::npos) break;
@@ -628,15 +613,12 @@ static void ParseAppRules(const wchar_t* text) {
 
 static int CheckAppRuleCached(HWND foreground) {
     if (foreground == g_cachedForegroundWindow) return g_cachedAppRule;
-
     g_cachedForegroundWindow = foreground;
     g_cachedAppRule = 0;
     if (!foreground || g_appRules.empty()) return 0;
-
     DWORD pid = 0;
     GetWindowThreadProcessId(foreground, &pid);
     if (!pid) return 0;
-
     std::wstring exe;
     if (!GetProcessExeName(pid, exe)) return 0;
     for (const auto& rule : g_appRules) {
@@ -651,15 +633,11 @@ static int CheckAppRuleCached(HWND foreground) {
 void LoadSettings() {
     g_triggerVelocity = static_cast<float>(std::clamp(Wh_GetIntSetting(L"Behavior.trigger_velocity"), 1, 500));
     g_stopVelocity = static_cast<float>(std::clamp(Wh_GetIntSetting(L"Behavior.stop_velocity"), 1, 500));
-    if (g_stopVelocity >= g_triggerVelocity) {
-        g_stopVelocity = std::max(1.0f, g_triggerVelocity * 0.5f);
-    }
-
+    if (g_stopVelocity >= g_triggerVelocity) g_stopVelocity = std::max(1.0f, g_triggerVelocity * 0.5f);
     g_tailOffsetX = std::clamp(Wh_GetIntSetting(L"Behavior.tail_offset_x"), -64, 64);
     g_tailOffsetY = std::clamp(Wh_GetIntSetting(L"Behavior.tail_offset_y"), -64, 64);
     g_tailLength = std::clamp(Wh_GetIntSetting(L"Behavior.tail_length"), 2, kMaxTailLength);
     g_speedScaling = std::clamp(Wh_GetIntSetting(L"Behavior.speed_scaling"), 0, 1);
-
     g_widthMin = static_cast<float>(std::clamp(Wh_GetIntSetting(L"Appearance.width_min"), 1, 40));
     g_widthMax = static_cast<float>(std::clamp(Wh_GetIntSetting(L"Appearance.width_max"), 1, 60));
     g_coreWidthMin = static_cast<float>(std::clamp(Wh_GetIntSetting(L"Appearance.core_width_min"), 1, 40));
@@ -667,11 +645,9 @@ void LoadSettings() {
     g_alphaMin = std::clamp(Wh_GetIntSetting(L"Appearance.alpha_min"), 0, 100) / 100.0f;
     g_alphaMax = std::clamp(Wh_GetIntSetting(L"Appearance.alpha_max"), 0, 100) / 100.0f;
     g_taperPower = std::clamp(Wh_GetIntSetting(L"Appearance.taper_power"), 5, 30) / 10.0f;
-
     if (g_widthMax < g_widthMin) std::swap(g_widthMin, g_widthMax);
     if (g_coreWidthMax < g_coreWidthMin) std::swap(g_coreWidthMin, g_coreWidthMax);
     g_smoothIterations = std::clamp(Wh_GetIntSetting(L"Appearance.smooth_iterations"), 0, 4);
-
     g_gradientEnabled = std::clamp(Wh_GetIntSetting(L"Effects.gradient_enabled"), 0, 1);
     {
         PCWSTR value = Wh_GetStringSetting(L"Effects.gradient_tail_color");
@@ -679,7 +655,6 @@ void LoadSettings() {
         g_gradientTailRGB = ParseHexColor(value, parsed) ? parsed : 0x00FF00FF;
         Wh_FreeStringSetting(value);
     }
-
     g_glowEnabled = std::clamp(Wh_GetIntSetting(L"Effects.glow_enabled"), 0, 1);
     {
         PCWSTR value = Wh_GetStringSetting(L"Effects.glow_color");
@@ -689,10 +664,8 @@ void LoadSettings() {
     }
     g_glowWidthFactor = std::clamp(Wh_GetIntSetting(L"Effects.glow_width_factor"), 10, 30) / 10.0f;
     g_glowAlpha = std::clamp(Wh_GetIntSetting(L"Effects.glow_alpha"), 0, 100) / 100.0f;
-
     g_fadeEnabled = std::clamp(Wh_GetIntSetting(L"Behavior.fade_enabled"), 0, 1);
     g_fadeDecay = std::clamp(Wh_GetIntSetting(L"Behavior.fade_decay"), 50, 99) / 100.0f;
-
     {
         PCWSTR value = Wh_GetStringSetting(L"Color.trail_color_mode");
         g_trailColorMode = _wcsicmp(value, L"auto") == 0 ? 1 : 0;
@@ -716,17 +689,14 @@ void LoadSettings() {
         Wh_FreeStringSetting(value);
     }
     g_autoResampleInterval = std::clamp(Wh_GetIntSetting(L"Color.auto_resample_interval"), 0, kAutoResampleIntervalMaxMs);
-
     {
         PCWSTR value = Wh_GetStringSetting(L"Application.app_rules");
         ParseAppRules(value);
         Wh_FreeStringSetting(value);
     }
-
     g_cachedForegroundWindow = nullptr;
     g_cachedAppRule = 0;
     g_renderCache.ReserveForTailLength(g_tailLength);
-
     g_autoColorInitialized = false;
     g_lastAutoColorCursor = nullptr;
     g_lastAutoColorUpdate = 0;
@@ -737,14 +707,11 @@ void LoadSettings() {
 static bool CoversMonitor(HWND hwnd) {
     const LONG_PTR style = GetWindowLongPtrW(hwnd, GWL_STYLE);
     if ((style & WS_MAXIMIZE) != 0 || (style & WS_CAPTION) != 0) return false;
-
     RECT windowRect = {};
     if (!GetWindowRect(hwnd, &windowRect)) return false;
-
     const HMONITOR monitor = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
     MONITORINFO monitorInfo = {sizeof(monitorInfo)};
     if (!GetMonitorInfoW(monitor, &monitorInfo)) return false;
-
     return windowRect.left <= monitorInfo.rcMonitor.left + kFullscreenTolerancePx
         && windowRect.top <= monitorInfo.rcMonitor.top + kFullscreenTolerancePx
         && windowRect.right >= monitorInfo.rcMonitor.right - kFullscreenTolerancePx
@@ -759,19 +726,16 @@ static bool CheckStrongFullscreenSignal(HWND hwnd) {
 
 static bool IsFullscreenCandidate(DWORD now, HWND hwnd) {
     if (!hwnd || hwnd == GetDesktopWindow() || hwnd == GetShellWindow() || IsIconic(hwnd) || !IsWindowVisible(hwnd)) return false;
-
     if (hwnd != g_fullscreenForegroundWindow) {
         g_fullscreenForegroundWindow = hwnd;
         g_lastFullscreenStrongCheck = 0;
         g_fullscreenStrongSignal = false;
         g_fullscreenFalseSamples = 0;
     }
-
     if (now - g_lastFullscreenStrongCheck >= kFullscreenStrongCheckIntervalMs) {
         g_lastFullscreenStrongCheck = now;
         g_fullscreenStrongSignal = CheckStrongFullscreenSignal(hwnd);
     }
-
     return g_fullscreenStrongSignal || CoversMonitor(hwnd);
 }
 
@@ -789,7 +753,6 @@ static bool UpdateFullscreenState(DWORD now, HWND foreground) {
         }
         return true;
     }
-
     if (g_fullscreenSuppressed) {
         if (++g_fullscreenFalseSamples >= kFullscreenExitConfirmSamples) {
             g_fullscreenSuppressed = false;
@@ -802,7 +765,6 @@ static bool UpdateFullscreenState(DWORD now, HWND foreground) {
         }
         return g_fullscreenSuppressed;
     }
-
     g_fullscreenFalseSamples = 0;
     return false;
 }
@@ -810,23 +772,18 @@ static bool UpdateFullscreenState(DWORD now, HWND foreground) {
 bool EnsureBackbuffer(int width, int height, HDC referenceDc) {
     if (width <= 0 || height <= 0 || !referenceDc) return false;
     if (g_backBufferDc && g_backBufferBitmap && width <= g_cachedWidth && height <= g_cachedHeight) return true;
-
     if (!g_backBufferDc) {
         g_backBufferDc = CreateCompatibleDC(referenceDc);
         if (!g_backBufferDc) return false;
     }
-
     const int newWidth = std::max(width, g_cachedWidth);
     const int newHeight = std::max(height, g_cachedHeight);
     ReleaseRenderResources();
-
     HBITMAP bitmap = Create32BitDIB(newWidth, newHeight);
     if (!bitmap) return false;
-
     const HGDIOBJ oldBitmap = SelectObject(g_backBufferDc, bitmap);
     if (!g_originalBitmap) g_originalBitmap = oldBitmap;
     else if (oldBitmap && oldBitmap != g_originalBitmap) DeleteObject(oldBitmap);
-
     g_backBufferBitmap = bitmap;
     g_cachedWidth = newWidth;
     g_cachedHeight = newHeight;
@@ -836,78 +793,41 @@ bool EnsureBackbuffer(int width, int height, HDC referenceDc) {
 bool EnsureD2DResources() {
     if (!g_d2dFactory) return false;
     if (g_renderTarget) return true;
-
     const D2D1_RENDER_TARGET_PROPERTIES properties = D2D1::RenderTargetProperties(
         D2D1_RENDER_TARGET_TYPE_DEFAULT,
         D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED));
-
     HRESULT hr = g_d2dFactory->CreateDCRenderTarget(&properties, &g_renderTarget);
     if (FAILED(hr) || !g_renderTarget) return false;
-
     hr = g_renderTarget->CreateSolidColorBrush(ToColorF(g_currentOuterRGB, kTrailAlpha), &g_outerBrush);
-    if (FAILED(hr)) {
-        ReleaseRenderResources();
-        return false;
-    }
-
+    if (FAILED(hr)) { ReleaseRenderResources(); return false; }
     hr = g_renderTarget->CreateSolidColorBrush(ToColorF(g_currentCoreRGB, kTrailAlpha), &g_coreBrush);
-    if (FAILED(hr)) {
-        ReleaseRenderResources();
-        return false;
-    }
-
+    if (FAILED(hr)) { ReleaseRenderResources(); return false; }
     hr = g_renderTarget->CreateSolidColorBrush(ToColorF(g_glowRGB, g_glowAlpha), &g_glowBrush);
-    if (FAILED(hr)) {
-        ReleaseRenderResources();
-        return false;
-    }
-
+    if (FAILED(hr)) { ReleaseRenderResources(); return false; }
     D2D1_STROKE_STYLE_PROPERTIES strokeProperties = {};
     strokeProperties.startCap = D2D1_CAP_STYLE_ROUND;
     strokeProperties.endCap = D2D1_CAP_STYLE_ROUND;
     strokeProperties.lineJoin = D2D1_LINE_JOIN_ROUND;
     hr = g_d2dFactory->CreateStrokeStyle(strokeProperties, nullptr, 0, &g_strokeStyle);
-    if (FAILED(hr)) {
-        ReleaseRenderResources();
-        return false;
-    }
-
+    if (FAILED(hr)) { ReleaseRenderResources(); return false; }
     return true;
 }
 
 bool EnsureGradientBrush() {
     if (!g_gradientEnabled || !g_renderTarget) return false;
-    if (g_gradientBrush && g_gradientStops
-        && g_gradientHeadCache == g_currentCoreRGB
-        && g_gradientTailCache == g_gradientTailRGB) return true;
-
-    if (g_gradientBrush) {
-        g_gradientBrush->Release();
-        g_gradientBrush = nullptr;
-    }
-    if (g_gradientStops) {
-        g_gradientStops->Release();
-        g_gradientStops = nullptr;
-    }
-
+    if (g_gradientBrush && g_gradientStops && g_gradientHeadCache == g_currentCoreRGB && g_gradientTailCache == g_gradientTailRGB) return true;
+    if (g_gradientBrush) { g_gradientBrush->Release(); g_gradientBrush = nullptr; }
+    if (g_gradientStops) { g_gradientStops->Release(); g_gradientStops = nullptr; }
     D2D1_GRADIENT_STOP stops[2] = {};
     stops[0].position = 0.0f;
     stops[0].color = ToColorF(g_currentCoreRGB, 1.0f);
     stops[1].position = 1.0f;
     stops[1].color = ToColorF(g_gradientTailRGB, 0.15f);
-
-    HRESULT hr = g_renderTarget->CreateGradientStopCollection(
-        stops, 2, D2D1_GAMMA_2_2, D2D1_EXTEND_MODE_CLAMP, &g_gradientStops);
+    HRESULT hr = g_renderTarget->CreateGradientStopCollection(stops, 2, D2D1_GAMMA_2_2, D2D1_EXTEND_MODE_CLAMP, &g_gradientStops);
     if (FAILED(hr)) return false;
-
     const D2D1_LINEAR_GRADIENT_BRUSH_PROPERTIES properties = {};
     hr = g_renderTarget->CreateLinearGradientBrush(properties, g_gradientStops, &g_gradientBrush);
-    if (FAILED(hr)) {
-        g_gradientStops->Release();
-        g_gradientStops = nullptr;
-        return false;
-    }
-
+    if (FAILED(hr)) { g_gradientStops->Release(); g_gradientStops = nullptr; return false; }
     g_gradientHeadCache = g_currentCoreRGB;
     g_gradientTailCache = g_gradientTailRGB;
     return true;
@@ -918,40 +838,28 @@ void SmoothTrail(int iterations) {
     auto& next = g_renderCache.subdivision;
     current.clear();
     next.clear();
-
     for (int i = 0; i < g_historyCount; ++i) {
         const POINT& point = HistoryAt(i);
-        current.push_back(D2D1::Point2F(
-            static_cast<float>(point.x + g_tailOffsetX),
-            static_cast<float>(point.y + g_tailOffsetY)));
+        current.push_back(D2D1::Point2F(static_cast<float>(point.x + g_tailOffsetX), static_cast<float>(point.y + g_tailOffsetY)));
     }
-
     for (int iteration = 0; iteration < iterations && current.size() >= 3; ++iteration) {
         next.clear();
         next.reserve(current.size() * 2);
         next.push_back(current.front());
-
         for (size_t i = 0; i + 1 < current.size(); ++i) {
             const auto& a = current[i];
             const auto& b = current[i + 1];
-            next.push_back(D2D1::Point2F(
-                0.75f * a.x + 0.25f * b.x,
-                0.75f * a.y + 0.25f * b.y));
-            next.push_back(D2D1::Point2F(
-                0.25f * a.x + 0.75f * b.x,
-                0.25f * a.y + 0.75f * b.y));
+            next.push_back(D2D1::Point2F(0.75f * a.x + 0.25f * b.x, 0.75f * a.y + 0.25f * b.y));
+            next.push_back(D2D1::Point2F(0.25f * a.x + 0.75f * b.x, 0.25f * a.y + 0.75f * b.y));
         }
-
         next.push_back(current.back());
         current.swap(next);
     }
-
     g_renderCache.PrepareTaper();
 }
 
 RECT CalculateTrailBounds(float maxHalfWidth) {
     if (g_renderCache.smoothed.empty()) return {0, 0, 0, 0};
-
     float minX = g_renderCache.smoothed.front().x;
     float minY = g_renderCache.smoothed.front().y;
     float maxX = minX;
@@ -962,7 +870,6 @@ RECT CalculateTrailBounds(float maxHalfWidth) {
         maxX = std::max(maxX, point.x);
         maxY = std::max(maxY, point.y);
     }
-
     const float padding = maxHalfWidth + kRenderPadding;
     RECT result = {
         static_cast<LONG>(floorf(minX - padding)),
@@ -979,7 +886,6 @@ static void DrawTrailStroke(ID2D1RenderTarget* target, ID2D1Brush* brush, float 
     const auto& points = g_renderCache.smoothed;
     const auto& taper = g_renderCache.taper;
     if (points.size() < 2 || taper.size() < points.size() || !brush) return;
-
     for (size_t i = 0; i + 1 < points.size(); ++i) {
         const float width = std::max(0.1f, halfWidth * taper[i] * 2.0f);
         target->DrawLine(points[i], points[i + 1], brush, width, g_strokeStyle);
@@ -1001,19 +907,11 @@ void UpdateTrailState(const POINT& point, float velocity) {
     } else if (g_isSmearing) {
         g_lowVelocityFrames = 0;
     }
-
     if (g_isSmearing) {
-        const float target = std::clamp(
-            (velocity - g_stopVelocity) / (g_triggerVelocity * 2.0f),
-            0.0f,
-            1.0f);
+        const float target = std::clamp((velocity - g_stopVelocity) / (g_triggerVelocity * 2.0f), 0.0f, 1.0f);
         g_smoothedSpeedNorm = g_smoothedSpeedNorm * 0.55f + target * 0.45f;
         int effectiveLength = g_tailLength;
-        if (g_speedScaling) {
-            effectiveLength = std::max(
-                2,
-                static_cast<int>(g_tailLength * (0.55f + 0.45f * g_smoothedSpeedNorm)));
-        }
+        if (g_speedScaling) effectiveLength = std::max(2, static_cast<int>(g_tailLength * (0.55f + 0.45f * g_smoothedSpeedNorm)));
         HistoryPushFront(point, effectiveLength);
         while (g_historyCount > g_tailLength) HistoryPopBack();
     } else if (g_fadeEnabled) {
@@ -1029,34 +927,21 @@ void UpdateTrailState(const POINT& point, float velocity) {
     }
 }
 
-struct ColorCandidate {
-    uint32_t rgb;
-    int count;
-};
+struct ColorCandidate { uint32_t rgb; int count; };
 
 static bool ExtractCursorColorCandidates(std::vector<ColorCandidate>& out) {
     out.clear();
-
     CURSORINFO cursorInfo = {sizeof(cursorInfo)};
-    if (!GetCursorInfo(&cursorInfo)
-        || !(cursorInfo.flags & CURSOR_SHOWING)
-        || !cursorInfo.hCursor) return false;
-
+    if (!GetCursorInfo(&cursorInfo) || !(cursorInfo.flags & CURSOR_SHOWING) || !cursorInfo.hCursor) return false;
     ICONINFO iconInfo = {};
     if (!GetIconInfo(cursorInfo.hCursor, &iconInfo)) return false;
-
     const auto cleanup = [&] {
         if (iconInfo.hbmColor) DeleteObject(iconInfo.hbmColor);
         if (iconInfo.hbmMask) DeleteObject(iconInfo.hbmMask);
     };
-
     if (iconInfo.hbmColor) {
         BITMAP bitmap = {};
-        if (GetObject(iconInfo.hbmColor, sizeof(bitmap), &bitmap)
-            && bitmap.bmWidth > 0
-            && bitmap.bmHeight > 0
-            && bitmap.bmWidth <= 256
-            && bitmap.bmHeight <= 256) {
+        if (GetObject(iconInfo.hbmColor, sizeof(bitmap), &bitmap) && bitmap.bmWidth > 0 && bitmap.bmHeight > 0 && bitmap.bmWidth <= 256 && bitmap.bmHeight <= 256) {
             const int width = bitmap.bmWidth;
             const int height = bitmap.bmHeight;
             BITMAPINFO info = {};
@@ -1066,28 +951,22 @@ static bool ExtractCursorColorCandidates(std::vector<ColorCandidate>& out) {
             info.bmiHeader.biPlanes = 1;
             info.bmiHeader.biBitCount = 32;
             info.bmiHeader.biCompression = BI_RGB;
-
             std::vector<uint32_t> pixels(static_cast<size_t>(width) * height);
             HDC screen = GetScreenDC();
             if (screen && GetDIBits(screen, iconInfo.hbmColor, 0, height, pixels.data(), &info, DIB_RGB_COLORS) == height) {
                 std::unordered_map<uint32_t, int> histogram;
                 histogram.reserve(64);
                 for (uint32_t pixel : pixels) {
-                    if (((pixel >> 24) & 0xFF) >= kCursorAlphaThreshold) {
-                        ++histogram[pixel & 0x00FFFFFF];
-                    }
+                    if (((pixel >> 24) & 0xFF) >= kCursorAlphaThreshold) ++histogram[pixel & 0x00FFFFFF];
                 }
                 out.reserve(histogram.size());
                 for (const auto& entry : histogram) out.push_back({entry.first, entry.second});
-                std::sort(out.begin(), out.end(), [](const ColorCandidate& a, const ColorCandidate& b) {
-                    return a.count > b.count;
-                });
+                std::sort(out.begin(), out.end(), [](const ColorCandidate& a, const ColorCandidate& b) { return a.count > b.count; });
                 cleanup();
                 return !out.empty();
             }
         }
     }
-
     cleanup();
     return false;
 }
@@ -1117,13 +996,8 @@ static float SampleBackgroundLuminance(POINT center) {
     const int size = kBackgroundSampleRadius * 2 + 1;
     HDC screen = GetScreenDC();
     if (!screen) return 0.5f;
-
-    if (g_backgroundSamplerSize != size
-        || !g_backgroundSamplerDc
-        || !g_backgroundSamplerBitmap
-        || !g_backgroundSamplerPixels) {
+    if (g_backgroundSamplerSize != size || !g_backgroundSamplerDc || !g_backgroundSamplerBitmap || !g_backgroundSamplerPixels) {
         ReleaseBackgroundSampler();
-
         BITMAPINFO info = {};
         info.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
         info.bmiHeader.biWidth = size;
@@ -1131,36 +1005,16 @@ static float SampleBackgroundLuminance(POINT center) {
         info.bmiHeader.biPlanes = 1;
         info.bmiHeader.biBitCount = 32;
         info.bmiHeader.biCompression = BI_RGB;
-
         void* bits = nullptr;
         g_backgroundSamplerBitmap = CreateDIBSection(nullptr, &info, DIB_RGB_COLORS, &bits, nullptr, 0);
-        if (!g_backgroundSamplerBitmap || !bits) {
-            ReleaseBackgroundSampler();
-            return 0.5f;
-        }
-
+        if (!g_backgroundSamplerBitmap || !bits) { ReleaseBackgroundSampler(); return 0.5f; }
         g_backgroundSamplerPixels = static_cast<uint32_t*>(bits);
         g_backgroundSamplerDc = CreateCompatibleDC(screen);
-        if (!g_backgroundSamplerDc) {
-            ReleaseBackgroundSampler();
-            return 0.5f;
-        }
-
+        if (!g_backgroundSamplerDc) { ReleaseBackgroundSampler(); return 0.5f; }
         g_backgroundSamplerOriginal = SelectObject(g_backgroundSamplerDc, g_backgroundSamplerBitmap);
         g_backgroundSamplerSize = size;
     }
-
-    if (!BitBlt(
-            g_backgroundSamplerDc,
-            0,
-            0,
-            size,
-            size,
-            screen,
-            center.x - kBackgroundSampleRadius,
-            center.y - kBackgroundSampleRadius,
-            SRCCOPY)) return 0.5f;
-
+    if (!BitBlt(g_backgroundSamplerDc, 0, 0, size, size, screen, center.x - kBackgroundSampleRadius, center.y - kBackgroundSampleRadius, SRCCOPY)) return 0.5f;
     double sum = 0.0;
     int count = 0;
     for (int yIndex = 0; yIndex < kBackgroundSampleGrid; ++yIndex) {
@@ -1168,14 +1022,10 @@ static float SampleBackgroundLuminance(POINT center) {
         for (int xIndex = 0; xIndex < kBackgroundSampleGrid; ++xIndex) {
             const int x = (size - 1) * xIndex / (kBackgroundSampleGrid - 1);
             const uint32_t pixel = g_backgroundSamplerPixels[y * size + x];
-            sum += RgbLuminance(
-                static_cast<uint8_t>((pixel >> 16) & 0xFF),
-                static_cast<uint8_t>((pixel >> 8) & 0xFF),
-                static_cast<uint8_t>(pixel & 0xFF));
+            sum += RgbLuminance(static_cast<uint8_t>((pixel >> 16) & 0xFF), static_cast<uint8_t>((pixel >> 8) & 0xFF), static_cast<uint8_t>(pixel & 0xFF));
             ++count;
         }
     }
-
     return count ? static_cast<float>(sum / count) : 0.5f;
 }
 
@@ -1190,33 +1040,25 @@ static void UpdateTrailColorIfNeeded(DWORD now) {
         g_currentOuterRGB = ResolveOutlineColor(g_currentCoreRGB);
         return;
     }
-
     CURSORINFO cursorInfo = {sizeof(cursorInfo)};
     const bool cursorInfoAvailable = GetCursorInfo(&cursorInfo);
     bool resample = !g_autoColorInitialized;
     if (!resample && cursorInfoAvailable) {
-        if (g_autoResampleInterval > 0) {
-            resample = now - g_lastAutoColorUpdate >= static_cast<DWORD>(g_autoResampleInterval);
-        } else if (cursorInfo.hCursor != g_lastAutoColorCursor) {
-            resample = now - g_lastAutoColorUpdate >= kMinCursorChangeResampleIntervalMs;
-        }
+        if (g_autoResampleInterval > 0) resample = now - g_lastAutoColorUpdate >= static_cast<DWORD>(g_autoResampleInterval);
+        else if (cursorInfo.hCursor != g_lastAutoColorCursor) resample = now - g_lastAutoColorUpdate >= kMinCursorChangeResampleIntervalMs;
     }
     if (!resample) return;
-
     if (cursorInfoAvailable) g_lastAutoColorCursor = cursorInfo.hCursor;
     g_lastAutoColorUpdate = now;
     g_autoColorInitialized = true;
-
     POINT point = {};
     if (!GetCursorPos(&point)) return;
-
     std::vector<ColorCandidate> candidates;
     if (!ExtractCursorColorCandidates(candidates) || candidates.empty()) {
         g_currentCoreRGB = kFallbackCoreColor;
         g_currentOuterRGB = ResolveOutlineColor(g_currentCoreRGB);
         return;
     }
-
     const float background = SampleBackgroundLuminance(point);
     for (const auto& candidate : candidates) {
         if (ContrastRatio(RgbLuminance(candidate.rgb), background) >= kMinColorContrast) {
@@ -1225,60 +1067,39 @@ static void UpdateTrailColorIfNeeded(DWORD now) {
             return;
         }
     }
-
     g_currentCoreRGB = kFallbackCoreColor;
     g_currentOuterRGB = ResolveOutlineColor(g_currentCoreRGB);
 }
 
 bool RenderTrail(HWND hwnd) {
     if (g_historyCount < 2) return false;
-
     SmoothTrail(g_smoothIterations);
     if (g_renderCache.smoothed.size() < 2) return false;
-
-    const float speed = g_speedScaling
-        ? (g_isSmearing ? g_smoothedSpeedNorm : g_frozenSpeedNorm)
-        : 1.0f;
+    const float speed = g_speedScaling ? (g_isSmearing ? g_smoothedSpeedNorm : g_frozenSpeedNorm) : 1.0f;
     const float outerHalf = g_widthMin + (g_widthMax - g_widthMin) * speed;
     const float coreHalf = g_coreWidthMin + (g_coreWidthMax - g_coreWidthMin) * speed;
     const float alphaScale = g_alphaMin + (g_alphaMax - g_alphaMin) * speed;
     const float alpha = kTrailAlpha * alphaScale * g_fadeAlpha;
     if (alpha < 0.02f) return false;
-
     const float boundsHalf = g_glowEnabled ? outerHalf * std::max(1.0f, g_glowWidthFactor) : outerHalf;
     const RECT bounds = CalculateTrailBounds(boundsHalf);
     const int width = bounds.right - bounds.left;
     const int height = bounds.bottom - bounds.top;
-
     HDC screen = GetScreenDC();
     if (!screen || !EnsureBackbuffer(width, height, screen) || !EnsureD2DResources()) return false;
-
     if (!g_dcBound) {
         const RECT bindRect = {0, 0, g_cachedWidth, g_cachedHeight};
         if (FAILED(g_renderTarget->BindDC(g_backBufferDc, &bindRect))) return false;
         g_dcBound = true;
     }
-
     g_renderTarget->BeginDraw();
     g_renderTarget->Clear(D2D1::ColorF(0, 0, 0, 0));
-    g_renderTarget->SetTransform(D2D1::Matrix3x2F::Translation(
-        -static_cast<float>(bounds.left),
-        -static_cast<float>(bounds.top)));
-
+    g_renderTarget->SetTransform(D2D1::Matrix3x2F::Translation(-static_cast<float>(bounds.left), -static_cast<float>(bounds.top)));
     g_outerBrush->SetColor(ToColorF(g_currentOuterRGB, alpha));
     g_glowBrush->SetColor(ToColorF(g_glowRGB, g_glowAlpha * alpha));
     g_coreBrush->SetColor(ToColorF(g_currentCoreRGB, std::min(1.0f, alpha * 1.02f)));
-
-    if (g_glowEnabled) {
-        DrawTrailStroke(
-            g_renderTarget,
-            g_glowBrush,
-            outerHalf * std::max(1.0f, g_glowWidthFactor),
-            true);
-    }
-
+    if (g_glowEnabled) DrawTrailStroke(g_renderTarget, g_glowBrush, outerHalf * std::max(1.0f, g_glowWidthFactor), true);
     DrawTrailStroke(g_renderTarget, g_outerBrush, outerHalf, true);
-
     ID2D1Brush* coreBrush = g_coreBrush;
     if (g_gradientEnabled && EnsureGradientBrush()) {
         g_gradientBrush->SetStartPoint(g_renderCache.smoothed.front());
@@ -1287,7 +1108,6 @@ bool RenderTrail(HWND hwnd) {
         coreBrush = g_gradientBrush;
     }
     DrawTrailStroke(g_renderTarget, coreBrush, coreHalf, true);
-
     g_renderTarget->SetTransform(D2D1::Matrix3x2F::Identity());
     const HRESULT hr = g_renderTarget->EndDraw();
     if (hr == D2DERR_RECREATE_TARGET) {
@@ -1295,31 +1115,19 @@ bool RenderTrail(HWND hwnd) {
         return false;
     }
     if (FAILED(hr)) return false;
-
     BLENDFUNCTION blend = {};
     blend.BlendOp = AC_SRC_OVER;
     blend.SourceConstantAlpha = 255;
     blend.AlphaFormat = AC_SRC_ALPHA;
-    const POINT position = {bounds.left, bounds.top};
-    const SIZE size = {width, height};
-    const POINT source = {0, 0};
-
-    return UpdateLayeredWindow(
-        hwnd,
-        screen,
-        &position,
-        &size,
-        g_backBufferDc,
-        &source,
-        0,
-        &blend,
-        ULW_ALPHA) != FALSE;
+    POINT position = {bounds.left, bounds.top};
+    SIZE size = {width, height};
+    POINT source = {0, 0};
+    return UpdateLayeredWindow(hwnd, screen, &position, &size, g_backBufferDc, &source, 0, &blend, ULW_ALPHA) != FALSE;
 }
 
 bool SmearFrame(HWND hwnd, DWORD now, bool renderFrame) {
     POINT point = {};
     if (!GetCursorPos(&point)) return false;
-
     const HWND foreground = GetForegroundWindow();
     const int appRule = CheckAppRuleCached(foreground);
     if (appRule < 0) {
@@ -1331,21 +1139,15 @@ bool SmearFrame(HWND hwnd, DWORD now, bool renderFrame) {
         return false;
     }
     if (appRule == 0 && UpdateFullscreenState(now, foreground)) return false;
-
     const bool wasSmearing = g_isSmearing;
     const int previousHistoryCount = g_historyCount;
     const int dx = point.x - g_lastPos.x;
     const int dy = point.y - g_lastPos.y;
     const float velocity = sqrtf(static_cast<float>(dx * dx + dy * dy));
     g_lastPos = point;
-
     UpdateTrailState(point, velocity);
     if (g_isSmearing || g_historyCount >= 2) UpdateTrailColorIfNeeded(now);
-
-    const bool stateChanged =
-        wasSmearing != g_isSmearing
-        || (previousHistoryCount >= 2) != (g_historyCount >= 2);
-
+    const bool stateChanged = wasSmearing != g_isSmearing || (previousHistoryCount >= 2) != (g_historyCount >= 2);
     if (g_historyCount < 2) {
         HideOverlay();
         return false;
@@ -1355,7 +1157,6 @@ bool SmearFrame(HWND hwnd, DWORD now, bool renderFrame) {
         HideOverlay();
         return false;
     }
-
     ShowOverlay();
     return true;
 }
@@ -1392,7 +1193,6 @@ static bool ArmFrameTimer(HANDLE timer, LONGLONG deadline, LONGLONG frequency) {
     const LONGLONG now = QpcNow();
     LONGLONG ticks = deadline - now;
     if (ticks < 1) ticks = 1;
-
     const LONGLONG due100ns = std::max<LONGLONG>(1, ticks * 10000000LL / frequency);
     LARGE_INTEGER due = {};
     due.QuadPart = -due100ns;
@@ -1406,28 +1206,23 @@ static LONGLONG FrameIntervalTicks(LONGLONG frequency, int frameRate) {
 DWORD WINAPI OverlayThreadProc(LPVOID) {
     const HRESULT coResult = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
     if (FAILED(coResult)) return 0;
-
     SetThreadDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
-
     LARGE_INTEGER qpcFrequency = {};
     if (!QueryPerformanceFrequency(&qpcFrequency) || qpcFrequency.QuadPart <= 0) {
         CoUninitialize();
         return 0;
     }
-
     HRESULT hr = D2D1CreateFactory(D2D1_FACTORY_TYPE_SINGLE_THREADED, &g_d2dFactory);
     if (FAILED(hr) || !g_d2dFactory) {
         CoUninitialize();
         return 0;
     }
-
     HINSTANCE instance = GetModuleHandle(nullptr);
     const wchar_t className[] = L"SmearFrameOverlayClass";
     WNDCLASSW windowClass = {};
     windowClass.lpfnWndProc = OverlayWndProc;
     windowClass.hInstance = instance;
     windowClass.lpszClassName = className;
-
     const ATOM atom = RegisterClassW(&windowClass);
     if (!atom) {
         g_d2dFactory->Release();
@@ -1435,7 +1230,6 @@ DWORD WINAPI OverlayThreadProc(LPVOID) {
         CoUninitialize();
         return 0;
     }
-
     HWND hwnd = CreateWindowExW(
         WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE,
         className,
@@ -1449,7 +1243,6 @@ DWORD WINAPI OverlayThreadProc(LPVOID) {
         nullptr,
         instance,
         nullptr);
-
     if (!hwnd) {
         UnregisterClassW(className, instance);
         g_d2dFactory->Release();
@@ -1457,7 +1250,6 @@ DWORD WINAPI OverlayThreadProc(LPVOID) {
         CoUninitialize();
         return 0;
     }
-
     g_overlayHwnd.store(hwnd, std::memory_order_release);
     HideOverlay();
     GetCursorPos(&g_lastPos);
@@ -1465,14 +1257,8 @@ DWORD WINAPI OverlayThreadProc(LPVOID) {
     g_lastFullscreenStrongCheck = 0;
     g_fullscreenStrongSignal = false;
     g_fullscreenSuppressed = false;
-
     if (g_settingsDirty.exchange(false, std::memory_order_acq_rel)) LoadSettings();
-
-    HANDLE frameTimer = CreateWaitableTimerExW(
-        nullptr,
-        nullptr,
-        CREATE_WAITABLE_TIMER_HIGH_RESOLUTION,
-        TIMER_ALL_ACCESS);
+    HANDLE frameTimer = CreateWaitableTimerExW(nullptr, nullptr, CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, TIMER_ALL_ACCESS);
     if (!frameTimer) frameTimer = CreateWaitableTimerW(nullptr, FALSE, nullptr);
     if (!frameTimer) {
         DestroyWindow(hwnd);
@@ -1483,7 +1269,6 @@ DWORD WINAPI OverlayThreadProc(LPVOID) {
         CoUninitialize();
         return 0;
     }
-
     const LONGLONG simulationTicks = FrameIntervalTicks(qpcFrequency.QuadPart, kTargetFrameRate);
     const LONGLONG idleTicks = FrameIntervalTicks(qpcFrequency.QuadPart, kIdleFrameRate);
     const LONGLONG activeRenderTicks = FrameIntervalTicks(qpcFrequency.QuadPart, kActiveRenderFrameRate);
@@ -1491,36 +1276,24 @@ DWORD WINAPI OverlayThreadProc(LPVOID) {
     LONGLONG nextRenderDeadline = QpcNow();
     MSG message = {};
     bool running = true;
-
     while (running) {
         if (g_settingsDirty.exchange(false, std::memory_order_acq_rel)) LoadSettings();
-
         const bool idle = !g_isSmearing && g_historyCount < 2;
         const LONGLONG simulationInterval = idle ? idleTicks : simulationTicks;
         const LONGLONG sampleDeadline = QpcNow() + simulationInterval;
         if (!ArmFrameTimer(frameTimer, sampleDeadline, qpcFrequency.QuadPart)) break;
-
         HANDLE handles[] = {g_stopEvent, frameTimer};
-        const DWORD waitResult = MsgWaitForMultipleObjectsEx(
-            ARRAYSIZE(handles),
-            handles,
-            INFINITE,
-            QS_ALLINPUT,
-            MWMO_INPUTAVAILABLE);
-
+        const DWORD waitResult = MsgWaitForMultipleObjectsEx(ARRAYSIZE(handles), handles, INFINITE, QS_ALLINPUT, MWMO_INPUTAVAILABLE);
         if (waitResult == WAIT_OBJECT_0) {
             running = false;
             continue;
         }
-
         if (waitResult == WAIT_OBJECT_0 + 1) {
             const LONGLONG sampleNow = QpcNow();
-            const bool renderFrame =
-                (g_isSmearing || g_historyCount >= 2) && sampleNow >= nextRenderDeadline;
+            const bool renderFrame = (g_isSmearing || g_historyCount >= 2) && sampleNow >= nextRenderDeadline;
             const bool rendered = SmearFrame(hwnd, GetTickCount(), renderFrame);
             const bool active = g_isSmearing;
             const bool fading = !active && g_historyCount >= 2;
-
             if (active || fading) {
                 const LONGLONG interval = active ? activeRenderTicks : fadeRenderTicks;
                 if (rendered || sampleNow >= nextRenderDeadline) nextRenderDeadline = sampleNow + interval;
@@ -1529,7 +1302,6 @@ DWORD WINAPI OverlayThreadProc(LPVOID) {
             }
             continue;
         }
-
         if (waitResult == WAIT_OBJECT_0 + ARRAYSIZE(handles)) {
             while (PeekMessageW(&message, nullptr, 0, 0, PM_REMOVE)) {
                 if (message.message == WM_QUIT) {
@@ -1541,22 +1313,18 @@ DWORD WINAPI OverlayThreadProc(LPVOID) {
             }
             continue;
         }
-
         break;
     }
-
     CancelWaitableTimer(frameTimer);
     CloseHandle(frameTimer);
     HideOverlay();
     ReleaseBackbuffer();
     ReleaseBackgroundSampler();
     ReleaseScreenDC();
-
     if (g_d2dFactory) {
         g_d2dFactory->Release();
         g_d2dFactory = nullptr;
     }
-
     DestroyWindow(hwnd);
     g_overlayHwnd.store(nullptr, std::memory_order_release);
     UnregisterClassW(className, instance);
@@ -1568,7 +1336,6 @@ BOOL WhTool_ModInit() {
     LoadSettings();
     g_stopEvent = CreateEventW(nullptr, TRUE, FALSE, nullptr);
     if (!g_stopEvent) return FALSE;
-
     g_threadHandle = CreateThread(nullptr, 0, OverlayThreadProc, nullptr, 0, nullptr);
     if (!g_threadHandle) {
         CloseHandle(g_stopEvent);
@@ -1621,10 +1388,7 @@ void WINAPI EntryPoint_Hook() {
 
 BOOL Wh_ModInit() {
     DWORD sessionId;
-    if (ProcessIdToSessionId(GetCurrentProcessId(), &sessionId) && sessionId == 0) {
-        return FALSE;
-    }
-
+    if (ProcessIdToSessionId(GetCurrentProcessId(), &sessionId) && sessionId == 0) return FALSE;
     bool isExcluded = false;
     bool isToolModProcess = false;
     bool isCurrentToolModProcess = false;
@@ -1634,7 +1398,6 @@ BOOL Wh_ModInit() {
         Wh_Log(L"CommandLineToArgvW failed");
         return FALSE;
     }
-
     for (int i = 1; i < argc; i++) {
         if (wcscmp(argv[i], L"-service") == 0
             || wcscmp(argv[i], L"-service-start") == 0
@@ -1643,35 +1406,26 @@ BOOL Wh_ModInit() {
             break;
         }
     }
-
     for (int i = 1; i < argc - 1; i++) {
         if (wcscmp(argv[i], L"-tool-mod") == 0) {
             isToolModProcess = true;
-            if (wcscmp(argv[i + 1], WH_MOD_ID) == 0) {
-                isCurrentToolModProcess = true;
-            }
+            if (wcscmp(argv[i + 1], WH_MOD_ID) == 0) isCurrentToolModProcess = true;
             break;
         }
     }
-
     LocalFree(argv);
-
     if (isExcluded) return FALSE;
-
     if (isCurrentToolModProcess) {
         g_toolModProcessMutex = CreateMutex(nullptr, TRUE, L"windhawk-tool-mod_" WH_MOD_ID);
         if (!g_toolModProcessMutex) {
             Wh_Log(L"CreateMutex failed");
             ExitProcess(1);
         }
-
         if (GetLastError() == ERROR_ALREADY_EXISTS) {
             Wh_Log(L"Tool mod already running (%s)", WH_MOD_ID);
             ExitProcess(1);
         }
-
         if (!WhTool_ModInit()) ExitProcess(1);
-
         IMAGE_DOS_HEADER* dosHeader = (IMAGE_DOS_HEADER*)GetModuleHandle(nullptr);
         IMAGE_NT_HEADERS* ntHeaders = (IMAGE_NT_HEADERS*)((BYTE*)dosHeader + dosHeader->e_lfanew);
         DWORD entryPointRVA = ntHeaders->OptionalHeader.AddressOfEntryPoint;
@@ -1679,16 +1433,13 @@ BOOL Wh_ModInit() {
         Wh_SetFunctionHook(entryPoint, (void*)EntryPoint_Hook, nullptr);
         return TRUE;
     }
-
     if (isToolModProcess) return FALSE;
-
     g_isToolModProcessLauncher = true;
     return TRUE;
 }
 
 void Wh_ModAfterInit() {
     if (!g_isToolModProcessLauncher) return;
-
     WCHAR currentProcessPath[MAX_PATH];
     switch (GetModuleFileName(nullptr, currentProcessPath, ARRAYSIZE(currentProcessPath))) {
         case 0:
@@ -1696,12 +1447,10 @@ void Wh_ModAfterInit() {
             Wh_Log(L"GetModuleFileName failed");
             return;
     }
-
     WCHAR commandLine[
         MAX_PATH + 2 +
         (sizeof(L" -tool-mod \"" WH_MOD_ID "\"") / sizeof(WCHAR)) - 1];
     swprintf_s(commandLine, L"\"%s\" -tool-mod \"%s\"", currentProcessPath, WH_MOD_ID);
-
     HMODULE kernelModule = GetModuleHandle(L"kernelbase.dll");
     if (!kernelModule) {
         kernelModule = GetModuleHandle(L"kernel32.dll");
@@ -1710,7 +1459,6 @@ void Wh_ModAfterInit() {
             return;
         }
     }
-
     using CreateProcessInternalW_t = BOOL(WINAPI*)(
         HANDLE hUserToken,
         LPCWSTR lpApplicationName,
@@ -1724,14 +1472,12 @@ void Wh_ModAfterInit() {
         LPSTARTUPINFOW lpStartupInfo,
         LPPROCESS_INFORMATION lpProcessInformation,
         PHANDLE hRestrictedUserToken);
-
     CreateProcessInternalW_t pCreateProcessInternalW =
         (CreateProcessInternalW_t)GetProcAddress(kernelModule, "CreateProcessInternalW");
     if (!pCreateProcessInternalW) {
         Wh_Log(L"No CreateProcessInternalW");
         return;
     }
-
     STARTUPINFO si{
         .cb = sizeof(STARTUPINFO),
         .dwFlags = STARTF_FORCEOFFFEEDBACK,
@@ -1753,7 +1499,6 @@ void Wh_ModAfterInit() {
         Wh_Log(L"CreateProcess failed");
         return;
     }
-
     CloseHandle(pi.hProcess);
     CloseHandle(pi.hThread);
 }
