@@ -650,7 +650,7 @@ void LoadSettings() {
 
 static bool CoversMonitor(HWND hwnd) {
     const LONG_PTR style = GetWindowLongPtrW(hwnd, GWL_STYLE);
-    if ((style & WS_MAXIMIZE) != 0 || (style & WS_CAPTION) != 0) return false;
+    if ((style & WS_CAPTION) != 0) return false;
     RECT windowRect = {};
     if (!GetWindowRect(hwnd, &windowRect)) return false;
     const HMONITOR monitor = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
@@ -792,7 +792,7 @@ bool EnsureGradientBrush() {
     stops[0].position = 0.0f;
     stops[0].color = ToColorF(g_currentCoreRGB, 1.0f);
     stops[1].position = 1.0f;
-    stops[1].color = ToColorF(g_gradientTailRGB, 0.15f);
+    stops[1].color = ToColorF(g_gradientTailRGB, 1.0f);
     HRESULT hr = g_renderTarget->CreateGradientStopCollection(stops, 2, D2D1_GAMMA_2_2, D2D1_EXTEND_MODE_CLAMP, &g_gradientStops);
     if (FAILED(hr)) return false;
     const D2D1_LINEAR_GRADIENT_BRUSH_PROPERTIES properties = {};
