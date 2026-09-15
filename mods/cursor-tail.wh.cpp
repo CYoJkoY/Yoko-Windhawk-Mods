@@ -48,11 +48,11 @@ Lines beginning with `#` are comments. Executable names are matched case-insensi
 
 ## Fullscreen behavior
 
-The trail is suppressed when the foreground application reports a D3D fullscreen state or when a borderless, captionless window covers its monitor. Leaving fullscreen must remain stable for several samples before the trail is shown again, which reduces flicker during application transitions.
+The trail is suppressed when the foreground application reports a D3D fullscreen state or when a borderless, captionless window covers its monitor. Leaving fullscreen must remain stable for 500 ms before the trail is shown again, which reduces flicker during application transitions.
 
 ## Performance
 
-Cursor state is sampled at 125 Hz while the trail is active and backs off to 30 Hz when the trail is fully idle. Layered-window submission is paced separately at 60 FPS while actively moving and 30 FPS while fading. The back buffer and Direct2D resources are reused between frames and resized only when the required trail bounds grow beyond the current buffer.
+Cursor state is sampled at 125 Hz while the trail is active and backs off to 30 Hz when the trail is fully idle. Layered-window submission is paced separately at 60 FPS while actively moving and 30 FPS while fading. Background luminance sampling is additionally limited by both time and cursor travel distance so repeated screen captures are avoided during short, fast sampling intervals. The back buffer and Direct2D resources are reused between frames and resized only when the required trail bounds grow beyond the current buffer.
 
 ## Attribution
 
@@ -249,7 +249,7 @@ constexpr int kIdleFrameRate = 30;
 constexpr int kActiveRenderFrameRate = 60;
 constexpr int kFadeRenderFrameRate = 30;
 constexpr DWORD kFullscreenStrongCheckIntervalMs = 100;
-constexpr int kFullscreenExitConfirmSamples = 3;
+constexpr DWORD kFullscreenExitConfirmMs = 500;
 constexpr LONG kFullscreenTolerancePx = 2;
 constexpr int kMaxTailLength = 64;
 constexpr int kHistoryCapacity = kMaxTailLength;
@@ -260,6 +260,8 @@ constexpr DWORD kMinCursorChangeResampleIntervalMs = 100;
 constexpr int kAutoResampleIntervalMaxMs = 10000;
 constexpr int kBackgroundSampleRadius = 24;
 constexpr int kBackgroundSampleGrid = 5;
+constexpr DWORD kBackgroundResampleIntervalMs = 50;
+constexpr LONG kBackgroundResampleDistancePx = 20;
 constexpr float kMinColorContrast = 3.0f;
 constexpr uint8_t kCursorAlphaThreshold = 96;
 constexpr uint32_t kFallbackCoreColor = 0x00FFFFFF;
@@ -340,7 +342,7 @@ HWND g_cachedForegroundWindow = nullptr;
 int g_cachedAppRule = 0;
 
 bool g_fullscreenSuppressed = false;
-int g_fullscreenFalseSamples = 0;
+DWORD g_fullscreenFalseSince = 0;
 HWND g_fullscreenForegroundWindow = nullptr;
 DWORD g_lastFullscreenStrongCheck = 0;
 bool g_fullscreenStrongSignal = false;
@@ -499,12 +501,11 @@ void ShowOverlay() {
 
 void HistoryClear() { g_historyHead = 0; g_historyCount = 0; }
 
-void HistoryPushFront(const POINT& point, int maxLength) {
+void HistoryPushFront(const POINT& point) {
     if (g_historyCount == kHistoryCapacity) --g_historyCount;
     g_historyHead = (g_historyHead - 1 + kHistoryCapacity) % kHistoryCapacity;
     g_history[g_historyHead] = point;
     ++g_historyCount;
-    if (g_historyCount > maxLength) g_historyCount = maxLength;
 }
 
 void HistoryPopBack() { if (g_historyCount > 0) --g_historyCount; }
@@ -674,7 +675,7 @@ static bool IsFullscreenCandidate(DWORD now, HWND hwnd) {
         g_fullscreenForegroundWindow = hwnd;
         g_lastFullscreenStrongCheck = 0;
         g_fullscreenStrongSignal = false;
-        g_fullscreenFalseSamples = 0;
+        g_fullscreenFalseSince = 0;
     }
     if (now - g_lastFullscreenStrongCheck >= kFullscreenStrongCheckIntervalMs) {
         g_lastFullscreenStrongCheck = now;
@@ -686,7 +687,7 @@ static bool IsFullscreenCandidate(DWORD now, HWND hwnd) {
 static bool UpdateFullscreenState(DWORD now, HWND foreground) {
     const bool candidate = IsFullscreenCandidate(now, foreground);
     if (candidate) {
-        g_fullscreenFalseSamples = 0;
+        g_fullscreenFalseSince = 0;
         if (!g_fullscreenSuppressed) {
             g_fullscreenSuppressed = true;
             HistoryClear();
@@ -698,9 +699,10 @@ static bool UpdateFullscreenState(DWORD now, HWND foreground) {
         return true;
     }
     if (g_fullscreenSuppressed) {
-        if (++g_fullscreenFalseSamples >= kFullscreenExitConfirmSamples) {
+        if (g_fullscreenFalseSince == 0) g_fullscreenFalseSince = now;
+        if (now - g_fullscreenFalseSince >= kFullscreenExitConfirmMs) {
             g_fullscreenSuppressed = false;
-            g_fullscreenFalseSamples = 0;
+            g_fullscreenFalseSince = 0;
             HistoryClear();
             g_isSmearing = false;
             g_lowVelocityFrames = 0;
@@ -709,7 +711,7 @@ static bool UpdateFullscreenState(DWORD now, HWND foreground) {
         }
         return g_fullscreenSuppressed;
     }
-    g_fullscreenFalseSamples = 0;
+    g_fullscreenFalseSince = 0;
     return false;
 }
 
@@ -803,12 +805,13 @@ bool EnsureGradientBrush() {
     return true;
 }
 
-void SmoothTrail(int iterations) {
+void SmoothTrail(int iterations, int renderLength) {
     auto& current = g_renderCache.smoothed;
     auto& next = g_renderCache.subdivision;
     current.clear();
     next.clear();
-    for (int i = 0; i < g_historyCount; ++i) {
+    const int pointCount = std::min(g_historyCount, std::max(renderLength, 2));
+    for (int i = 0; i < pointCount; ++i) {
         const POINT& point = HistoryAt(i);
         current.push_back(D2D1::Point2F(static_cast<float>(point.x + g_tailOffsetX), static_cast<float>(point.y + g_tailOffsetY)));
     }
@@ -863,6 +866,11 @@ static void DrawTrailStroke(ID2D1RenderTarget* target, ID2D1Brush* brush, float 
     if (drawHead) target->FillEllipse(D2D1::Ellipse(points.front(), halfWidth, halfWidth), brush);
 }
 
+static int GetEffectiveTailLength(float speedNorm) {
+    if (!g_speedScaling) return g_tailLength;
+    return std::max(2, static_cast<int>(g_tailLength * (0.55f + 0.45f * std::clamp(speedNorm, 0.0f, 1.0f))));
+}
+
 void UpdateTrailState(const POINT& point, float velocity) {
     if (velocity > g_triggerVelocity && !g_isSmearing) {
         g_isSmearing = true;
@@ -880,9 +888,7 @@ void UpdateTrailState(const POINT& point, float velocity) {
     if (g_isSmearing) {
         const float target = std::clamp((velocity - g_stopVelocity) / (g_triggerVelocity * 2.0f), 0.0f, 1.0f);
         g_smoothedSpeedNorm = g_smoothedSpeedNorm * 0.55f + target * 0.45f;
-        int effectiveLength = g_tailLength;
-        if (g_speedScaling) effectiveLength = std::max(2, static_cast<int>(g_tailLength * (0.55f + 0.45f * g_smoothedSpeedNorm)));
-        HistoryPushFront(point, effectiveLength);
+        HistoryPushFront(point);
         while (g_historyCount > g_tailLength) HistoryPopBack();
     } else if (g_fadeEnabled) {
         g_fadeAlpha *= g_fadeDecay;
@@ -980,6 +986,10 @@ HBITMAP g_backgroundSamplerBitmap = nullptr;
 HGDIOBJ g_backgroundSamplerOriginal = nullptr;
 uint32_t* g_backgroundSamplerPixels = nullptr;
 int g_backgroundSamplerSize = 0;
+bool g_backgroundLuminanceValid = false;
+POINT g_backgroundLuminanceCenter = {0, 0};
+DWORD g_backgroundLuminanceUpdated = 0;
+float g_backgroundLuminance = 0.5f;
 
 static void ReleaseBackgroundSampler() {
     if (g_backgroundSamplerDc) {
@@ -994,12 +1004,20 @@ static void ReleaseBackgroundSampler() {
     g_backgroundSamplerOriginal = nullptr;
     g_backgroundSamplerPixels = nullptr;
     g_backgroundSamplerSize = 0;
+    g_backgroundLuminanceValid = false;
 }
 
-static float SampleBackgroundLuminance(POINT center) {
+static float SampleBackgroundLuminance(DWORD now, POINT center) {
+    if (g_backgroundLuminanceValid) {
+        const LONG dx = center.x - g_backgroundLuminanceCenter.x;
+        const LONG dy = center.y - g_backgroundLuminanceCenter.y;
+        const bool movedFarEnough = dx * dx + dy * dy >= kBackgroundResampleDistancePx * kBackgroundResampleDistancePx;
+        if (!movedFarEnough && now - g_backgroundLuminanceUpdated < kBackgroundResampleIntervalMs) return g_backgroundLuminance;
+    }
+
     const int size = kBackgroundSampleRadius * 2 + 1;
     HDC screen = GetScreenDC();
-    if (!screen) return 0.5f;
+    if (!screen) return g_backgroundLuminanceValid ? g_backgroundLuminance : 0.5f;
     if (g_backgroundSamplerSize != size || !g_backgroundSamplerDc || !g_backgroundSamplerBitmap || !g_backgroundSamplerPixels) {
         ReleaseBackgroundSampler();
         BITMAPINFO info = {};
@@ -1011,14 +1029,14 @@ static float SampleBackgroundLuminance(POINT center) {
         info.bmiHeader.biCompression = BI_RGB;
         void* bits = nullptr;
         g_backgroundSamplerBitmap = CreateDIBSection(nullptr, &info, DIB_RGB_COLORS, &bits, nullptr, 0);
-        if (!g_backgroundSamplerBitmap || !bits) { ReleaseBackgroundSampler(); return 0.5f; }
+        if (!g_backgroundSamplerBitmap || !bits) { ReleaseBackgroundSampler(); return g_backgroundLuminanceValid ? g_backgroundLuminance : 0.5f; }
         g_backgroundSamplerPixels = static_cast<uint32_t*>(bits);
         g_backgroundSamplerDc = CreateCompatibleDC(screen);
-        if (!g_backgroundSamplerDc) { ReleaseBackgroundSampler(); return 0.5f; }
+        if (!g_backgroundSamplerDc) { ReleaseBackgroundSampler(); return g_backgroundLuminanceValid ? g_backgroundLuminance : 0.5f; }
         g_backgroundSamplerOriginal = SelectObject(g_backgroundSamplerDc, g_backgroundSamplerBitmap);
         g_backgroundSamplerSize = size;
     }
-    if (!BitBlt(g_backgroundSamplerDc, 0, 0, size, size, screen, center.x - kBackgroundSampleRadius, center.y - kBackgroundSampleRadius, SRCCOPY)) return 0.5f;
+    if (!BitBlt(g_backgroundSamplerDc, 0, 0, size, size, screen, center.x - kBackgroundSampleRadius, center.y - kBackgroundSampleRadius, SRCCOPY)) return g_backgroundLuminanceValid ? g_backgroundLuminance : 0.5f;
     double sum = 0.0;
     int count = 0;
     for (int yIndex = 0; yIndex < kBackgroundSampleGrid; ++yIndex) {
@@ -1030,7 +1048,12 @@ static float SampleBackgroundLuminance(POINT center) {
             ++count;
         }
     }
-    return count ? static_cast<float>(sum / count) : 0.5f;
+    const float luminance = count ? static_cast<float>(sum / count) : 0.5f;
+    g_backgroundLuminance = luminance;
+    g_backgroundLuminanceCenter = center;
+    g_backgroundLuminanceUpdated = now;
+    g_backgroundLuminanceValid = true;
+    return luminance;
 }
 
 static uint32_t ResolveOutlineColor(uint32_t core) {
@@ -1065,7 +1088,7 @@ static void UpdateTrailColorIfNeeded(DWORD now) {
     }
     const bool wasOverlayVisible = g_windowVisible;
     if (wasOverlayVisible) HideOverlay();
-    const float background = SampleBackgroundLuminance(point);
+    const float background = SampleBackgroundLuminance(now, point);
     if (wasOverlayVisible) ShowOverlay();
     for (const auto& candidate : candidates) {
         if (ContrastRatio(RgbLuminance(candidate.rgb), background) >= kMinColorContrast) {
@@ -1080,9 +1103,10 @@ static void UpdateTrailColorIfNeeded(DWORD now) {
 
 bool RenderTrail(HWND hwnd) {
     if (g_historyCount < 2) return false;
-    SmoothTrail(g_smoothIterations);
-    if (g_renderCache.smoothed.size() < 2) return false;
     const float speed = g_speedScaling ? (g_isSmearing ? g_smoothedSpeedNorm : g_frozenSpeedNorm) : 1.0f;
+    const int renderLength = GetEffectiveTailLength(speed);
+    SmoothTrail(g_smoothIterations, renderLength);
+    if (g_renderCache.smoothed.size() < 2) return false;
     const float outerHalf = g_widthMin + (g_widthMax - g_widthMin) * speed;
     const float coreHalf = g_coreWidthMin + (g_coreWidthMax - g_coreWidthMin) * speed;
     const float alphaScale = g_alphaMin + (g_alphaMax - g_alphaMin) * speed;
@@ -1269,6 +1293,7 @@ DWORD WINAPI OverlayThreadProc(LPVOID) {
     g_lastFullscreenStrongCheck = 0;
     g_fullscreenStrongSignal = false;
     g_fullscreenSuppressed = false;
+    g_fullscreenFalseSince = 0;
     if (g_settingsDirty.exchange(false, std::memory_order_acq_rel)) LoadSettings();
     HANDLE frameTimer = CreateWaitableTimerExW(nullptr, nullptr, CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, TIMER_ALL_ACCESS);
     if (!frameTimer) frameTimer = CreateWaitableTimerW(nullptr, FALSE, nullptr);
