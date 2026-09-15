@@ -20,6 +20,10 @@ Cursor Tail adds a smooth, tapered motion-blur trail behind the mouse pointer
 when it moves quickly. The trail is rendered in a transparent overlay window
 with Direct2D, so it works independently of the application under the pointer.
 
+## Preview
+
+![Cursor Tail Demo](https://i.imgur.com/mbiW6QU.gif)
+
 ## Features
 
 - **Speed-reactive trail:** Width, opacity, and effective length respond to pointer velocity.
