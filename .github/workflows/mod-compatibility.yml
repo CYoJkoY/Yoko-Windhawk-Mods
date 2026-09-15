@@ -27,13 +27,14 @@ env:
 
 jobs:
   relocate-preview:
-    if: github.ref == 'refs/heads/fix/cursor-tail-preview-27' && github.event_name == 'push'
+    if: (github.event_name == 'push' || github.event_name == 'pull_request') && github.ref == 'refs/heads/fix/cursor-tail-preview-27' || github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.head.ref == 'fix/cursor-tail-preview-27'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v6
         with:
           fetch-depth: 0
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.ref || github.ref_name }}
 
       - name: Relocate Cursor Tail preview
         shell: bash
@@ -42,30 +43,28 @@ jobs:
           from pathlib import Path
 
           preview = "![Cursor Tail Demo](https://i.imgur.com/mbiW6QU.gif)"
-
-          readme_path = Path("README.md")
-          readme = readme_path.read_text(encoding="utf-8")
           root_block = (
               "## Cursor Tail Preview\n\n"
               f"{preview}\n\n"
               "The preview shows the speed-reactive cursor trail used by [`cursor-tail.wh.cpp`](mods/cursor-tail.wh.cpp).\n"
           )
-          if root_block not in readme:
-              raise SystemExit("Expected Cursor Tail preview block was not found in README.md")
-          readme_path.write_text(readme.replace(root_block, "", 1), encoding="utf-8")
+          marker = "# Cursor Tail\n\n"
+          preview_block = f"## Preview\n\n{preview}\n\n"
+
+          readme_path = Path("README.md")
+          readme = readme_path.read_text(encoding="utf-8")
+          if root_block in readme:
+              readme_path.write_text(readme.replace(root_block, "", 1), encoding="utf-8")
 
           mod_path = Path("mods/cursor-tail.wh.cpp")
           source = mod_path.read_text(encoding="utf-8")
-          marker = "# Cursor Tail\n\n"
-          preview_block = f"## Preview\n\n{preview}\n\n"
           if preview_block not in source:
               if marker not in source:
                   raise SystemExit("Cursor Tail embedded README marker was not found")
-              source = source.replace(marker, marker + preview_block, 1)
-              mod_path.write_text(source, encoding="utf-8")
+              mod_path.write_text(source.replace(marker, marker + preview_block, 1), encoding="utf-8")
 
-          Path(".automation/cursor-tail-preview-27").unlink()
-          Path(".github/workflows/apply-cursor-tail-preview.yml").unlink()
+          Path(".automation/cursor-tail-preview-27").unlink(missing_ok=True)
+          Path(".github/workflows/apply-cursor-tail-preview.yml").unlink(missing_ok=True)
           Path(".github/workflows/mod-compatibility.yml").unlink()
           PY
 
@@ -74,6 +73,8 @@ jobs:
 
       - name: Commit final changes
         shell: bash
+        env:
+          TARGET_BRANCH: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.ref || github.ref_name }}
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
@@ -81,7 +82,7 @@ jobs:
           git diff --cached --check
           git diff --cached --quiet && exit 0
           git commit -m "docs(cursor-tail): move preview into mod readme"
-          git push origin HEAD:fix/cursor-tail-preview-27
+          git push origin "HEAD:${TARGET_BRANCH}"
 
   compile:
     runs-on: windows-latest
