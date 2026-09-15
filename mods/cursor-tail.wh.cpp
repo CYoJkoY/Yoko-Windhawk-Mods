@@ -1290,6 +1290,9 @@ DWORD WINAPI OverlayThreadProc(LPVOID) {
         CoUninitialize();
         return 0;
     }
+    if (!SetWindowDisplayAffinity(hwnd, WDA_EXCLUDEFROMCAPTURE)) {
+        Wh_Log(L"SetWindowDisplayAffinity(WDA_EXCLUDEFROMCAPTURE) failed: %lu", GetLastError());
+    }
     g_overlayHwnd.store(hwnd, std::memory_order_release);
     HideOverlay();
     GetCursorPos(&g_lastPos);
@@ -1366,7 +1369,6 @@ DWORD WINAPI OverlayThreadProc(LPVOID) {
         g_d2dFactory->Release();
         g_d2dFactory = nullptr;
     }
-    DestroyWindow(hwnd);
     g_overlayHwnd.store(nullptr, std::memory_order_release);
     UnregisterClassW(className, instance);
     CoUninitialize();
