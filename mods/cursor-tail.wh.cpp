@@ -264,6 +264,7 @@ constexpr float kMinColorContrast = 3.0f;
 constexpr uint8_t kCursorAlphaThreshold = 96;
 constexpr uint32_t kFallbackCoreColor = 0x00FFFFFF;
 constexpr uint32_t kFallbackOuterColor = 0x00000000;
+constexpr DWORD kBackbufferIdleReleaseDelayMs = 5000;
 
 std::atomic<HWND> g_overlayHwnd{nullptr};
 HANDLE g_threadHandle = nullptr;
@@ -297,6 +298,7 @@ HBITMAP g_backBufferBitmap = nullptr;
 HGDIOBJ g_originalBitmap = nullptr;
 int g_cachedWidth = 0;
 int g_cachedHeight = 0;
+DWORD g_backbufferIdleSince = 0;
 HDC g_screenDc = nullptr;
 
 float g_triggerVelocity = 25.0f;
@@ -454,6 +456,7 @@ void ReleaseBackbuffer() {
     if (g_backBufferBitmap) { DeleteObject(g_backBufferBitmap); g_backBufferBitmap = nullptr; }
     g_cachedWidth = 0;
     g_cachedHeight = 0;
+    g_backbufferIdleSince = 0;
 }
 
 HBITMAP Create32BitDIB(int width, int height) {
@@ -728,7 +731,26 @@ bool EnsureBackbuffer(int width, int height, HDC referenceDc) {
     g_backBufferBitmap = bitmap;
     g_cachedWidth = newWidth;
     g_cachedHeight = newHeight;
+    g_backbufferIdleSince = 0;
     return true;
+}
+
+static void MaybeReleaseIdleBackbuffer(DWORD now) {
+    if (g_isSmearing || g_historyCount > 0) {
+        g_backbufferIdleSince = 0;
+        return;
+    }
+    if (!g_backBufferDc || !g_backBufferBitmap) {
+        g_backbufferIdleSince = 0;
+        return;
+    }
+    if (g_backbufferIdleSince == 0) {
+        g_backbufferIdleSince = now;
+        return;
+    }
+    if (now - g_backbufferIdleSince >= kBackbufferIdleReleaseDelayMs) {
+        ReleaseBackbuffer();
+    }
 }
 
 bool EnsureD2DResources() {
@@ -755,7 +777,14 @@ bool EnsureD2DResources() {
 }
 
 bool EnsureGradientBrush() {
-    if (!g_gradientEnabled || !g_renderTarget) return false;
+    if (!g_gradientEnabled) {
+        if (g_gradientBrush) { g_gradientBrush->Release(); g_gradientBrush = nullptr; }
+        if (g_gradientStops) { g_gradientStops->Release(); g_gradientStops = nullptr; }
+        g_gradientHeadCache = 0xFFFFFFFFu;
+        g_gradientTailCache = 0xFFFFFFFFu;
+        return false;
+    }
+    if (!g_renderTarget) return false;
     if (g_gradientBrush && g_gradientStops && g_gradientHeadCache == g_currentCoreRGB && g_gradientTailCache == g_gradientTailRGB) return true;
     if (g_gradientBrush) { g_gradientBrush->Release(); g_gradientBrush = nullptr; }
     if (g_gradientStops) { g_gradientStops->Release(); g_gradientStops = nullptr; }
@@ -863,7 +892,6 @@ void UpdateTrailState(const POINT& point, float velocity) {
         }
     } else {
         if (g_historyCount > 0) HistoryPopBack();
-        if (g_historyCount > 0) HistoryPopBack();
         g_fadeAlpha = 1.0f;
     }
 }
@@ -898,11 +926,48 @@ static bool ExtractCursorColorCandidates(std::vector<ColorCandidate>& out) {
                 std::unordered_map<uint32_t, int> histogram;
                 histogram.reserve(64);
                 for (uint32_t pixel : pixels) if (((pixel >> 24) & 0xFF) >= kCursorAlphaThreshold) ++histogram[pixel & 0x00FFFFFF];
-                out.reserve(histogram.size());
-                for (const auto& entry : histogram) out.push_back({entry.first, entry.second});
-                std::sort(out.begin(), out.end(), [](const ColorCandidate& a, const ColorCandidate& b) { return a.count > b.count; });
-                cleanup();
-                return !out.empty();
+                if (!histogram.empty()) {
+                    out.reserve(histogram.size());
+                    for (const auto& entry : histogram) out.push_back({entry.first, entry.second});
+                    std::sort(out.begin(), out.end(), [](const ColorCandidate& a, const ColorCandidate& b) { return a.count > b.count; });
+                    cleanup();
+                    return true;
+                }
+
+                if (iconInfo.hbmMask) {
+                    BITMAP maskBitmap = {};
+                    if (GetObject(iconInfo.hbmMask, sizeof(maskBitmap), &maskBitmap) && maskBitmap.bmWidth >= width && maskBitmap.bmHeight >= height) {
+                        BITMAPINFO maskInfo = {};
+                        maskInfo.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+                        maskInfo.bmiHeader.biWidth = width;
+                        maskInfo.bmiHeader.biHeight = -height;
+                        maskInfo.bmiHeader.biPlanes = 1;
+                        maskInfo.bmiHeader.biBitCount = 1;
+                        maskInfo.bmiHeader.biCompression = BI_RGB;
+                        maskInfo.bmiHeader.biClrUsed = 2;
+                        const size_t maskStride = ((static_cast<size_t>(width) + 31u) / 32u) * 4u;
+                        std::vector<uint8_t> maskBits(maskStride * static_cast<size_t>(height));
+                        if (GetDIBits(screen, iconInfo.hbmMask, 0, height, maskBits.data(), &maskInfo, DIB_RGB_COLORS) == height) {
+                            std::unordered_map<uint32_t, int> maskHistogram;
+                            maskHistogram.reserve(64);
+                            for (int y = 0; y < height; ++y) {
+                                for (int x = 0; x < width; ++x) {
+                                    const uint8_t rowByte = maskBits[static_cast<size_t>(y) * maskStride + static_cast<size_t>(x >> 3)];
+                                    const bool transparent = (rowByte & (0x80u >> (x & 7))) != 0;
+                                    if (!transparent) {
+                                        const uint32_t rgb = pixels[static_cast<size_t>(y) * width + x] & 0x00FFFFFF;
+                                        ++maskHistogram[rgb];
+                                    }
+                                }
+                            }
+                            out.reserve(maskHistogram.size());
+                            for (const auto& entry : maskHistogram) out.push_back({entry.first, entry.second});
+                            std::sort(out.begin(), out.end(), [](const ColorCandidate& a, const ColorCandidate& b) { return a.count > b.count; });
+                            cleanup();
+                            return !out.empty();
+                        }
+                    }
+                }
             }
         }
     }
@@ -998,7 +1063,10 @@ static void UpdateTrailColorIfNeeded(DWORD now) {
         g_currentOuterRGB = ResolveOutlineColor(g_currentCoreRGB);
         return;
     }
+    const bool wasOverlayVisible = g_windowVisible;
+    if (wasOverlayVisible) HideOverlay();
     const float background = SampleBackgroundLuminance(point);
+    if (wasOverlayVisible) ShowOverlay();
     for (const auto& candidate : candidates) {
         if (ContrastRatio(RgbLuminance(candidate.rgb), background) >= kMinColorContrast) {
             g_currentCoreRGB = candidate.rgb;
@@ -1075,9 +1143,13 @@ bool SmearFrame(HWND hwnd, DWORD now, bool renderFrame) {
         g_lowVelocityFrames = 0;
         g_fadeAlpha = 0.0f;
         HideOverlay();
+        MaybeReleaseIdleBackbuffer(now);
         return false;
     }
-    if (appRule == 0 && UpdateFullscreenState(now, foreground)) return false;
+    if (appRule == 0 && UpdateFullscreenState(now, foreground)) {
+        MaybeReleaseIdleBackbuffer(now);
+        return false;
+    }
     const bool wasSmearing = g_isSmearing;
     const int previousHistoryCount = g_historyCount;
     const int dx = point.x - g_lastPos.x;
@@ -1085,6 +1157,7 @@ bool SmearFrame(HWND hwnd, DWORD now, bool renderFrame) {
     const float velocity = sqrtf(static_cast<float>(dx * dx + dy * dy));
     g_lastPos = point;
     UpdateTrailState(point, velocity);
+    MaybeReleaseIdleBackbuffer(now);
     if (g_isSmearing || g_historyCount >= 2) UpdateTrailColorIfNeeded(now);
     const bool stateChanged = wasSmearing != g_isSmearing || (previousHistoryCount >= 2) != (g_historyCount >= 2);
     if (g_historyCount < 2) {
@@ -1408,7 +1481,7 @@ void Wh_ModAfterInit() {
         DWORD dwCreationFlags,
         LPVOID lpEnvironment,
         LPCWSTR lpCurrentDirectory,
-        LPSTARTUPINFOW lpStartupInfo,
+        LPSTARTUPINFOOW lpStartupInfo,
         LPPROCESS_INFORMATION lpProcessInformation,
         PHANDLE hRestrictedUserToken);
     CreateProcessInternalW_t pCreateProcessInternalW =
