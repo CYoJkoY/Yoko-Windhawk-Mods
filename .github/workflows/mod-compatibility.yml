@@ -6,172 +6,102 @@ defaults:
 
 on:
   workflow_dispatch:
-  push:
-    branches:
-      - fix/cursor-tail-preview-27
-    paths:
-      - '.github/workflows/mod-compatibility.yml'
-      - '.automation/cursor-tail-preview-27'
   pull_request:
     branches:
       - main
-    paths:
-      - 'mods/*.wh.cpp'
-      - '.github/workflows/mod-compatibility.yml'
-
-permissions:
-  contents: write
 
 env:
   PYTHONUTF8: '1'
 
 jobs:
-  relocate-preview:
-    if: (github.event_name == 'push' || github.event_name == 'pull_request') && github.ref == 'refs/heads/fix/cursor-tail-preview-27' || github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.head.ref == 'fix/cursor-tail-preview-27'
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v6
-        with:
-          fetch-depth: 0
-          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.ref || github.ref_name }}
-
-      - name: Relocate Cursor Tail preview
-        shell: bash
-        run: |
-          python3 - <<'PY'
-          from pathlib import Path
-
-          preview = "![Cursor Tail Demo](https://i.imgur.com/mbiW6QU.gif)"
-          root_block = (
-              "## Cursor Tail Preview\n\n"
-              f"{preview}\n\n"
-              "The preview shows the speed-reactive cursor trail used by [`cursor-tail.wh.cpp`](mods/cursor-tail.wh.cpp).\n"
-          )
-          marker = "# Cursor Tail\n\n"
-          preview_block = f"## Preview\n\n{preview}\n\n"
-
-          readme_path = Path("README.md")
-          readme = readme_path.read_text(encoding="utf-8")
-          if root_block in readme:
-              readme_path.write_text(readme.replace(root_block, "", 1), encoding="utf-8")
-
-          mod_path = Path("mods/cursor-tail.wh.cpp")
-          source = mod_path.read_text(encoding="utf-8")
-          if preview_block not in source:
-              if marker not in source:
-                  raise SystemExit("Cursor Tail embedded README marker was not found")
-              mod_path.write_text(source.replace(marker, marker + preview_block, 1), encoding="utf-8")
-
-          Path(".automation/cursor-tail-preview-27").unlink(missing_ok=True)
-          Path(".github/workflows/apply-cursor-tail-preview.yml").unlink(missing_ok=True)
-          Path(".github/workflows/mod-compatibility.yml").unlink()
-          PY
-
-      - name: Validate diff
-        run: git diff --check
-
-      - name: Commit final changes
-        shell: bash
-        env:
-          TARGET_BRANCH: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.ref || github.ref_name }}
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add -A -- README.md mods/cursor-tail.wh.cpp .automation/cursor-tail-preview-27 .github/workflows/apply-cursor-tail-preview.yml .github/workflows/mod-compatibility.yml
-          git diff --cached --check
-          git diff --cached --quiet && exit 0
-          git commit -m "docs(cursor-tail): move preview into mod readme"
-          git push origin "HEAD:${TARGET_BRANCH}"
-
-  compile:
+  run:
     runs-on: windows-latest
     strategy:
       fail-fast: false
       matrix:
-        version:
-          - '1.7.3'
-          - '2.0.0-alpha.5'
-
+        version: [
+          '1.7.3',
+          '2.0.0-alpha.5',
+        ]
     steps:
       - name: Checkout
         uses: actions/checkout@v6
+      - name: Setup Python
+        uses: actions/setup-python@v6
         with:
-          fetch-depth: 0
-
-      - name: Get changed mods
-        id: changed
-        run: |
-          if [[ "${{ github.event_name }}" == "pull_request" ]]; then
-            base="${{ github.event.pull_request.base.sha }}"
-            head="${{ github.event.pull_request.head.sha }}"
-          else
-            base="${{ github.event.before }}"
-            head="${{ github.sha }}"
-          fi
-          mapfile -t files < <(git diff --name-only "$base" "$head" -- 'mods/*.wh.cpp')
-          echo "count=${#files[@]}" >> "$GITHUB_OUTPUT"
-          printf 'files=%s\n' "$(IFS=' '; echo "${files[*]}")" >> "$GITHUB_OUTPUT"
-          printf 'Changed mods:\n%s\n' "${files[@]}"
-
+          python-version: '3.x'
       - name: Cache Windhawk
-        id: cache
-        if: steps.changed.outputs.count != '0'
-        uses: actions/cache@v6
+        id: cache-windhawk
+        uses: actions/cache@v5
         with:
           path: ${{ runner.temp }}/windhawk
-          key: windhawk-${{ runner.os }}-${{ matrix.version }}
-
-      - name: Download Windhawk
-        if: steps.changed.outputs.count != '0' && steps.cache.outputs.cache-hit != 'true'
+          key: v1-${{ runner.os }}-${{ matrix.version }}
+      - name: Extract Windhawk
+        if: steps.cache-windhawk.outputs.cache-hit != 'true'
         run: |
           if [[ "${{ matrix.version }}" == 1.* ]]; then
             release_tag="v${{ matrix.version }}"
             installer_args=''
           else
+            # Starting with 2.0.0-alpha.1, the release tag has no "v" prefix, and
+            # the compiler is a separate component that /DEVTOOLS pulls into the
+            # install.
             release_tag="${{ matrix.version }}"
             installer_args='/DEVTOOLS'
           fi
+
           installer_url="https://github.com/ramensoftware/windhawk/releases/download/$release_tag/windhawk_setup.exe"
-          installer_path="${{ runner.temp }}\\windhawk_setup.exe"
-          curl -L --fail --retry 3 "$installer_url" -o "$installer_path"
-          extract_path="${{ runner.temp }}\\windhawk"
+          installer_path="${{ runner.temp }}/windhawk_setup.exe"
+          echo "Downloading $installer_url to $installer_path"
+          curl -L "$installer_url" -o "$installer_path"
+
+          extract_path="${{ runner.temp }}\windhawk"
+          echo "Extracting $installer_path to $extract_path"
           MSYS_NO_PATHCONV=1 "$installer_path" /S /PORTABLE $installer_args "/D=$extract_path"
-
-      - name: Download compile_mod.py
-        if: steps.changed.outputs.count != '0' && startsWith(matrix.version, '1.')
-        run: |
-          curl -L --fail --retry 3 \
-            https://raw.githubusercontent.com/ramensoftware/windhawk-mods/main/scripts/compile_mod.py \
-            -o "${{ runner.temp }}/compile_mod.py"
-
-      - name: Compile changed mods
-        if: steps.changed.outputs.count != '0'
+      - name: Get changed mod files
+        if: github.event_name == 'pull_request'
+        id: changed-files
+        uses: tj-actions/changed-files@v47
+        with:
+          files: |
+            mods/*.wh.cpp
+      - name: Compile mod
+        if: github.event_name == 'pull_request' && steps.changed-files.outputs.all_changed_and_modified_files_count == '1' && ((steps.changed-files.outputs.added_files_count == '1') || (steps.changed-files.outputs.modified_files_count == '1'))
         env:
-          CHANGED_FILES: ${{ steps.changed.outputs.files }}
+          ALL_CHANGED_AND_MODIFIED_FILES: ${{ steps.changed-files.outputs.all_changed_and_modified_files }}
         run: |
-          windhawk_path="${{ runner.temp }}\\windhawk"
-          for file in $CHANGED_FILES; do
-            echo "Compiling $file against Windhawk ${{ matrix.version }}"
-            if [[ "${{ matrix.version }}" == 1.* ]]; then
-              python -u "${{ runner.temp }}/compile_mod.py" \
-                -w "$windhawk_path" \
-                -f "$file" \
-                -o32 "${{ runner.temp }}/mod_32.dll" \
-                -o64 "${{ runner.temp }}/mod_64.dll" \
-                -oarm64 "${{ runner.temp }}/mod_arm64.dll"
-            else
-              cli="$windhawk_path\\windhawk-cli.exe"
-              result="${{ runner.temp }}/compile_result.json"
-              if ! MSYS_NO_PATHCONV=1 "$cli" --json \
-                mod install --disabled --arch all --file "$file" \
-                > "$result"; then
-                jq -r '\"::error::\\(.error.code): \\(.error.message)\"' "$result" || cat "$result"
-                exit 1
-              fi
-              if jq -e '.data.warnings' "$result" >/dev/null; then
-                echo "::error::The mod compiled with warnings: $file"
-                exit 1
-              fi
+          echo "Compiling $ALL_CHANGED_AND_MODIFIED_FILES"
+          windhawk_path="${{ runner.temp }}\windhawk"
+          if [[ "${{ matrix.version }}" == 1.* ]]; then
+            python -u scripts/compile_mod.py -w "$windhawk_path" \
+              -f "$ALL_CHANGED_AND_MODIFIED_FILES" \
+              -o32 "${{ runner.temp }}\mod_32.dll" \
+              -o64 "${{ runner.temp }}\mod_64.dll" \
+              -oarm64 "${{ runner.temp }}\mod_arm64.dll"
+          else
+            # Compile via the CLI (--disabled builds the mod without activating
+            # it). --arch all builds the union of every machine scenario:
+            # x86/x86-64 plus arm64, without the x86-64 build being skipped for a
+            # mod whose targets are all common system processes.
+            cli="$windhawk_path\windhawk-cli.exe"
+            result="${{ runner.temp }}/compile_result.json"
+            if ! MSYS_NO_PATHCONV=1 "$cli" --json \
+              mod install --disabled --arch all --file "$ALL_CHANGED_AND_MODIFIED_FILES" \
+              > "$result"; then
+              # Compiler diagnostics are streamed to stderr, but the failure
+              # summary goes to stdout in JSON mode, and a failure that produced
+              # no diagnostics (bad metadata, for example) has no stderr output
+              # at all.
+              jq -r '"::error::\(.error.code): \(.error.message)"' "$result" \
+                || cat "$result"
+              exit 1
             fi
-          done
+
+            # The CLI exits with 0 for a compile that only produced warnings, and
+            # omits the "warnings" key when there were none. The warning text
+            # itself is printed to stderr above.
+            if jq -e '.data.warnings' "$result" > /dev/null; then
+              echo "::error::The mod compiled with warnings"
+              exit 1
+            fi
+          fi
