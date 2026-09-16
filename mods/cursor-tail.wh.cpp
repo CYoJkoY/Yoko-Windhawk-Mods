@@ -4,7 +4,7 @@
 // @name:zh-CN      光标拖尾
 // @description     Adds a smooth, speed-reactive motion-blur trail to the mouse cursor.
 // @description:zh-CN 为鼠标指针添加平滑、随速度变化的运动模糊拖尾。
-// @version         3.11
+// @version         3.12
 // @author          CYoJkoY
 // @github          https://github.com/CYoJkoY
 // @license         MIT
@@ -26,7 +26,7 @@ with Direct2D, so it works independently of the application under the pointer.
 
 ## Features
 
-- **Speed-reactive trail:** Width, opacity, and effective length respond to pointer velocity.
+- **Speed-reactive trail:** Width, opacity, and effective length respond to pointer velocity. Trigger and stop speeds are configured in pixels per second, so they mean the same thing whether the loop is sampling at 125 Hz or at the 30 Hz idle rate.
 - **Smooth motion:** Historical cursor samples can be smoothed with Chaikin subdivision for a continuous ribbon.
 - **Custom appearance:** Configure trail color, outline color, gradient, and optional glow.
 - **Adaptive color:** Automatically sample the active cursor image and prefer colors with sufficient contrast against the screen background.
@@ -40,6 +40,8 @@ with Direct2D, so it works independently of the application under the pointer.
 
 The outline can either be derived automatically from the trail luminance or set to a fixed hexadecimal color.
 
+**Screen capture:** Auto mode reads the screen background around the pointer, and that sample must not pick up the trail's own pixels. While Auto mode is active the overlay is therefore excluded from screen capture (`WDA_EXCLUDEFROMCAPTURE`), which means the trail does not appear in screenshots, screen recordings or screen shares. Manual color mode never reads the screen, so the overlay stays capturable and the trail shows up normally in captures.
+
 ## Per-app rules
 
 Use one rule per line:
@@ -50,6 +52,8 @@ Use one rule per line:
 
 Lines beginning with `#` are comments. Executable names are matched case-insensitively.
 
+Rules follow the foreground window. An `exe=off` rule suppresses the trail everywhere on screen while that application has focus. An `exe=on` rule also overrides fullscreen suppression, so a force-enabled application keeps its trail even when it reports a fullscreen state.
+
 ## Fullscreen behavior
 
 The trail is suppressed when the foreground application reports a D3D fullscreen state or when a borderless, captionless window covers its monitor. Leaving fullscreen must remain stable for 500 ms before the trail is shown again, which reduces flicker during application transitions.
@@ -57,6 +61,17 @@ The trail is suppressed when the foreground application reports a D3D fullscreen
 ## Performance
 
 Cursor state is sampled at 125 Hz while the trail is active and backs off to 30 Hz when the trail is fully idle. Layered-window submission is paced separately at 60 FPS while actively moving and 30 FPS while fading. Background luminance sampling is additionally limited by both time and cursor travel distance so repeated screen captures are avoided during short, fast sampling intervals. The back buffer and Direct2D resources are reused between frames and resized only when the required trail bounds grow beyond the current buffer.
+
+## Related mods
+
+Windhawk also ships **Cursor Motion Blur** and **Mouse Trail**, which cover similar ground. Cursor Tail began as a fork of Cursor Motion Blur (see Attribution) and keeps its speed-gated, tapered-ribbon look, but it is submitted as a separate mod because the runtime and the feature set have diverged:
+
+- **Sampling and timing:** a dedicated 125 Hz sampling loop that backs off to 30 Hz while idle, with layered-window submission paced separately at 60 FPS while moving and 30 FPS while fading, instead of a single `USER_TIMER_MINIMUM` timer. Pointer speed is normalised to pixels per second, so the trigger and stop thresholds keep their meaning when the sample rate changes.
+- **Appearance:** separately configurable minimum/maximum outer and core widths, an optional gradient fill and an optional glow layer on top of the plain two-layer ribbon.
+- **Adaptive color:** cursor-image color extraction with histogram ranking, contrast selection against the sampled background luminance, and automatic or manual outline colors.
+- **Context awareness:** per-app `exe=on|off` rules and fullscreen suppression (D3D exclusive or borderless) with an exit confirmation delay.
+
+Users who want the original, minimal behavior should stay on Cursor Motion Blur. Cursor Tail is for users who want the additional appearance, adaptive color and per-app controls.
 
 ## Attribution
 
@@ -67,16 +82,16 @@ This mod is derived in part from the Windhawk **Cursor Motion Blur** mod by Thea
 // ==WindhawkModSettings==
 /*
 - Behavior:
-    - trigger_velocity: 25
+    - trigger_velocity: 3000
       $name: Trigger speed
       $name:zh-CN: 触发速度
-      $description: Minimum pointer speed in pixels per sample required to start the trail.
-      $description:zh-CN: 开始显示拖尾所需的最低指针速度，单位为每个采样的像素数。
-    - stop_velocity: 10
+      $description: Minimum pointer speed in pixels per second required to start the trail. The speed is measured from the real time between samples, so the value is independent of the sampling rate.
+      $description:zh-CN: 开始显示拖尾所需的最低指针速度，单位为像素每秒。速度按采样之间的真实时间计算，因此该数值与采样率无关。
+    - stop_velocity: 1200
       $name: Stop speed
       $name:zh-CN: 停止速度
-      $description: Pointer speed below which an active trail begins fading. If this is set to the trigger speed or higher, it is automatically reduced to half the trigger speed.
-      $description:zh-CN: 指针速度低于此值时，正在显示的拖尾开始淡出。如果该值大于或等于触发速度，会自动降低为触发速度的一半。
+      $description: Pointer speed in pixels per second below which an active trail begins fading. If this is set to the trigger speed or higher, it is automatically reduced to half the trigger speed.
+      $description:zh-CN: 指针速度（像素每秒）低于此值时，正在显示的拖尾开始淡出。如果该值大于或等于触发速度，会自动降低为触发速度的一半。
     - tail_length: 10
       $name: Tail length
       $name:zh-CN: 拖尾长度
@@ -107,6 +122,8 @@ This mod is derived in part from the Windhawk **Cursor Motion Blur** mod by Thea
       $name:zh-CN: 淡出速度
       $description: Controls how quickly the trail fades. 90 means the remaining opacity is multiplied by 0.90 for each simulation sample.
       $description:zh-CN: 控制拖尾的淡出速度。90 表示每个模拟采样都会将剩余不透明度乘以 0.90。
+  $name: Behavior
+  $name:zh-CN: 行为
 
 - Appearance:
     - width_min: 4
@@ -129,12 +146,12 @@ This mod is derived in part from the Windhawk **Cursor Motion Blur** mod by Thea
       $name:zh-CN: 最大核心宽度
       $description: Half-width of the inner core at higher speeds, in pixels.
       $description:zh-CN: 高速时内部核心的半宽，单位为像素。
-    - alpha_min: 45
+    - alpha_min: 39
       $name: Minimum opacity
       $name:zh-CN: 最小不透明度
       $description: Trail opacity at lower speeds, from 0 to 100 percent.
       $description:zh-CN: 低速时的拖尾不透明度，范围为 0 到 100%。
-    - alpha_max: 90
+    - alpha_max: 77
       $name: Maximum opacity
       $name:zh-CN: 最大不透明度
       $description: Trail opacity at higher speeds, from 0 to 100 percent.
@@ -149,6 +166,8 @@ This mod is derived in part from the Windhawk **Cursor Motion Blur** mod by Thea
       $name:zh-CN: 平滑迭代次数
       $description: Number of Chaikin subdivision passes. Higher values produce a smoother trail at the cost of more points to render. Range 0-4.
       $description:zh-CN: Chaikin 细分次数。数值越高，拖尾越平滑，但需要绘制更多点。范围 0-4。
+  $name: Appearance
+  $name:zh-CN: 外观
 
 - Color:
     - trail_color_mode: manual
@@ -188,6 +207,8 @@ This mod is derived in part from the Windhawk **Cursor Motion Blur** mod by Thea
       $name:zh-CN: 自动颜色刷新间隔
       $description: How often Auto color mode resamples the cursor color, in milliseconds. Set to 0 to resample only when the cursor image changes.
       $description:zh-CN: 自动颜色模式重新采样指针颜色的间隔，单位为毫秒。设为 0 时，仅在指针图像发生变化时重新采样。
+  $name: Color
+  $name:zh-CN: 颜色
 
 - Effects:
     - gradient_enabled: false
@@ -220,6 +241,8 @@ This mod is derived in part from the Windhawk **Cursor Motion Blur** mod by Thea
       $name:zh-CN: 光晕不透明度
       $description: Glow opacity, from 0 to 100 percent.
       $description:zh-CN: 光晕不透明度，范围为 0 到 100%。
+  $name: Effects
+  $name:zh-CN: 效果
 
 - Application:
     - app_rules: ""
@@ -227,10 +250,13 @@ This mod is derived in part from the Windhawk **Cursor Motion Blur** mod by Thea
       $name:zh-CN: 按应用规则
       $description: One rule per line using `exe=on` or `exe=off`. Lines beginning with `#` are comments. Executable names are matched case-insensitively.
       $description:zh-CN: 每行一个规则，格式为 `exe=on` 或 `exe=off`。以 `#` 开头的行为注释。可执行文件名不区分大小写。
+  $name: Application
+  $name:zh-CN: 应用程序
 */
 // ==/WindhawkModSettings==
 
 #include <windows.h>
+#include <windhawk_utils.h>
 #include <d2d1.h>
 #include <math.h>
 #include <shellapi.h>
@@ -258,7 +284,6 @@ constexpr LONG kFullscreenTolerancePx = 2;
 constexpr int kMaxTailLength = 64;
 constexpr int kHistoryCapacity = kMaxTailLength;
 constexpr int kRenderPadding = 2;
-constexpr float kTrailAlpha = 0.86f;
 constexpr float kFadeCutoff = 0.05f;
 constexpr DWORD kMinCursorChangeResampleIntervalMs = 100;
 constexpr int kAutoResampleIntervalMaxMs = 10000;
@@ -281,6 +306,8 @@ POINT g_history[kHistoryCapacity] = {};
 int g_historyHead = 0;
 int g_historyCount = 0;
 POINT g_lastPos = {0, 0};
+LONGLONG g_lastSampleQpc = 0;
+LONGLONG g_qpcFrequency = 0;
 bool g_isSmearing = false;
 int g_lowVelocityFrames = 0;
 float g_fadeAlpha = 0.0f;
@@ -350,6 +377,7 @@ DWORD g_fullscreenFalseSince = 0;
 HWND g_fullscreenForegroundWindow = nullptr;
 DWORD g_lastFullscreenStrongCheck = 0;
 bool g_fullscreenStrongSignal = false;
+bool g_fullscreenCoversMonitor = false;
 
 struct TrailRenderCache {
     std::vector<D2D1_POINT_2F> smoothed;
@@ -437,6 +465,12 @@ static std::wstring ToLowerW(std::wstring value) {
     return value;
 }
 
+static LONGLONG QpcNow() {
+    LARGE_INTEGER value = {};
+    QueryPerformanceCounter(&value);
+    return value.QuadPart;
+}
+
 static uint32_t ResolveOutlineColor(uint32_t core);
 
 void ReleaseRenderResources() {
@@ -505,6 +539,25 @@ void ShowOverlay() {
 
 void HistoryClear() { g_historyHead = 0; g_historyCount = 0; }
 
+static void ResetTrailState() {
+    HistoryClear();
+    g_isSmearing = false;
+    g_lowVelocityFrames = 0;
+    g_fadeAlpha = 0.0f;
+}
+
+// The overlay only needs to be hidden from screen capture while Auto color mode
+// is sampling the screen background, otherwise the sample would pick up the
+// trail's own pixels. In Manual mode the overlay stays capturable so the trail
+// shows up in screenshots and screen shares.
+static void ApplyOverlayCaptureAffinity() {
+    const HWND hwnd = g_overlayHwnd.load(std::memory_order_acquire);
+    if (!hwnd || !IsWindow(hwnd)) return;
+    if (!SetWindowDisplayAffinity(hwnd, g_trailColorMode == 1 ? WDA_EXCLUDEFROMCAPTURE : WDA_NONE)) {
+        Wh_Log(L"SetWindowDisplayAffinity failed: %lu", GetLastError());
+    }
+}
+
 void HistoryPushFront(const POINT& point) {
     if (g_historyCount == kHistoryCapacity) --g_historyCount;
     g_historyHead = (g_historyHead - 1 + kHistoryCapacity) % kHistoryCapacity;
@@ -571,7 +624,7 @@ static int CheckAppRuleCached(HWND foreground) {
     std::wstring exe;
     if (!GetProcessExeName(pid, exe)) return 0;
     for (const auto& rule : g_appRules) {
-        if (_wcsicmp(rule.exe.c_str(), exe.c_str()) == 0) {
+        if (wcscmp(rule.exe.c_str(), exe.c_str()) == 0) {
             g_cachedAppRule = rule.enabled ? 1 : -1;
             break;
         }
@@ -580,9 +633,9 @@ static int CheckAppRuleCached(HWND foreground) {
 }
 
 void LoadSettings() {
-    g_triggerVelocity = static_cast<float>(std::clamp(Wh_GetIntSetting(L"Behavior.trigger_velocity"), 1, 500));
-    g_stopVelocity = static_cast<float>(std::clamp(Wh_GetIntSetting(L"Behavior.stop_velocity"), 1, 500));
-    if (g_stopVelocity >= g_triggerVelocity) g_stopVelocity = std::max(1.0f, g_triggerVelocity * 0.5f);
+    g_triggerVelocity = static_cast<float>(std::clamp(Wh_GetIntSetting(L"Behavior.trigger_velocity"), 50, 20000));
+    g_stopVelocity = static_cast<float>(std::clamp(Wh_GetIntSetting(L"Behavior.stop_velocity"), 50, 20000));
+    if (g_stopVelocity >= g_triggerVelocity) g_stopVelocity = std::max(50.0f, g_triggerVelocity * 0.5f);
     g_tailOffsetX = std::clamp(Wh_GetIntSetting(L"Behavior.tail_offset_x"), -64, 64);
     g_tailOffsetY = std::clamp(Wh_GetIntSetting(L"Behavior.tail_offset_y"), -64, 64);
     g_tailLength = std::clamp(Wh_GetIntSetting(L"Behavior.tail_length"), 2, kMaxTailLength);
@@ -599,49 +652,49 @@ void LoadSettings() {
     g_smoothIterations = std::clamp(Wh_GetIntSetting(L"Appearance.smooth_iterations"), 0, 4);
     g_gradientEnabled = std::clamp(Wh_GetIntSetting(L"Effects.gradient_enabled"), 0, 1);
     {
-        PCWSTR value = Wh_GetStringSetting(L"Effects.gradient_tail_color");
         uint32_t parsed = 0;
-        g_gradientTailRGB = ParseHexColor(value, parsed) ? parsed : 0x00FF00FF;
-        Wh_FreeStringSetting(value);
+        WindhawkUtils::StringSetting value =
+            WindhawkUtils::StringSetting::make(L"Effects.gradient_tail_color");
+        g_gradientTailRGB = ParseHexColor(value.get(), parsed) ? parsed : 0x00FF00FF;
     }
     g_glowEnabled = std::clamp(Wh_GetIntSetting(L"Effects.glow_enabled"), 0, 1);
     {
-        PCWSTR value = Wh_GetStringSetting(L"Effects.glow_color");
         uint32_t parsed = 0;
-        g_glowRGB = ParseHexColor(value, parsed) ? parsed : 0x00FFFFFF;
-        Wh_FreeStringSetting(value);
+        WindhawkUtils::StringSetting value =
+            WindhawkUtils::StringSetting::make(L"Effects.glow_color");
+        g_glowRGB = ParseHexColor(value.get(), parsed) ? parsed : 0x00FFFFFF;
     }
     g_glowWidthFactor = std::clamp(Wh_GetIntSetting(L"Effects.glow_width_factor"), 10, 30) / 10.0f;
     g_glowAlpha = std::clamp(Wh_GetIntSetting(L"Effects.glow_alpha"), 0, 100) / 100.0f;
     g_fadeEnabled = std::clamp(Wh_GetIntSetting(L"Behavior.fade_enabled"), 0, 1);
     g_fadeDecay = std::clamp(Wh_GetIntSetting(L"Behavior.fade_decay"), 50, 99) / 100.0f;
     {
-        PCWSTR value = Wh_GetStringSetting(L"Color.trail_color_mode");
-        g_trailColorMode = _wcsicmp(value, L"auto") == 0 ? 1 : 0;
-        Wh_FreeStringSetting(value);
+        WindhawkUtils::StringSetting value =
+            WindhawkUtils::StringSetting::make(L"Color.trail_color_mode");
+        g_trailColorMode = _wcsicmp(value.get(), L"auto") == 0 ? 1 : 0;
     }
     {
-        PCWSTR value = Wh_GetStringSetting(L"Color.trail_color_manual");
         uint32_t parsed = 0;
-        g_manualColorRGB = ParseHexColor(value, parsed) ? parsed : kFallbackCoreColor;
-        Wh_FreeStringSetting(value);
+        WindhawkUtils::StringSetting value =
+            WindhawkUtils::StringSetting::make(L"Color.trail_color_manual");
+        g_manualColorRGB = ParseHexColor(value.get(), parsed) ? parsed : kFallbackCoreColor;
     }
     {
-        PCWSTR value = Wh_GetStringSetting(L"Color.outline_color_mode");
-        g_outlineColorMode = _wcsicmp(value, L"manual") == 0 ? 1 : 0;
-        Wh_FreeStringSetting(value);
+        WindhawkUtils::StringSetting value =
+            WindhawkUtils::StringSetting::make(L"Color.outline_color_mode");
+        g_outlineColorMode = _wcsicmp(value.get(), L"manual") == 0 ? 1 : 0;
     }
     {
-        PCWSTR value = Wh_GetStringSetting(L"Color.outline_color_manual");
         uint32_t parsed = 0;
-        g_manualOutlineRGB = ParseHexColor(value, parsed) ? parsed : kFallbackOuterColor;
-        Wh_FreeStringSetting(value);
+        WindhawkUtils::StringSetting value =
+            WindhawkUtils::StringSetting::make(L"Color.outline_color_manual");
+        g_manualOutlineRGB = ParseHexColor(value.get(), parsed) ? parsed : kFallbackOuterColor;
     }
     g_autoResampleInterval = std::clamp(Wh_GetIntSetting(L"Color.auto_resample_interval"), 0, kAutoResampleIntervalMaxMs);
     {
-        PCWSTR value = Wh_GetStringSetting(L"Application.app_rules");
-        ParseAppRules(value);
-        Wh_FreeStringSetting(value);
+        WindhawkUtils::StringSetting value =
+            WindhawkUtils::StringSetting::make(L"Application.app_rules");
+        ParseAppRules(value.get());
     }
     g_cachedForegroundWindow = nullptr;
     g_cachedAppRule = 0;
@@ -651,6 +704,7 @@ void LoadSettings() {
     g_lastAutoColorUpdate = 0;
     if (g_trailColorMode == 0) g_currentCoreRGB = g_manualColorRGB;
     g_currentOuterRGB = ResolveOutlineColor(g_currentCoreRGB);
+    ApplyOverlayCaptureAffinity();
 }
 
 static bool CoversMonitor(HWND hwnd) {
@@ -667,8 +721,8 @@ static bool CoversMonitor(HWND hwnd) {
         && windowRect.bottom >= monitorInfo.rcMonitor.bottom - kFullscreenTolerancePx;
 }
 
-static bool CheckStrongFullscreenSignal(HWND hwnd) {
-    if (!hwnd) return false;
+// SHQueryUserNotificationState reports session-wide state, not per-window state.
+static bool CheckStrongFullscreenSignal() {
     QUERY_USER_NOTIFICATION_STATE state = QUNS_NOT_PRESENT;
     return SUCCEEDED(SHQueryUserNotificationState(&state)) && state == QUNS_RUNNING_D3D_FULL_SCREEN;
 }
@@ -679,13 +733,17 @@ static bool IsFullscreenCandidate(DWORD now, HWND hwnd) {
         g_fullscreenForegroundWindow = hwnd;
         g_lastFullscreenStrongCheck = 0;
         g_fullscreenStrongSignal = false;
+        g_fullscreenCoversMonitor = false;
         g_fullscreenFalseSince = 0;
     }
+    // Window geometry can't meaningfully change at the 125 Hz sampling rate, so
+    // the whole query is refreshed on the same 100 ms gate as the shell query.
     if (now - g_lastFullscreenStrongCheck >= kFullscreenStrongCheckIntervalMs) {
         g_lastFullscreenStrongCheck = now;
-        g_fullscreenStrongSignal = CheckStrongFullscreenSignal(hwnd);
+        g_fullscreenStrongSignal = CheckStrongFullscreenSignal();
+        g_fullscreenCoversMonitor = CoversMonitor(hwnd);
     }
-    return g_fullscreenStrongSignal || CoversMonitor(hwnd);
+    return g_fullscreenStrongSignal || g_fullscreenCoversMonitor;
 }
 
 static bool UpdateFullscreenState(DWORD now, HWND foreground) {
@@ -694,10 +752,7 @@ static bool UpdateFullscreenState(DWORD now, HWND foreground) {
         g_fullscreenFalseSince = 0;
         if (!g_fullscreenSuppressed) {
             g_fullscreenSuppressed = true;
-            HistoryClear();
-            g_isSmearing = false;
-            g_lowVelocityFrames = 0;
-            g_fadeAlpha = 0.0f;
+            ResetTrailState();
             HideOverlay();
         }
         return true;
@@ -707,10 +762,7 @@ static bool UpdateFullscreenState(DWORD now, HWND foreground) {
         if (now - g_fullscreenFalseSince >= kFullscreenExitConfirmMs) {
             g_fullscreenSuppressed = false;
             g_fullscreenFalseSince = 0;
-            HistoryClear();
-            g_isSmearing = false;
-            g_lowVelocityFrames = 0;
-            g_fadeAlpha = 0.0f;
+            ResetTrailState();
             HideOverlay();
         }
         return g_fullscreenSuppressed;
@@ -767,9 +819,9 @@ bool EnsureD2DResources() {
         D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED));
     HRESULT hr = g_d2dFactory->CreateDCRenderTarget(&properties, &g_renderTarget);
     if (FAILED(hr) || !g_renderTarget) return false;
-    hr = g_renderTarget->CreateSolidColorBrush(ToColorF(g_currentOuterRGB, kTrailAlpha), &g_outerBrush);
+    hr = g_renderTarget->CreateSolidColorBrush(ToColorF(g_currentOuterRGB, 1.0f), &g_outerBrush);
     if (FAILED(hr)) { ReleaseRenderResources(); return false; }
-    hr = g_renderTarget->CreateSolidColorBrush(ToColorF(g_currentCoreRGB, kTrailAlpha), &g_coreBrush);
+    hr = g_renderTarget->CreateSolidColorBrush(ToColorF(g_currentCoreRGB, 1.0f), &g_coreBrush);
     if (FAILED(hr)) { ReleaseRenderResources(); return false; }
     hr = g_renderTarget->CreateSolidColorBrush(ToColorF(g_glowRGB, g_glowAlpha), &g_glowBrush);
     if (FAILED(hr)) { ReleaseRenderResources(); return false; }
@@ -1041,6 +1093,9 @@ static float SampleBackgroundLuminance(DWORD now, POINT center) {
         g_backgroundSamplerSize = size;
     }
     if (!BitBlt(g_backgroundSamplerDc, 0, 0, size, size, screen, center.x - kBackgroundSampleRadius, center.y - kBackgroundSampleRadius, SRCCOPY)) return g_backgroundLuminanceValid ? g_backgroundLuminance : 0.5f;
+    // GDI batches drawing calls, so the blit has to be flushed before the DIB
+    // section bits are read directly.
+    GdiFlush();
     double sum = 0.0;
     int count = 0;
     for (int yIndex = 0; yIndex < kBackgroundSampleGrid; ++yIndex) {
@@ -1090,10 +1145,10 @@ static void UpdateTrailColorIfNeeded(DWORD now) {
         g_currentOuterRGB = ResolveOutlineColor(g_currentCoreRGB);
         return;
     }
-    const bool wasOverlayVisible = g_windowVisible;
-    if (wasOverlayVisible) HideOverlay();
+    // In Auto mode the overlay is excluded from screen capture, so the sample
+    // can't pick up the trail's own pixels and the window doesn't need to be
+    // hidden (which would make a visible trail blink on every resample).
     const float background = SampleBackgroundLuminance(now, point);
-    if (wasOverlayVisible) ShowOverlay();
     for (const auto& candidate : candidates) {
         if (ContrastRatio(RgbLuminance(candidate.rgb), background) >= kMinColorContrast) {
             g_currentCoreRGB = candidate.rgb;
@@ -1114,7 +1169,7 @@ bool RenderTrail(HWND hwnd) {
     const float outerHalf = g_widthMin + (g_widthMax - g_widthMin) * speed;
     const float coreHalf = g_coreWidthMin + (g_coreWidthMax - g_coreWidthMin) * speed;
     const float alphaScale = g_alphaMin + (g_alphaMax - g_alphaMin) * speed;
-    const float alpha = kTrailAlpha * alphaScale * g_fadeAlpha;
+    const float alpha = alphaScale * g_fadeAlpha;
     if (alpha < 0.02f) return false;
     const float boundsHalf = g_glowEnabled ? outerHalf * std::max(1.0f, g_glowWidthFactor) : outerHalf;
     const RECT bounds = CalculateTrailBounds(boundsHalf);
@@ -1160,30 +1215,53 @@ bool RenderTrail(HWND hwnd) {
     return UpdateLayeredWindow(hwnd, screen, &position, &size, g_backBufferDc, &source, 0, &blend, ULW_ALPHA) != FALSE;
 }
 
+// Pointer speed in pixels per second, derived from the real elapsed time between
+// samples. The loop runs at 125 Hz while active and 30 Hz while idle, so a
+// pixels-per-sample threshold would mean something different at each rate.
+static float PointerSpeedPxPerSecond(const POINT& point, LONGLONG nowQpc) {
+    const LONGLONG elapsedTicks = nowQpc - g_lastSampleQpc;
+    g_lastSampleQpc = nowQpc;
+    const float dx = static_cast<float>(point.x - g_lastPos.x);
+    const float dy = static_cast<float>(point.y - g_lastPos.y);
+    g_lastPos = point;
+    const float dtSeconds = (g_qpcFrequency > 0 && elapsedTicks > 0)
+        ? static_cast<float>(elapsedTicks) / static_cast<float>(g_qpcFrequency)
+        : 0.0f;
+    return sqrtf(dx * dx + dy * dy) / std::max(dtSeconds, 0.001f);
+}
+
 bool SmearFrame(HWND hwnd, DWORD now, bool renderFrame) {
     POINT point = {};
     if (!GetCursorPos(&point)) return false;
+    const LONGLONG sampleQpc = QpcNow();
     const HWND foreground = GetForegroundWindow();
     const int appRule = CheckAppRuleCached(foreground);
+    // While the trail is suppressed the pointer still moves. Keep the previous
+    // position and the sample timestamp current so that resuming doesn't report
+    // the whole suppressed movement as a single fast jump, which would trip the
+    // trigger speed immediately.
+    const auto parkSample = [&] {
+        g_lastPos = point;
+        g_lastSampleQpc = sampleQpc;
+    };
     if (appRule < 0) {
-        HistoryClear();
-        g_isSmearing = false;
-        g_lowVelocityFrames = 0;
-        g_fadeAlpha = 0.0f;
+        ResetTrailState();
+        parkSample();
         HideOverlay();
         MaybeReleaseIdleBackbuffer(now);
         return false;
     }
-    if (appRule == 0 && UpdateFullscreenState(now, foreground)) {
+    // Always keep the fullscreen state up to date; an `exe=on` rule only
+    // overrides whether the result suppresses the trail.
+    const bool fullscreenActive = UpdateFullscreenState(now, foreground);
+    if (fullscreenActive) {
+        parkSample();
         MaybeReleaseIdleBackbuffer(now);
-        return false;
+        if (appRule == 0) return false;
     }
     const bool wasSmearing = g_isSmearing;
     const int previousHistoryCount = g_historyCount;
-    const int dx = point.x - g_lastPos.x;
-    const int dy = point.y - g_lastPos.y;
-    const float velocity = sqrtf(static_cast<float>(dx * dx + dy * dy));
-    g_lastPos = point;
+    const float velocity = PointerSpeedPxPerSecond(point, sampleQpc);
     UpdateTrailState(point, velocity);
     MaybeReleaseIdleBackbuffer(now);
     if (g_isSmearing || g_historyCount >= 2) UpdateTrailColorIfNeeded(now);
@@ -1223,12 +1301,6 @@ LRESULT CALLBACK OverlayWndProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM l
     }
 }
 
-static LONGLONG QpcNow() {
-    LARGE_INTEGER value = {};
-    QueryPerformanceCounter(&value);
-    return value.QuadPart;
-}
-
 static bool ArmFrameTimer(HANDLE timer, LONGLONG deadline, LONGLONG frequency) {
     const LONGLONG now = QpcNow();
     LONGLONG ticks = deadline - now;
@@ -1252,6 +1324,7 @@ DWORD WINAPI OverlayThreadProc(LPVOID) {
         CoUninitialize();
         return 0;
     }
+    g_qpcFrequency = qpcFrequency.QuadPart;
     HRESULT hr = D2D1CreateFactory(D2D1_FACTORY_TYPE_SINGLE_THREADED, &g_d2dFactory);
     if (FAILED(hr) || !g_d2dFactory) {
         CoUninitialize();
@@ -1290,12 +1363,11 @@ DWORD WINAPI OverlayThreadProc(LPVOID) {
         CoUninitialize();
         return 0;
     }
-    if (!SetWindowDisplayAffinity(hwnd, WDA_EXCLUDEFROMCAPTURE)) {
-        Wh_Log(L"SetWindowDisplayAffinity(WDA_EXCLUDEFROMCAPTURE) failed: %lu", GetLastError());
-    }
     g_overlayHwnd.store(hwnd, std::memory_order_release);
+    ApplyOverlayCaptureAffinity();
     HideOverlay();
     GetCursorPos(&g_lastPos);
+    g_lastSampleQpc = QpcNow();
     g_fullscreenForegroundWindow = GetForegroundWindow();
     g_lastFullscreenStrongCheck = 0;
     g_fullscreenStrongSignal = false;
@@ -1370,6 +1442,7 @@ DWORD WINAPI OverlayThreadProc(LPVOID) {
         g_d2dFactory = nullptr;
     }
     g_overlayHwnd.store(nullptr, std::memory_order_release);
+    DestroyWindow(hwnd);
     UnregisterClassW(className, instance);
     CoUninitialize();
     return 0;
