@@ -382,6 +382,9 @@ bool g_rawMouseMovementPending = false;
 bool g_foregroundChangePending = false;
 bool g_elevatedForeground = false;
 bool g_pollingFallback = true;
+bool g_currentIntegrityLevelAttempted = false;
+bool g_currentIntegrityLevelKnown = false;
+DWORD g_currentIntegrityLevelRid = SECURITY_MANDATORY_MEDIUM_RID;
 LONGLONG g_nextSampleDeadline = 0;
 LONGLONG g_lastRawInputWakeQpc = 0;
 HWINEVENTHOOK g_foregroundEventHook = nullptr;
@@ -1034,10 +1037,71 @@ static bool RegisterMouseRawInput(HWND hwnd, bool enable) {
     return true;
 }
 
+static bool ReadTokenIntegrityRid(HANDLE tokenHandle, DWORD& integrityRid) {
+    DWORD requiredSize = 0;
+    if (GetTokenInformation(
+            tokenHandle,
+            TokenIntegrityLevel,
+            nullptr,
+            0,
+            &requiredSize)
+        || GetLastError() != ERROR_INSUFFICIENT_BUFFER
+        || requiredSize < sizeof(TOKEN_MANDATORY_LABEL)) {
+        return false;
+    }
+
+    std::vector<BYTE> tokenInfo(requiredSize);
+    if (!GetTokenInformation(
+            tokenHandle,
+            TokenIntegrityLevel,
+            tokenInfo.data(),
+            requiredSize,
+            &requiredSize)) {
+        return false;
+    }
+
+    const auto* mandatoryLabel =
+        reinterpret_cast<const TOKEN_MANDATORY_LABEL*>(tokenInfo.data());
+    PSID integritySid = mandatoryLabel->Label.Sid;
+    if (!integritySid || !IsValidSid(integritySid)) return false;
+
+    PUCHAR subAuthorityCount = GetSidSubAuthorityCount(integritySid);
+    if (!subAuthorityCount || *subAuthorityCount == 0) return false;
+    PDWORD ridValue = GetSidSubAuthority(
+        integritySid,
+        static_cast<DWORD>(*subAuthorityCount - 1));
+    if (!ridValue) return false;
+
+    integrityRid = *ridValue;
+    return true;
+}
+
+static void CacheCurrentIntegrityLevel() {
+    if (g_currentIntegrityLevelAttempted) return;
+    g_currentIntegrityLevelAttempted = true;
+
+    HANDLE tokenHandle = nullptr;
+    if (!OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &tokenHandle)) {
+        Wh_Log(L"OpenProcessToken(current process) failed: %lu", GetLastError());
+        return;
+    }
+
+    g_currentIntegrityLevelKnown =
+        ReadTokenIntegrityRid(tokenHandle, g_currentIntegrityLevelRid);
+    CloseHandle(tokenHandle);
+    if (!g_currentIntegrityLevelKnown) {
+        Wh_Log(L"Unable to read current process token integrity level");
+    }
+}
+
 // Raw input is normally unavailable while a higher-integrity window has
-// focus. Detect that transition and temporarily use bounded timer sampling.
+// focus. Compare token integrity levels and use bounded sampling when the
+// target integrity cannot be established safely.
 static bool IsHigherRightsWindow(HWND hwnd) {
+    CacheCurrentIntegrityLevel();
+    if (!g_currentIntegrityLevelKnown) return true;
     if (!hwnd) return false;
+
     DWORD processId = 0;
     if (!GetWindowThreadProcessId(hwnd, &processId) || !processId) return false;
 
@@ -1045,10 +1109,16 @@ static bool IsHigherRightsWindow(HWND hwnd) {
     if (!processHandle) return true;
 
     HANDLE tokenHandle = nullptr;
-    const bool accessDenied = !OpenProcessToken(processHandle, TOKEN_QUERY, &tokenHandle);
-    if (tokenHandle) CloseHandle(tokenHandle);
+    if (!OpenProcessToken(processHandle, TOKEN_QUERY, &tokenHandle)) {
+        CloseHandle(processHandle);
+        return true;
+    }
+
+    DWORD foregroundIntegrityRid = 0;
+    const bool integrityKnown = ReadTokenIntegrityRid(tokenHandle, foregroundIntegrityRid);
+    CloseHandle(tokenHandle);
     CloseHandle(processHandle);
-    return accessDenied;
+    return !integrityKnown || foregroundIntegrityRid > g_currentIntegrityLevelRid;
 }
 
 static void CALLBACK ForegroundChanged(
