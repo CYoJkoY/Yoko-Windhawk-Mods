@@ -1069,10 +1069,13 @@ static void RefreshForegroundInputState() {
     g_foregroundChangePending = false;
 }
 
+static void ResetAutoColorSamplingCache();
+
 static bool UpdateCursorMonitorDpi(HWND hwnd, const POINT& cursorPoint) {
     const HMONITOR monitor = MonitorFromPoint(cursorPoint, MONITOR_DEFAULTTONEAREST);
     if (!monitor || monitor == g_cursorMonitor) return false;
 
+    ResetAutoColorSamplingCache();
     HideOverlay();
     if (hwnd && IsWindow(hwnd)
         && !SetWindowPos(
@@ -1495,6 +1498,13 @@ bool g_backgroundLuminanceValid = false;
 POINT g_backgroundLuminanceCenter = {0, 0};
 DWORD g_backgroundLuminanceUpdated = 0;
 float g_backgroundLuminance = 0.5f;
+
+static void ResetAutoColorSamplingCache() {
+    g_backgroundLuminanceValid = false;
+    g_backgroundLuminanceCenter = {0, 0};
+    g_backgroundLuminanceUpdated = 0;
+    g_autoColorPickLuminanceValid = false;
+}
 
 static void ReleaseBackgroundSampler() {
     if (g_backgroundSamplerDc) {
@@ -1978,6 +1988,7 @@ LRESULT CALLBACK OverlayWndProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM l
         g_cursorMonitor = nullptr;
         g_cursorDpi = 96;
         g_currentDpiScale = 1.0f;
+        ResetAutoColorSamplingCache();
         return 0;
     case WM_CLOSE:
         DestroyWindow(hwnd);
