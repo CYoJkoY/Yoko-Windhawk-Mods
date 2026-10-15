@@ -9,7 +9,7 @@
 // @github          https://github.com/CYoJkoY
 // @license         MIT
 // @include         windhawk.exe
-// @compilerOptions -ld2d1 -lole32 -lgdi32 -lshell32
+// @compilerOptions -ladvapi32 -ld2d1 -lole32 -lgdi32 -lshell32
 // ==/WindhawkMod==
 
 // ==WindhawkModReadme==
@@ -346,6 +346,8 @@ constexpr int kTargetFrameRate = 125;
 constexpr int kIdleFrameRate = 30;
 constexpr int kActiveRenderFrameRate = 60;
 constexpr int kFadeRenderFrameRate = 30;
+constexpr int kFallbackFrameRate = 60;
+constexpr DWORD kInputWakeThrottleMs = 8;
 constexpr DWORD kFullscreenStrongCheckIntervalMs = 100;
 constexpr DWORD kFullscreenExitConfirmMs = 500;
 constexpr LONG kFullscreenTolerancePx = 2;
@@ -372,8 +374,19 @@ constexpr int kMaxRippleClusterRadiusPx = 512;
 std::atomic<HWND> g_overlayHwnd{nullptr};
 HANDLE g_threadHandle = nullptr;
 HANDLE g_stopEvent = nullptr;
-HANDLE g_interactionEvent = nullptr;
+HANDLE g_inputWakeEvent = nullptr;
 std::atomic_bool g_settingsDirty{false};
+bool g_interactionPending = false;
+bool g_rawInputRegistered = false;
+bool g_rawInputWakePending = false;
+bool g_rawMouseMovementPending = false;
+bool g_foregroundChangePending = false;
+bool g_elevatedForeground = false;
+bool g_pollingFallback = true;
+bool g_samplePending = false;
+LONGLONG g_nextSampleDeadline = 0;
+LONGLONG g_lastRawInputWakeQpc = 0;
+HWINEVENTHOOK g_foregroundEventHook = nullptr;
 
 POINT g_history[kHistoryCapacity] = {};
 int g_historyHead = 0;
@@ -878,6 +891,7 @@ static void ClearRipples() {
         ripple.active = false;
     }
     g_nextRippleSlot = 0;
+    g_interactionPending = false;
 }
 
 static int UpdateRippleState(LONGLONG nowQpc) {
@@ -917,7 +931,8 @@ static void AddRipple(const POINT& center, uint32_t color) {
     ripple.startQpc = QpcNow();
     ripple.color = color;
     ripple.active = true;
-    if (g_interactionEvent) SetEvent(g_interactionEvent);
+    g_interactionPending = true;
+    if (g_inputWakeEvent) SetEvent(g_inputWakeEvent);
 }
 
 static LRESULT CALLBACK LowLevelMouseHookProc(int code, WPARAM wParam, LPARAM lParam) {
@@ -994,6 +1009,63 @@ static void SyncMouseHook() {
     }
     g_mouseHookModule = hookModule;
     g_mouseHook = mouseHook;
+}
+
+
+static bool RegisterMouseRawInput(HWND hwnd, bool enable) {
+    RAWINPUTDEVICE mouse = {};
+    mouse.usUsagePage = 0x01;  // HID_USAGE_PAGE_GENERIC
+    mouse.usUsage = 0x02;      // HID_USAGE_GENERIC_MOUSE
+    mouse.dwFlags = enable ? RIDEV_INPUTSINK : RIDEV_REMOVE;
+    mouse.hwndTarget = enable ? hwnd : nullptr;
+
+    if (!RegisterRawInputDevices(&mouse, 1, sizeof(mouse))) {
+        Wh_Log(L"RegisterRawInputDevices(%d) failed: %lu", enable, GetLastError());
+        return false;
+    }
+    return true;
+}
+
+// Raw input is normally unavailable while a higher-integrity window has
+// focus. Detect that transition and temporarily use bounded timer sampling.
+static bool IsHigherRightsWindow(HWND hwnd) {
+    if (!hwnd) return false;
+    DWORD processId = 0;
+    if (!GetWindowThreadProcessId(hwnd, &processId) || !processId) return false;
+
+    HANDLE processHandle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, processId);
+    if (!processHandle) return true;
+
+    HANDLE tokenHandle = nullptr;
+    const bool accessDenied = !OpenProcessToken(processHandle, TOKEN_QUERY, &tokenHandle);
+    if (tokenHandle) CloseHandle(tokenHandle);
+    CloseHandle(processHandle);
+    return accessDenied;
+}
+
+static void CALLBACK ForegroundChanged(
+    HWINEVENTHOOK,
+    DWORD,
+    HWND,
+    LONG,
+    LONG,
+    DWORD,
+    DWORD) {
+    g_foregroundChangePending = true;
+    if (g_inputWakeEvent) SetEvent(g_inputWakeEvent);
+}
+
+static void RefreshForegroundInputState() {
+    g_elevatedForeground = IsHigherRightsWindow(GetForegroundWindow());
+    g_pollingFallback = !g_rawInputRegistered || !g_foregroundEventHook || g_elevatedForeground;
+    g_foregroundChangePending = false;
+}
+
+static void PrimeCursorSample() {
+    POINT point = {};
+    if (!GetCursorPos(&point)) return;
+    g_lastPos = point;
+    g_lastSampleQpc = QpcNow();
 }
 
 static bool IsDesktopShellWindow(HWND hwnd) {
@@ -1744,11 +1816,44 @@ LRESULT CALLBACK OverlayWndProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM l
     case kSettingsChangedMessage:
         g_settingsDirty.store(true, std::memory_order_release);
         return 0;
+    case WM_INPUT: {
+        RAWINPUT rawInput = {};
+        UINT rawInputSize = sizeof(rawInput);
+        const UINT readResult = GetRawInputData(
+            reinterpret_cast<HRAWINPUT>(lParam),
+            RID_INPUT,
+            &rawInput,
+            &rawInputSize,
+            sizeof(RAWINPUTHEADER));
+        if (readResult != static_cast<UINT>(-1)
+            && rawInput.header.dwType == RIM_TYPEMOUSE) {
+            const RAWMOUSE& mouse = rawInput.data.mouse;
+            const bool moved = mouse.lLastX != 0
+                || mouse.lLastY != 0
+                || (mouse.usFlags & MOUSE_MOVE_ABSOLUTE) != 0;
+            if (moved) {
+                g_rawMouseMovementPending = true;
+                const LONGLONG currentQpc = QpcNow();
+                const LONGLONG wakeInterval = std::max<LONGLONG>(
+                    1, g_qpcFrequency * kInputWakeThrottleMs / 1000);
+                if (!g_rawInputWakePending
+                    && (g_lastRawInputWakeQpc == 0
+                        || currentQpc - g_lastRawInputWakeQpc >= wakeInterval)) {
+                    g_lastRawInputWakeQpc = currentQpc;
+                    g_rawInputWakePending = true;
+                    if (g_inputWakeEvent) SetEvent(g_inputWakeEvent);
+                }
+            }
+        }
+        // Windows requires DefWindowProc for foreground RIM_INPUT cleanup.
+        return DefWindowProcW(hwnd, message, wParam, lParam);
+    }
     case WM_DISPLAYCHANGE:
         ReleaseBackbuffer();
         ReleaseBackgroundSampler();
         ReleaseScreenDC();
         g_lastFullscreenStrongCheck = 0;
+        g_nextSampleDeadline = 0;
         return 0;
     case WM_CLOSE:
         DestroyWindow(hwnd);
@@ -1760,6 +1865,7 @@ LRESULT CALLBACK OverlayWndProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM l
         return DefWindowProcW(hwnd, message, wParam, lParam);
     }
 }
+
 
 static bool ArmFrameTimer(HANDLE timer, LONGLONG deadline, LONGLONG frequency) {
     const LONGLONG now = QpcNow();
@@ -1789,6 +1895,7 @@ DWORD WINAPI OverlayThreadProc(LPVOID) {
         CoUninitialize();
         return 0;
     }
+
     HINSTANCE instance = GetModuleHandle(nullptr);
     const wchar_t className[] = L"CursorTailOverlayWindowClass";
     WNDCLASSW windowClass = {};
@@ -1802,6 +1909,7 @@ DWORD WINAPI OverlayThreadProc(LPVOID) {
         CoUninitialize();
         return 0;
     }
+
     HWND hwnd = CreateWindowExW(
         WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE,
         className,
@@ -1822,18 +1930,21 @@ DWORD WINAPI OverlayThreadProc(LPVOID) {
         CoUninitialize();
         return 0;
     }
+
     g_overlayHwnd.store(hwnd, std::memory_order_release);
     ApplyOverlayCaptureAffinity();
     HideOverlay();
     GetCursorPos(&g_lastPos);
     g_lastSampleQpc = QpcNow();
-    g_fullscreenForegroundWindow = GetForegroundWindow();
+    g_fullscreenForegroundWindow = nullptr;
     g_lastFullscreenStrongCheck = 0;
     g_fullscreenStrongSignal = false;
     g_fullscreenSuppressed = false;
     g_fullscreenFalseSince = 0;
     if (g_settingsDirty.exchange(false, std::memory_order_acq_rel)) LoadSettings();
-    HANDLE frameTimer = CreateWaitableTimerExW(nullptr, nullptr, CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, TIMER_ALL_ACCESS);
+
+    HANDLE frameTimer = CreateWaitableTimerExW(
+        nullptr, nullptr, CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, TIMER_ALL_ACCESS);
     if (!frameTimer) frameTimer = CreateWaitableTimerW(nullptr, FALSE, nullptr);
     if (!frameTimer) {
         DestroyWindow(hwnd);
@@ -1844,55 +1955,200 @@ DWORD WINAPI OverlayThreadProc(LPVOID) {
         CoUninitialize();
         return 0;
     }
+
+    g_rawInputRegistered = RegisterMouseRawInput(hwnd, true);
+    g_foregroundEventHook = SetWinEventHook(
+        EVENT_SYSTEM_FOREGROUND,
+        EVENT_SYSTEM_FOREGROUND,
+        nullptr,
+        ForegroundChanged,
+        0,
+        0,
+        WINEVENT_OUTOFCONTEXT);
+    if (!g_foregroundEventHook) {
+        Wh_Log(L"SetWinEventHook(EVENT_SYSTEM_FOREGROUND) failed: %lu", GetLastError());
+    }
+    RefreshForegroundInputState();
     SyncMouseHook();
-    const LONGLONG simulationTicks = FrameIntervalTicks(qpcFrequency.QuadPart, kTargetFrameRate);
-    const LONGLONG idleTicks = FrameIntervalTicks(qpcFrequency.QuadPart, kIdleFrameRate);
-    const LONGLONG activeRenderTicks = FrameIntervalTicks(qpcFrequency.QuadPart, kActiveRenderFrameRate);
-    const LONGLONG fadeRenderTicks = FrameIntervalTicks(qpcFrequency.QuadPart, kFadeRenderFrameRate);
+
+    const LONGLONG simulationTicks =
+        FrameIntervalTicks(qpcFrequency.QuadPart, kTargetFrameRate);
+    const LONGLONG fallbackTicks =
+        FrameIntervalTicks(qpcFrequency.QuadPart, kFallbackFrameRate);
+    const LONGLONG activeRenderTicks =
+        FrameIntervalTicks(qpcFrequency.QuadPart, kActiveRenderFrameRate);
+    const LONGLONG fadeRenderTicks =
+        FrameIntervalTicks(qpcFrequency.QuadPart, kFadeRenderFrameRate);
     LONGLONG nextRenderDeadline = QpcNow();
     MSG message = {};
     bool running = true;
+
     while (running) {
         if (g_settingsDirty.exchange(false, std::memory_order_acq_rel)) {
             LoadSettings();
             SyncMouseHook();
         }
-        const bool idle = !g_isSmearing && g_historyCount < 2 && !HasActiveRipples(QpcNow());
-        const LONGLONG simulationInterval = idle ? idleTicks : simulationTicks;
-        const LONGLONG sampleDeadline = QpcNow() + simulationInterval;
-        if (!ArmFrameTimer(frameTimer, sampleDeadline, qpcFrequency.QuadPart)) break;
-        HANDLE handles[] = {g_stopEvent, g_interactionEvent, frameTimer};
-        const DWORD waitResult = MsgWaitForMultipleObjectsEx(ARRAYSIZE(handles), handles, INFINITE, QS_ALLINPUT, MWMO_INPUTAVAILABLE);
+
+        const LONGLONG currentQpc = QpcNow();
+        const bool trailActive = g_isSmearing || g_historyCount >= 2;
+        const bool rippleActive = HasActiveRipples(currentQpc);
+        const bool sampleTimerNeeded =
+            trailActive || rippleActive || g_pollingFallback || g_samplePending;
+        bool trimTimerNeeded = false;
+
+        LONGLONG timerDeadline = 0;
+        if (sampleTimerNeeded) {
+            if (g_nextSampleDeadline <= currentQpc) {
+                const LONGLONG interval = (trailActive || rippleActive || g_samplePending)
+                    ? simulationTicks
+                    : fallbackTicks;
+                g_nextSampleDeadline = currentQpc + interval;
+            }
+            timerDeadline = g_nextSampleDeadline;
+        } else if (g_backBufferDc && g_backBufferBitmap) {
+            MaybeReleaseIdleBackbuffer(GetTickCount());
+            if (g_backBufferDc && g_backBufferBitmap) {
+                const DWORD nowTicks = GetTickCount();
+                const DWORD elapsed = nowTicks - g_backbufferIdleSince;
+                const DWORD remaining = elapsed >= kBackbufferIdleReleaseDelayMs
+                    ? 1
+                    : kBackbufferIdleReleaseDelayMs - elapsed;
+                timerDeadline = QpcNow()
+                    + std::max<LONGLONG>(
+                        1,
+                        g_qpcFrequency * static_cast<LONGLONG>(remaining) / 1000);
+                trimTimerNeeded = true;
+            }
+        }
+
+        const bool timerNeeded = sampleTimerNeeded || trimTimerNeeded;
+        if (timerNeeded) {
+            if (!ArmFrameTimer(frameTimer, timerDeadline, qpcFrequency.QuadPart)) break;
+        } else {
+            CancelWaitableTimer(frameTimer);
+        }
+
+        HANDLE handles[] = {g_stopEvent, g_inputWakeEvent, frameTimer};
+        const DWORD handleCount = timerNeeded ? 3 : 2;
+        const DWORD waitResult = MsgWaitForMultipleObjectsEx(
+            handleCount,
+            handles,
+            INFINITE,
+            QS_ALLINPUT,
+            MWMO_INPUTAVAILABLE);
+
         if (waitResult == WAIT_OBJECT_0) {
             running = false;
             continue;
         }
+
         if (waitResult == WAIT_OBJECT_0 + 1) {
-            const LONGLONG interactionNow = QpcNow();
-            SmearFrame(hwnd, GetTickCount(), true);
-            const bool interactionActive = HasActiveRipples(QpcNow());
-            const bool quickFrame = g_isSmearing || g_historyCount >= 2 || interactionActive;
-            nextRenderDeadline = interactionNow + (quickFrame ? activeRenderTicks : fadeRenderTicks);
-            continue;
-        }
-        if (waitResult == WAIT_OBJECT_0 + 2) {
-            const LONGLONG sampleNow = QpcNow();
-            const bool interactionActiveBeforeFrame = HasActiveRipples(sampleNow);
-            const bool renderFrame = (g_isSmearing || g_historyCount >= 2 || interactionActiveBeforeFrame)
-                && sampleNow >= nextRenderDeadline;
-            const bool rendered = SmearFrame(hwnd, GetTickCount(), renderFrame);
-            const bool interactionActive = HasActiveRipples(QpcNow());
-            const bool active = g_isSmearing;
-            const bool fading = !active && g_historyCount >= 2;
-            if (active || fading || interactionActive) {
-                const LONGLONG interval = (active || interactionActive) ? activeRenderTicks : fadeRenderTicks;
-                if (rendered || sampleNow >= nextRenderDeadline) nextRenderDeadline = sampleNow + interval;
-            } else {
-                nextRenderDeadline = sampleNow + fadeRenderTicks;
+            g_rawInputWakePending = false;
+            const bool foregroundChanged = g_foregroundChangePending;
+            const bool interactionTriggered = g_interactionPending;
+            const bool rawMovement = g_rawMouseMovementPending;
+            g_interactionPending = false;
+
+            if (foregroundChanged) {
+                RefreshForegroundInputState();
+                // A monitor change is not a 500 ms fullscreen-exit transition:
+                // do not keep suppressing the cursor on the other display.
+                g_fullscreenForegroundWindow = nullptr;
+                g_lastFullscreenStrongCheck = 0;
+                g_fullscreenSuppressed = false;
+                g_fullscreenFalseSince = 0;
+            }
+
+            if (foregroundChanged || interactionTriggered) {
+                g_rawMouseMovementPending = false;
+                g_samplePending = false;
+                const LONGLONG eventQpc = QpcNow();
+                const bool forceRender = interactionTriggered;
+                const bool rendered = SmearFrame(hwnd, GetTickCount(), forceRender);
+                const bool activeAfterEvent =
+                    g_isSmearing || g_historyCount >= 2 || HasActiveRipples(QpcNow());
+                if (activeAfterEvent) {
+                    nextRenderDeadline = eventQpc
+                        + (g_isSmearing || g_historyCount >= 2
+                            ? activeRenderTicks
+                            : fadeRenderTicks);
+                    g_nextSampleDeadline = eventQpc + simulationTicks;
+                } else {
+                    g_nextSampleDeadline = g_pollingFallback
+                        ? eventQpc + fallbackTicks
+                        : 0;
+                }
+                (void)rendered;
+            } else if (rawMovement) {
+                g_rawMouseMovementPending = false;
+                const LONGLONG movementQpc = QpcNow();
+                const bool activeBeforeMovement =
+                    g_isSmearing || g_historyCount >= 2 || HasActiveRipples(movementQpc);
+
+                if (!activeBeforeMovement && !g_pollingFallback) {
+                    // The first report after an unbounded idle interval only
+                    // primes velocity sampling. A one-shot sample follows even
+                    // if the cursor stops before another hardware report.
+                    if (!g_samplePending) {
+                        PrimeCursorSample();
+                        g_samplePending = true;
+                        g_nextSampleDeadline = QpcNow() + simulationTicks;
+                    }
+                } else if (!g_samplePending && movementQpc >= g_nextSampleDeadline) {
+                    const bool renderFrame = movementQpc >= nextRenderDeadline;
+                    SmearFrame(hwnd, GetTickCount(), renderFrame);
+                    const LONGLONG sampledQpc = QpcNow();
+                    const bool activeAfterMovement =
+                        g_isSmearing || g_historyCount >= 2 || HasActiveRipples(sampledQpc);
+                    g_nextSampleDeadline = sampledQpc
+                        + (activeAfterMovement ? simulationTicks : (g_pollingFallback ? fallbackTicks : 0));
+                    if (activeAfterMovement && (renderFrame || sampledQpc >= nextRenderDeadline)) {
+                        nextRenderDeadline = sampledQpc
+                            + ((g_isSmearing || g_historyCount >= 2)
+                                ? activeRenderTicks
+                                : fadeRenderTicks);
+                    }
+                }
             }
             continue;
         }
-        if (waitResult == WAIT_OBJECT_0 + ARRAYSIZE(handles)) {
+
+        if (timerNeeded && waitResult == WAIT_OBJECT_0 + 2) {
+            if (sampleTimerNeeded) {
+                const LONGLONG sampleNow = QpcNow();
+                const bool interactionActiveBeforeFrame = HasActiveRipples(sampleNow);
+                const bool renderFrame =
+                    (g_isSmearing || g_historyCount >= 2 || interactionActiveBeforeFrame)
+                    && sampleNow >= nextRenderDeadline;
+                const bool rendered = SmearFrame(hwnd, GetTickCount(), renderFrame);
+                g_samplePending = false;
+                g_rawMouseMovementPending = false;
+
+                const LONGLONG sampledQpc = QpcNow();
+                const bool interactionActive = HasActiveRipples(sampledQpc);
+                const bool active = g_isSmearing;
+                const bool fading = !active && g_historyCount >= 2;
+                if (active || fading || interactionActive) {
+                    const LONGLONG interval = (active || interactionActive)
+                        ? activeRenderTicks
+                        : fadeRenderTicks;
+                    if (rendered || sampledQpc >= nextRenderDeadline) {
+                        nextRenderDeadline = sampledQpc + interval;
+                    }
+                    g_nextSampleDeadline = sampledQpc + simulationTicks;
+                } else if (g_pollingFallback) {
+                    g_nextSampleDeadline = sampledQpc + fallbackTicks;
+                } else {
+                    g_nextSampleDeadline = 0;
+                }
+            } else if (trimTimerNeeded) {
+                MaybeReleaseIdleBackbuffer(GetTickCount());
+                g_nextSampleDeadline = 0;
+            }
+            continue;
+        }
+
+        if (waitResult == WAIT_OBJECT_0 + handleCount) {
             while (PeekMessageW(&message, nullptr, 0, 0, PM_REMOVE)) {
                 if (message.message == WM_QUIT) {
                     running = false;
@@ -1903,10 +2159,22 @@ DWORD WINAPI OverlayThreadProc(LPVOID) {
             }
             continue;
         }
+
         break;
     }
+
     CancelWaitableTimer(frameTimer);
     CloseHandle(frameTimer);
+    if (g_foregroundEventHook) {
+        if (!UnhookWinEvent(g_foregroundEventHook)) {
+            Wh_Log(L"UnhookWinEvent failed: %lu", GetLastError());
+        }
+        g_foregroundEventHook = nullptr;
+    }
+    if (g_rawInputRegistered && hwnd) {
+        RegisterMouseRawInput(hwnd, false);
+        g_rawInputRegistered = false;
+    }
     ReleaseMouseHook();
     ClearRipples();
     HideOverlay();
@@ -1928,16 +2196,16 @@ BOOL WhTool_ModInit() {
     LoadSettings();
     g_stopEvent = CreateEventW(nullptr, TRUE, FALSE, nullptr);
     if (!g_stopEvent) return FALSE;
-    g_interactionEvent = CreateEventW(nullptr, FALSE, FALSE, nullptr);
-    if (!g_interactionEvent) {
+    g_inputWakeEvent = CreateEventW(nullptr, FALSE, FALSE, nullptr);
+    if (!g_inputWakeEvent) {
         CloseHandle(g_stopEvent);
         g_stopEvent = nullptr;
         return FALSE;
     }
     g_threadHandle = CreateThread(nullptr, 0, OverlayThreadProc, nullptr, 0, nullptr);
     if (!g_threadHandle) {
-        CloseHandle(g_interactionEvent);
-        g_interactionEvent = nullptr;
+        CloseHandle(g_inputWakeEvent);
+        g_inputWakeEvent = nullptr;
         CloseHandle(g_stopEvent);
         g_stopEvent = nullptr;
         return FALSE;
@@ -1952,9 +2220,9 @@ void WhTool_ModUninit() {
         CloseHandle(g_threadHandle);
         g_threadHandle = nullptr;
     }
-    if (g_interactionEvent) {
-        CloseHandle(g_interactionEvent);
-        g_interactionEvent = nullptr;
+    if (g_inputWakeEvent) {
+        CloseHandle(g_inputWakeEvent);
+        g_inputWakeEvent = nullptr;
     }
     if (g_stopEvent) {
         CloseHandle(g_stopEvent);
