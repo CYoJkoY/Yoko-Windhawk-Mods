@@ -265,6 +265,7 @@ This mod is derived in part from the Windhawk **Cursor Motion Blur** mod by Thea
 #include <algorithm>
 #include <atomic>
 #include <cstdint>
+#include <limits>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -296,6 +297,7 @@ constexpr uint8_t kCursorAlphaThreshold = 96;
 constexpr uint32_t kFallbackCoreColor = 0x00FFFFFF;
 constexpr uint32_t kFallbackOuterColor = 0x00000000;
 constexpr DWORD kBackbufferIdleReleaseDelayMs = 5000;
+constexpr int kBackbufferGrowthGranularity = 64;
 
 std::atomic<HWND> g_overlayHwnd{nullptr};
 HANDLE g_threadHandle = nullptr;
@@ -771,6 +773,18 @@ static bool UpdateFullscreenState(DWORD now, HWND foreground) {
     return false;
 }
 
+static int GrowBackbufferDimension(int required, int current) {
+    if (required <= current) return current;
+
+    const int64_t rounded = (
+        (static_cast<int64_t>(required) + kBackbufferGrowthGranularity - 1)
+        / kBackbufferGrowthGranularity
+    ) * kBackbufferGrowthGranularity;
+    return rounded <= std::numeric_limits<int>::max()
+        ? static_cast<int>(rounded)
+        : required;
+}
+
 bool EnsureBackbuffer(int width, int height, HDC referenceDc) {
     if (width <= 0 || height <= 0 || !referenceDc) return false;
     if (g_backBufferDc && g_backBufferBitmap && width <= g_cachedWidth && height <= g_cachedHeight) return true;
@@ -778,8 +792,8 @@ bool EnsureBackbuffer(int width, int height, HDC referenceDc) {
         g_backBufferDc = CreateCompatibleDC(referenceDc);
         if (!g_backBufferDc) return false;
     }
-    const int newWidth = std::max(width, g_cachedWidth);
-    const int newHeight = std::max(height, g_cachedHeight);
+    const int newWidth = GrowBackbufferDimension(width, g_cachedWidth);
+    const int newHeight = GrowBackbufferDimension(height, g_cachedHeight);
     ReleaseRenderResources();
     HBITMAP bitmap = Create32BitDIB(newWidth, newHeight);
     if (!bitmap) return false;
@@ -1183,8 +1197,16 @@ bool RenderTrail(HWND hwnd) {
         g_dcBound = true;
     }
     g_renderTarget->BeginDraw();
-    g_renderTarget->Clear(D2D1::ColorF(0, 0, 0, 0));
     g_renderTarget->SetTransform(D2D1::Matrix3x2F::Translation(-static_cast<float>(bounds.left), -static_cast<float>(bounds.top)));
+    // The clip rectangle is transformed into backbuffer coordinates by the
+    // translation above, limiting clearing and drawing to the submitted frame.
+    const D2D1_RECT_F clipBounds = D2D1::RectF(
+        static_cast<float>(bounds.left),
+        static_cast<float>(bounds.top),
+        static_cast<float>(bounds.right),
+        static_cast<float>(bounds.bottom));
+    g_renderTarget->PushAxisAlignedClip(clipBounds, D2D1_ANTIALIAS_MODE_ALIASED);
+    g_renderTarget->Clear(D2D1::ColorF(0, 0, 0, 0));
     g_outerBrush->SetColor(ToColorF(g_currentOuterRGB, alpha));
     g_glowBrush->SetColor(ToColorF(g_glowRGB, g_glowAlpha * alpha));
     g_coreBrush->SetColor(ToColorF(g_currentCoreRGB, std::min(1.0f, alpha * 1.02f)));
@@ -1198,6 +1220,7 @@ bool RenderTrail(HWND hwnd) {
         coreBrush = g_gradientBrush;
     }
     DrawTrailStroke(g_renderTarget, coreBrush, coreHalf, true);
+    g_renderTarget->PopAxisAlignedClip();
     g_renderTarget->SetTransform(D2D1::Matrix3x2F::Identity());
     const HRESULT hr = g_renderTarget->EndDraw();
     if (hr == D2DERR_RECREATE_TARGET) {
