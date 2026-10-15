@@ -18,8 +18,8 @@
 
 Cursor Tail adds a smooth, tapered motion-blur trail behind the mouse pointer
 when it moves quickly, with optional click ripples and animated directional
-scroll-wheel arrows for clearer interaction cues. All effects use a transparent Direct2D overlay, independently
-of the application under the pointer.
+scroll-wheel arrows for clearer interaction cues. All effects use a transparent
+Direct2D overlay, independently of the application under the pointer.
 
 ## Preview
 
@@ -307,20 +307,20 @@ This mod is derived in part from the Windhawk **Cursor Motion Blur** mod by Thea
       $description: Maximum radius of the expanding click ring in pixels. Range 10-200.
       $description:zh-CN: 点击扩散圆环的最大半径，单位为像素。范围为 10-200。
     - ripple_duration_ms: 420
-      $name: Ripple duration
-      $name:zh-CN: 波纹持续时间
-      $description: Duration of each ripple in milliseconds. Range 100-2000.
-      $description:zh-CN: 每个波纹的动画持续时间，单位为毫秒。范围为 100-2000。
+      $name: Feedback duration
+      $name:zh-CN: 交互反馈持续时间
+      $description: Duration of each click ring or scroll arrow in milliseconds. Range 100-2000.
+      $description:zh-CN: 每个点击圆环或滚轮箭头的动画持续时间，单位为毫秒。范围为 100-2000。
     - ripple_width: 3
       $name: Interaction stroke width
       $name:zh-CN: 交互线条粗细
       $description: Stroke width of click-ring outlines and scroll arrows in pixels. Range 1-10.
       $description:zh-CN: 点击圆环轮廓与滚轮箭头的线宽，单位为像素。范围为 1-10。
     - ripple_opacity: 78
-      $name: Ripple opacity
-      $name:zh-CN: 波纹不透明度
-      $description: Starting opacity of each ripple, from 5 to 100 percent.
-      $description:zh-CN: 每个波纹初始的不透明度，范围为 5%-100%。
+      $name: Feedback opacity
+      $name:zh-CN: 交互反馈不透明度
+      $description: Starting opacity of each click ring or scroll arrow, from 5 to 100 percent.
+      $description:zh-CN: 每个点击圆环或滚轮箭头的初始不透明度，范围为 5%-100%。
   $name: Interaction
   $name:zh-CN: 交互反馈
 
