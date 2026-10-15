@@ -330,7 +330,7 @@ This mod is derived in part from the Windhawk **Cursor Motion Blur** mod by Thea
       $name:zh-CN: 快速移动轨迹补点
       $description: Insert a bounded number of intermediate trail samples when the pointer moves a long distance between samples.
       $description:zh-CN: 相邻采样点距离较大时，在轨迹中插入数量受限的中间采样点。
-    - acceleration_threshold: 24000
+    - acceleration_threshold: 40000
       $name: Acceleration threshold
       $name:zh-CN: 加速度阈值
       $description: Minimum speed increase per second required for a burst accent, in pixels per second squared. Range 3000-100000.
@@ -355,6 +355,11 @@ This mod is derived in part from the Windhawk **Cursor Motion Blur** mod by Thea
       $name:zh-CN: 运动提示颜色
       $description: Hexadecimal RGB color used for acceleration and turn accents.
       $description:zh-CN: 加速和转向提示使用的十六进制 RGB 颜色。
+    - motion_accent_opacity: 82
+      $name: Motion accent opacity
+      $name:zh-CN: 运动提示不透明度
+      $description: Maximum opacity of acceleration and turn accents, from 10 to 100 percent.
+      $description:zh-CN: 加速和转向提示的最大不透明度，范围为 10%-100%。
     - max_interpolation_steps: 4
       $name: Maximum interpolation steps
       $name:zh-CN: 最大补点数量
@@ -543,11 +548,11 @@ float g_rippleOpacity = 0.78f;
 int g_accelerationAccentEnabled = 0;
 int g_turnAccentEnabled = 0;
 int g_fastMoveInterpolationEnabled = 1;
-int g_accelerationThreshold = 24000;
+int g_accelerationThreshold = 40000;
 int g_turnAngleDegrees = 75;
 int g_motionAccentDurationMs = 260;
 float g_motionAccentSize = 14.0f;
-float g_motionAccentOpacity = 0.9f;
+float g_motionAccentOpacity = 0.82f;
 int g_maxInterpolationSteps = 4;
 uint32_t g_motionAccentRGB = 0x00FFD166;
 
@@ -984,6 +989,7 @@ void LoadSettings() {
     g_turnAccentEnabled = std::clamp(Wh_GetIntSetting(L"Motion.turn_accent_enabled"), 0, 1);
     g_fastMoveInterpolationEnabled = std::clamp(Wh_GetIntSetting(L"Motion.fast_move_interpolation"), 0, 1);
     g_accelerationThreshold = std::clamp(Wh_GetIntSetting(L"Motion.acceleration_threshold"), 3000, 100000);
+    g_motionAccentOpacity = std::clamp(Wh_GetIntSetting(L"Motion.motion_accent_opacity"), 10, 100) / 100.0f;
     g_turnAngleDegrees = std::clamp(Wh_GetIntSetting(L"Motion.turn_angle_degrees"), 45, 150);
     g_motionAccentDurationMs = std::clamp(Wh_GetIntSetting(L"Motion.motion_accent_duration_ms"), 80, 1000);
     g_motionAccentSize = static_cast<float>(std::clamp(Wh_GetIntSetting(L"Motion.motion_accent_size"), 4, 40));
@@ -1738,7 +1744,7 @@ void UpdateTrailState(const POINT& previousPoint, const POINT& point, float velo
         int interpolationSteps = 1;
         if (g_fastMoveInterpolationEnabled && distance > kFastMoveInterpolationSpacingPx) {
             const int requiredSteps = static_cast<int>(ceilf(distance / kFastMoveInterpolationSpacingPx));
-            interpolationSteps = std::clamp(requiredSteps, 1, g_maxInterpolationSteps);
+            interpolationSteps = std::clamp(requiredSteps, 1, g_maxInterpolationSteps + 1);
         }
         // History is stored newest-first, so push the interpolated path toward
         // the current endpoint in ascending order. Work is capped at six points.
@@ -2186,6 +2192,17 @@ bool RenderOverlay(HWND hwnd, LONGLONG nowQpc) {
         1, g_qpcFrequency * static_cast<LONGLONG>(g_motionAccentDurationMs) / 1000);
     for (const MotionAccent& accent : g_motionAccents) {
         if (!accent.active) continue;
+        const LONGLONG deltaX = newestMotionAccent
+            ? static_cast<LONGLONG>(accent.center.x) - newestMotionAccent->center.x
+            : 0;
+        const LONGLONG deltaY = newestMotionAccent
+            ? static_cast<LONGLONG>(accent.center.y) - newestMotionAccent->center.y
+            : 0;
+        if (newestMotionAccent
+            && (deltaX < -kMaxRippleClusterRadiusPx || deltaX > kMaxRippleClusterRadiusPx
+                || deltaY < -kMaxRippleClusterRadiusPx || deltaY > kMaxRippleClusterRadiusPx)) {
+            continue;
+        }
         const LONGLONG elapsedTicks = nowQpc - accent.startQpc;
         if (elapsedTicks < 0 || elapsedTicks >= accentDurationTicks) continue;
         const float progress = std::clamp(
