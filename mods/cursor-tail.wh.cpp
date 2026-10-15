@@ -74,7 +74,7 @@ Windhawk also ships **Cursor Motion Blur** and **Mouse Trail**, which cover simi
 - **Context awareness:** per-app `exe=on|off` rules and fullscreen suppression (D3D exclusive or borderless) with an exit confirmation delay.
 - **Interaction layer:** optional, button-specific click ripples and scroll-direction pulses rendered through the same bounded Direct2D backbuffer, without a particle subsystem. The low-level mouse hook is installed only while one of these effects is enabled.
 
-Users who want the original, minimal behavior should stay on Cursor Motion Blur. Cursor Tail is for users who want the additional appearance, adaptive color and per-app controls.
+Users who want the original, minimal behavior should stay on Cursor Motion Blur. Cursor Tail is for users who want a more configurable motion trail, adaptive color, per-app rules, and optional click/scroll feedback.
 
 ## Attribution
 
