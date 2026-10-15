@@ -1467,8 +1467,9 @@ bool RenderOverlay(HWND hwnd, LONGLONG nowQpc) {
         includeBounds(CalculateTrailBounds(boundsHalf));
     }
 
+    // These values originate from integer settings, so no floating-point round-up is needed.
     const LONG ripplePadding = static_cast<LONG>(
-        std::ceil(g_rippleRadius + g_rippleStrokeWidth + kRenderPadding + 1.0f));
+        g_rippleRadius + g_rippleStrokeWidth + kRenderPadding + 1.0f);
     const RippleEffect* newestRipple = nullptr;
     for (const RippleEffect& ripple : g_ripples) {
         if (ripple.active && (!newestRipple || ripple.startQpc > newestRipple->startQpc)) {
@@ -1596,9 +1597,9 @@ bool RenderOverlay(HWND hwnd, LONGLONG nowQpc) {
     blend.BlendOp = AC_SRC_OVER;
     blend.SourceConstantAlpha = 255;
     blend.AlphaFormat = AC_SRC_ALPHA;
-    const POINT position = {bounds.left, bounds.top};
-    const SIZE size = {width, height};
-    const POINT bufferOrigin = {0, 0};
+    POINT position = {bounds.left, bounds.top};
+    SIZE size = {width, height};
+    POINT bufferOrigin = {0, 0};
     return UpdateLayeredWindow(
         hwnd,
         screen,
