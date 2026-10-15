@@ -1,0 +1,160 @@
+name: Sync mods -> CYoJkoY/windhawk-mods
+
+# 单向镜像：本仓库 mods/*.wh.cpp  ->  CYoJkoY/windhawk-mods 的 mods/
+# 只改本仓库的 Actions，目标仓库无需任何配置。
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "mods/**"
+  schedule:
+    # 兜底：每天 UTC 03:17 跑一次，防止漏掉某次推送
+    - cron: "17 3 * * *"
+  workflow_dispatch:
+    inputs:
+      prune:
+        description: "删除目标仓库里有、但本仓库已删除的 mod 文件"
+        type: boolean
+        default: false
+      dry_run:
+        description: "只打印差异，不推送"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: sync-mods-to-windhawk-mods
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    env:
+      TARGET_REPO: CYoJkoY/windhawk-mods
+      TARGET_BRANCH: main
+      FILE_GLOB: "*.wh.cpp"
+      PRUNE: ${{ github.event.inputs.prune || 'false' }}
+      DRY_RUN: ${{ github.event.inputs.dry_run || 'false' }}
+
+    steps:
+      - name: Checkout source (Yoko-Windhawk-Mods)
+        uses: actions/checkout@v4
+        with:
+          path: source
+          fetch-depth: 2
+
+      - name: Checkout target (CYoJkoY/windhawk-mods)
+        uses: actions/checkout@v4
+        with:
+          repository: CYoJkoY/windhawk-mods
+          ref: main
+          path: target
+          fetch-depth: 1
+          # 只展开 mods/，避免把上游几千个文件也 checkout 出来
+          sparse-checkout: |
+            mods
+          sparse-checkout-cone-mode: false
+          token: ${{ secrets.SYNC_PAT }}
+
+      - name: Mirror mods directory
+        id: mirror
+        run: |
+          set -euo pipefail
+
+          SRC_MODS="$GITHUB_WORKSPACE/source/mods"
+          DST_MODS="$GITHUB_WORKSPACE/target/mods"
+          GLOB="$FILE_GLOB"
+
+          if [ ! -d "$SRC_MODS" ]; then
+            echo "::error::source/mods not found, nothing to sync"
+            exit 1
+          fi
+          mkdir -p "$DST_MODS"
+
+          added=(); changed=(); removed=()
+
+          # 1) 新增 / 修改
+          while IFS= read -r -d '' f; do
+            rel="${f#"$SRC_MODS"/}"
+            dst="$DST_MODS/$rel"
+            mkdir -p "$(dirname "$dst")"
+            if [ ! -f "$dst" ]; then
+              cp "$f" "$dst"; added+=("$rel")
+            elif ! cmp -s "$f" "$dst"; then
+              cp "$f" "$dst"; changed+=("$rel")
+            fi
+          done < <(find "$SRC_MODS" -type f -name "$GLOB" -print0)
+
+          # 2) 删除（可选，默认关闭）
+          if [ "${PRUNE:-false}" = "true" ]; then
+            while IFS= read -r -d '' f; do
+              rel="${f#"$DST_MODS"/}"
+              [ -f "$SRC_MODS/$rel" ] || { rm -f "$f"; removed+=("$rel"); }
+            done < <(find "$DST_MODS" -type f -name "$GLOB" -print0)
+          fi
+
+          # 3) 提交信息取自源仓库最新提交
+          SRC_SHA="$(git -C "$GITHUB_WORKSPACE/source" rev-parse --short HEAD)"
+          SRC_MSG="$(git -C "$GITHUB_WORKSPACE/source" log -1 --pretty=%s)"
+          MSG="sync(mods): $SRC_MSG (Yoko@$SRC_SHA)"
+
+          {
+            echo "### Sync summary"
+            echo ""
+            echo "- target: \`$TARGET_REPO\` @ \`$TARGET_BRANCH\`"
+            echo "- source commit: \`$SRC_SHA\` $SRC_MSG"
+            echo "- added: ${#added[@]} / changed: ${#changed[@]} / removed: ${#removed[@]}"
+            echo ""
+            if [ ${#added[@]} -gt 0 ]; then
+              for x in "${added[@]}";   do echo "- \`+\` $x"; done
+            fi
+            if [ ${#changed[@]} -gt 0 ]; then
+              for x in "${changed[@]}"; do echo "- \`~\` $x"; done
+            fi
+            if [ ${#removed[@]} -gt 0 ]; then
+              for x in "${removed[@]}"; do echo "- \`-\` $x"; done
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          if [ "${DRY_RUN:-false}" = "true" ]; then
+            echo "dry_run=true, skip push"
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          cd "$GITHUB_WORKSPACE/target"
+
+          # 只提交 mods/ 下的改动，其它文件一律不动
+          git add -A mods
+
+          if git diff --cached --quiet; then
+            echo "No mods changes, nothing to push."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -m "$MSG"
+
+          echo "skip=false" >> "$GITHUB_OUTPUT"
+
+      - name: Push to target
+        if: steps.mirror.outputs.skip == 'false'
+        run: |
+          set -euo pipefail
+          cd "$GITHUB_WORKSPACE/target"
+          for i in 1 2 3 4 5; do
+            if git pull --rebase --autostash origin "$TARGET_BRANCH" \
+               && git push origin "HEAD:$TARGET_BRANCH"; then
+              echo "Pushed to $TARGET_REPO@$TARGET_BRANCH"
+              exit 0
+            fi
+            echo "attempt $i failed, retrying..."
+            sleep $((i * 5))
+          done
+          echo "::error::push failed after 5 attempts"
+          exit 1
