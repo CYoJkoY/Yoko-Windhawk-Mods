@@ -385,6 +385,9 @@ struct TrailRenderCache {
     std::vector<D2D1_POINT_2F> smoothed;
     std::vector<D2D1_POINT_2F> subdivision;
     std::vector<float> taper;
+    size_t cachedTaperPointCount = 0;
+    float cachedTaperPower = 0.0f;
+    bool taperCacheValid = false;
 
     void ReserveForTailLength(int tailLength) {
         const size_t baseCount = static_cast<size_t>(std::max(tailLength, 2));
@@ -395,18 +398,28 @@ struct TrailRenderCache {
     }
 
     void PrepareTaper() {
-        taper.resize(smoothed.size());
-        if (smoothed.size() <= 1) {
-            if (!taper.empty()) taper[0] = 0.0f;
+        const size_t pointCount = smoothed.size();
+        if (taperCacheValid &&
+            cachedTaperPointCount == pointCount &&
+            cachedTaperPower == g_taperPower) {
             return;
         }
 
-        const float denominator = static_cast<float>(smoothed.size() - 1);
-        for (size_t i = 0; i + 1 < smoothed.size(); ++i) {
-            const float ratio = static_cast<float>(i) / denominator;
-            taper[i] = powf(std::max(0.0f, 1.0f - ratio), g_taperPower);
+        taper.resize(pointCount);
+        if (pointCount <= 1) {
+            if (!taper.empty()) taper[0] = 0.0f;
+        } else {
+            const float denominator = static_cast<float>(pointCount - 1);
+            for (size_t i = 0; i + 1 < pointCount; ++i) {
+                const float ratio = static_cast<float>(i) / denominator;
+                taper[i] = powf(std::max(0.0f, 1.0f - ratio), g_taperPower);
+            }
+            taper.back() = 0.0f;
         }
-        taper.back() = 0.0f;
+
+        cachedTaperPointCount = pointCount;
+        cachedTaperPower = g_taperPower;
+        taperCacheValid = true;
     }
 };
 TrailRenderCache g_renderCache;
@@ -1079,9 +1092,17 @@ static void ReleaseBackgroundSampler() {
 
 static float SampleBackgroundLuminance(DWORD now, POINT center) {
     if (g_backgroundLuminanceValid) {
-        const LONG dx = center.x - g_backgroundLuminanceCenter.x;
-        const LONG dy = center.y - g_backgroundLuminanceCenter.y;
-        const bool movedFarEnough = dx * dx + dy * dy >= kBackgroundResampleDistancePx * kBackgroundResampleDistancePx;
+        const int64_t dx = static_cast<int64_t>(center.x) -
+                           static_cast<int64_t>(g_backgroundLuminanceCenter.x);
+        const int64_t dy = static_cast<int64_t>(center.y) -
+                           static_cast<int64_t>(g_backgroundLuminanceCenter.y);
+        const int64_t distanceThreshold = kBackgroundResampleDistancePx;
+        // Short-circuit large coordinate deltas before squaring them; the final
+        // squared-distance comparison only runs when both deltas are below 20.
+        const bool movedFarEnough =
+            dx <= -distanceThreshold || dx >= distanceThreshold ||
+            dy <= -distanceThreshold || dy >= distanceThreshold ||
+            dx * dx + dy * dy >= distanceThreshold * distanceThreshold;
         if (!movedFarEnough && now - g_backgroundLuminanceUpdated < kBackgroundResampleIntervalMs) return g_backgroundLuminance;
     }
 
