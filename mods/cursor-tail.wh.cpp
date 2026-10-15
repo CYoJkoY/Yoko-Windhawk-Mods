@@ -257,8 +257,8 @@ This mod is derived in part from the Windhawk **Cursor Motion Blur** mod by Thea
 
 - Interaction:
     - click_feedback_enabled: false
-      $name: Mouse click ripples
-      $name:zh-CN: 鼠标点击波纹
+      $name: Mouse click rings
+      $name:zh-CN: 鼠标点击圆环
       $description: Show an expanding ring when the left, right, or middle mouse button is pressed. Click feedback uses asynchronous raw mouse input and does not install a low-level mouse hook.
       $description:zh-CN: 按下鼠标左键、右键或中键时显示扩散圆环。点击反馈使用异步原始鼠标输入，不会安装低级鼠标钩子。
     - wheel_feedback_enabled: false
@@ -2780,7 +2780,7 @@ DWORD WINAPI OverlayThreadProc(LPVOID) {
                                 ? activeRenderTicks
                                 : fadeRenderTicks);
                     }
-                } else if (movementQpc >= g_nextSampleDeadline) {
+                } else if (movementQpc >= g_nextSampleDeadline || !activeBeforeMovement) {
                     const bool renderFrame = movementQpc >= nextRenderDeadline;
                     SmearFrame(hwnd, GetTickCount(), renderFrame);
                     const LONGLONG sampledQpc = QpcNow();
