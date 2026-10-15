@@ -27,7 +27,9 @@ of the application under the pointer.
 
 ## Features
 
-- **Speed-reactive trail:** Width, opacity, and effective length respond to pointer velocity. Trigger and stop speeds are configured in pixels per second, so they mean the same thing whether the loop is sampling at 125 Hz or at the 30 Hz idle rate.
+- **Speed-reactive trail:** Width, opacity, and effective length respond to pointer velocity. Trigger and stop speeds are configured in pixels per second, so they remain meaningful when the sampling rate changes.
+- **Continuous fast-motion paths:** A configurable, hard-bounded interpolation step count fills large gaps between samples without allocating extra memory in the draw loop.
+- **Motion accents:** Optional acceleration streaks and sharp-turn chevrons provide different cues for sudden speed changes and direction changes. Both are disabled by default.
 - **Smooth motion:** Historical cursor samples can be smoothed with Chaikin subdivision for a continuous ribbon.
 - **Custom appearance:** Configure trail color, outline color, gradient, and optional glow.
 - **Adaptive color:** Automatically sample the active cursor image and prefer colors with sufficient contrast against the screen background.
@@ -73,6 +75,7 @@ Windhawk also ships **Cursor Motion Blur**, **Mouse Trail**, **Simple Cursor Tra
 - **Adaptive color:** cursor-image color extraction with histogram ranking, contrast selection against the sampled background luminance, and automatic or manual outline colors.
 - **Context awareness:** per-app `exe=on|off` rules and fullscreen suppression (D3D exclusive or borderless) with an exit confirmation delay.
 - **Interaction layer:** optional, button-specific click ripples and scroll-direction pulses rendered through the same bounded Direct2D backbuffer, without a particle subsystem. The low-level mouse hook is installed only while one of these effects is enabled.
+- **Motion cues:** optional fixed-capacity acceleration streaks and direction-change chevrons, with cooldowns and bounded lifetimes. Large movement intervals can insert a configurable number of trail samples to reduce visual gaps.
 
 - [**Cursor Motion Blur**](https://github.com/ramensoftware/windhawk-mods/blob/main/mods/cursor-motion-blur.wh.cpp): the original basis for Cursor Tail, with a tapered motion-blur ribbon.
 - [**Mouse Trail**](https://github.com/ramensoftware/windhawk-mods/blob/main/mods/mouse-trail.wh.cpp): a ribbon-style trail with glow and cursor-extracted color.
@@ -2031,7 +2034,8 @@ bool RenderOverlay(HWND hwnd, LONGLONG nowQpc) {
     }
 
     const int activeRippleCount = UpdateRippleState(nowQpc);
-    if (!drawTrail && activeRippleCount == 0) return false;
+    const int activeMotionAccentCount = UpdateMotionAccentState(nowQpc);
+    if (!drawTrail && activeRippleCount == 0 && activeMotionAccentCount == 0) return false;
 
     RECT bounds = {};
     bool hasBounds = false;
@@ -2059,6 +2063,34 @@ bool RenderOverlay(HWND hwnd, LONGLONG nowQpc) {
     const float scaledRippleStrokeWidth = g_rippleStrokeWidth * g_currentDpiScale;
     const LONG ripplePadding = static_cast<LONG>(
         scaledRippleRadius + scaledRippleStrokeWidth + kRenderPadding * g_currentDpiScale + 1.0f);
+    const MotionAccent* newestMotionAccent = nullptr;
+    for (const MotionAccent& accent : g_motionAccents) {
+        if (accent.active && (!newestMotionAccent || accent.startQpc > newestMotionAccent->startQpc)) {
+            newestMotionAccent = &accent;
+        }
+    }
+    const float scaledMotionAccentSize = g_motionAccentSize * g_currentDpiScale;
+    const LONG motionAccentPadding = static_cast<LONG>(
+        ceilf(scaledMotionAccentSize * 2.4f + kRenderPadding * g_currentDpiScale + 2.0f));
+    for (const MotionAccent& accent : g_motionAccents) {
+        if (!accent.active) continue;
+        if (newestMotionAccent) {
+            const int64_t deltaX = static_cast<int64_t>(accent.center.x) - newestMotionAccent->center.x;
+            const int64_t deltaY = static_cast<int64_t>(accent.center.y) - newestMotionAccent->center.y;
+            if (deltaX < -kMaxRippleClusterRadiusPx || deltaX > kMaxRippleClusterRadiusPx
+                || deltaY < -kMaxRippleClusterRadiusPx || deltaY > kMaxRippleClusterRadiusPx) {
+                continue;
+            }
+        }
+        const RECT accentBounds = {
+            accent.center.x - motionAccentPadding,
+            accent.center.y - motionAccentPadding,
+            accent.center.x + motionAccentPadding,
+            accent.center.y + motionAccentPadding,
+        };
+        includeBounds(accentBounds);
+    }
+
     const RippleEffect* newestRipple = nullptr;
     for (const RippleEffect& ripple : g_ripples) {
         if (ripple.active && (!newestRipple || ripple.startQpc > newestRipple->startQpc)) {
@@ -2148,6 +2180,64 @@ bool RenderOverlay(HWND hwnd, LONGLONG nowQpc) {
         }
         DrawTrailStroke(g_renderTarget, coreBrush, coreHalf, true);
         g_renderTarget->PopLayer();
+    }
+
+    const LONGLONG accentDurationTicks = std::max<LONGLONG>(
+        1, g_qpcFrequency * static_cast<LONGLONG>(g_motionAccentDurationMs) / 1000);
+    for (const MotionAccent& accent : g_motionAccents) {
+        if (!accent.active) continue;
+        const LONGLONG elapsedTicks = nowQpc - accent.startQpc;
+        if (elapsedTicks < 0 || elapsedTicks >= accentDurationTicks) continue;
+        const float progress = std::clamp(
+            static_cast<float>(elapsedTicks) / static_cast<float>(accentDurationTicks),
+            0.0f,
+            1.0f);
+        const float remaining = 1.0f - progress;
+        const float alpha = g_motionAccentOpacity * accent.intensity * remaining * remaining;
+        if (alpha < 0.005f) continue;
+
+        const float directionX = accent.directionX;
+        const float directionY = accent.directionY;
+        const float normalX = -directionY;
+        const float normalY = directionX;
+        const float size = scaledMotionAccentSize
+            * (0.82f + 0.18f * remaining)
+            * std::clamp(accent.intensity, 0.5f, 1.8f);
+        const D2D1_POINT_2F center = D2D1::Point2F(
+            static_cast<float>(accent.center.x),
+            static_cast<float>(accent.center.y));
+        const auto pointAlong = [&](float along, float normal) {
+            return D2D1::Point2F(
+                center.x + directionX * along + normalX * normal,
+                center.y + directionY * along + normalY * normal);
+        };
+
+        g_rippleBrush->SetColor(ToColorF(g_motionAccentRGB, std::clamp(alpha, 0.0f, 1.0f)));
+        const float stroke = std::max(1.0f, g_currentDpiScale * (1.45f - 0.55f * progress));
+        if (accent.kind == MotionAccentKind::Acceleration) {
+            for (int streak = -1; streak <= 1; ++streak) {
+                const float lateral = static_cast<float>(streak) * size * 0.48f;
+                const float startAlong = -size * 0.12f;
+                const float endAlong = -size * (0.82f + 0.22f * static_cast<float>(streak + 1));
+                g_renderTarget->DrawLine(
+                    pointAlong(startAlong, lateral),
+                    pointAlong(endAlong, lateral),
+                    g_rippleBrush,
+                    stroke,
+                    g_strokeStyle);
+            }
+        } else {
+            const D2D1_POINT_2F tip = pointAlong(size * 0.35f, 0.0f);
+            const D2D1_POINT_2F leftWing = pointAlong(-size * 0.52f, size * 0.62f);
+            const D2D1_POINT_2F rightWing = pointAlong(-size * 0.52f, -size * 0.62f);
+            g_renderTarget->DrawLine(tip, leftWing, g_rippleBrush, stroke, g_strokeStyle);
+            g_renderTarget->DrawLine(tip, rightWing, g_rippleBrush, stroke, g_strokeStyle);
+            const D2D1_POINT_2F innerTip = pointAlong(size * 0.04f, 0.0f);
+            const D2D1_POINT_2F innerLeft = pointAlong(-size * 0.45f, size * 0.34f);
+            const D2D1_POINT_2F innerRight = pointAlong(-size * 0.45f, -size * 0.34f);
+            g_renderTarget->DrawLine(innerTip, innerLeft, g_rippleBrush, stroke * 0.7f, g_strokeStyle);
+            g_renderTarget->DrawLine(innerTip, innerRight, g_rippleBrush, stroke * 0.7f, g_strokeStyle);
+        }
     }
 
     const LONGLONG durationTicks = std::max<LONGLONG>(
@@ -2490,7 +2580,7 @@ DWORD WINAPI OverlayThreadProc(LPVOID) {
 
         const LONGLONG currentQpc = QpcNow();
         const bool trailActive = g_isSmearing || g_historyCount >= 2;
-        const bool rippleActive = HasActiveRipples(currentQpc);
+        const bool rippleActive = HasActiveRipples(currentQpc) || HasActiveMotionAccents(currentQpc);
         const LONGLONG inputWakeInterval = std::max<LONGLONG>(
             1,
             g_qpcFrequency * static_cast<LONGLONG>(kInputWakeThrottleMs) / 1000);
@@ -2575,7 +2665,9 @@ DWORD WINAPI OverlayThreadProc(LPVOID) {
                 const bool forceRender = interactionTriggered;
                 const bool rendered = SmearFrame(hwnd, GetTickCount(), forceRender);
                 const bool activeAfterEvent =
-                    g_isSmearing || g_historyCount >= 2 || HasActiveRipples(QpcNow());
+                    g_isSmearing || g_historyCount >= 2
+                    || HasActiveRipples(QpcNow())
+                    || HasActiveMotionAccents(QpcNow());
                 if (activeAfterEvent) {
                     nextRenderDeadline = eventQpc
                         + (g_isSmearing || g_historyCount >= 2
@@ -2592,7 +2684,9 @@ DWORD WINAPI OverlayThreadProc(LPVOID) {
                 g_rawMouseMovementPending = false;
                 const LONGLONG movementQpc = QpcNow();
                 const bool activeBeforeMovement =
-                    g_isSmearing || g_historyCount >= 2 || HasActiveRipples(movementQpc);
+                    g_isSmearing || g_historyCount >= 2
+                    || HasActiveRipples(movementQpc)
+                    || HasActiveMotionAccents(movementQpc);
 
                 if (!activeBeforeMovement && !g_pollingFallback) {
                     // Bound the first post-idle interval instead of dividing by
@@ -2606,7 +2700,9 @@ DWORD WINAPI OverlayThreadProc(LPVOID) {
                     SmearFrame(hwnd, GetTickCount(), renderFrame);
                     const LONGLONG sampledQpc = QpcNow();
                     const bool activeAfterMovement =
-                        g_isSmearing || g_historyCount >= 2 || HasActiveRipples(sampledQpc);
+                        g_isSmearing || g_historyCount >= 2
+                        || HasActiveRipples(sampledQpc)
+                        || HasActiveMotionAccents(sampledQpc);
                     g_nextSampleDeadline = sampledQpc
                         + (activeAfterMovement ? simulationTicks : 0);
                     if (activeAfterMovement && (renderFrame || sampledQpc >= nextRenderDeadline)) {
@@ -2620,7 +2716,9 @@ DWORD WINAPI OverlayThreadProc(LPVOID) {
                     SmearFrame(hwnd, GetTickCount(), renderFrame);
                     const LONGLONG sampledQpc = QpcNow();
                     const bool activeAfterMovement =
-                        g_isSmearing || g_historyCount >= 2 || HasActiveRipples(sampledQpc);
+                        g_isSmearing || g_historyCount >= 2
+                        || HasActiveRipples(sampledQpc)
+                        || HasActiveMotionAccents(sampledQpc);
                     g_nextSampleDeadline = sampledQpc
                         + (activeAfterMovement ? simulationTicks : (g_pollingFallback ? fallbackTicks : 0));
                     if (activeAfterMovement && (renderFrame || sampledQpc >= nextRenderDeadline)) {
@@ -2637,7 +2735,8 @@ DWORD WINAPI OverlayThreadProc(LPVOID) {
         if (timerNeeded && waitResult == WAIT_OBJECT_0 + 2) {
             if (sampleTimerNeeded) {
                 const LONGLONG sampleNow = QpcNow();
-                const bool interactionActiveBeforeFrame = HasActiveRipples(sampleNow);
+                const bool interactionActiveBeforeFrame =
+                    HasActiveRipples(sampleNow) || HasActiveMotionAccents(sampleNow);
                 const bool renderFrame =
                     (g_isSmearing || g_historyCount >= 2 || interactionActiveBeforeFrame)
                     && sampleNow >= nextRenderDeadline;
@@ -2645,7 +2744,8 @@ DWORD WINAPI OverlayThreadProc(LPVOID) {
                 g_rawMouseMovementPending = false;
 
                 const LONGLONG sampledQpc = QpcNow();
-                const bool interactionActive = HasActiveRipples(sampledQpc);
+                const bool interactionActive =
+                    HasActiveRipples(sampledQpc) || HasActiveMotionAccents(sampledQpc);
                 const bool active = g_isSmearing;
                 const bool fading = !active && g_historyCount >= 2;
                 if (active || fading || interactionActive) {
