@@ -362,6 +362,7 @@ constexpr DWORD kBackbufferIdleReleaseDelayMs = 5000;
 constexpr int kBackbufferGrowthGranularity = 64;
 constexpr int kMaxActiveRipples = 12;
 constexpr float kRippleInitialRadius = 4.0f;
+constexpr int kMaxRippleClusterRadiusPx = 512;
 
 std::atomic<HWND> g_overlayHwnd{nullptr};
 HANDLE g_threadHandle = nullptr;
@@ -916,6 +917,7 @@ static void ReleaseMouseHook() {
     if (g_mouseHook) {
         if (!UnhookWindowsHookEx(g_mouseHook)) {
             Wh_Log(L"UnhookWindowsHookEx failed: %lu", GetLastError());
+            return;
         }
         g_mouseHook = nullptr;
     }
@@ -1467,8 +1469,25 @@ bool RenderOverlay(HWND hwnd, LONGLONG nowQpc) {
 
     const LONG ripplePadding = static_cast<LONG>(
         std::ceil(g_rippleRadius + g_rippleStrokeWidth + kRenderPadding + 1.0f));
+    const RippleEffect* newestRipple = nullptr;
+    for (const RippleEffect& ripple : g_ripples) {
+        if (ripple.active && (!newestRipple || ripple.startQpc > newestRipple->startQpc)) {
+            newestRipple = &ripple;
+        }
+    }
     for (const RippleEffect& ripple : g_ripples) {
         if (!ripple.active) continue;
+        // A single layered window must submit one rectangular bitmap. Avoid a
+        // huge allocation if interactions occur on distant monitors in quick
+        // succession; keep rendering the most recent local cluster instead.
+        if (newestRipple) {
+            const int64_t deltaX = static_cast<int64_t>(ripple.center.x) - newestRipple->center.x;
+            const int64_t deltaY = static_cast<int64_t>(ripple.center.y) - newestRipple->center.y;
+            if (deltaX < -kMaxRippleClusterRadiusPx || deltaX > kMaxRippleClusterRadiusPx
+                || deltaY < -kMaxRippleClusterRadiusPx || deltaY > kMaxRippleClusterRadiusPx) {
+                continue;
+            }
+        }
         const RECT rippleBounds = {
             ripple.center.x - ripplePadding,
             ripple.center.y - ripplePadding,
@@ -1592,7 +1611,7 @@ bool RenderOverlay(HWND hwnd, LONGLONG nowQpc) {
         ULW_ALPHA) != FALSE;
 }
 
-// Pointer speed in pixels per second// Pointer speed in pixels per second, derived from the real elapsed time between
+// Pointer speed in pixels per second, derived from the real elapsed time between
 // samples. The loop runs at 125 Hz while active and 30 Hz while idle, so a
 // pixels-per-sample threshold would mean something different at each rate.
 static float PointerSpeedPxPerSecond(const POINT& point, LONGLONG nowQpc) {
@@ -1664,7 +1683,7 @@ bool SmearFrame(HWND hwnd, DWORD now, bool renderFrame) {
     return true;
 }
 
-LRESULT CALLBACK OverlayWndProc(LRESULT CALLBACK OverlayWndProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam) {
+LRESULT CALLBACK OverlayWndProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam) {
     switch (message) {
     case kSettingsChangedMessage:
         g_settingsDirty.store(true, std::memory_order_release);
