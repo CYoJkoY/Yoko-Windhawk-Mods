@@ -21,7 +21,7 @@ jobs:
       matrix:
         version: [
           '1.7.3',
-          '2.0.0-alpha.5',
+          '2.0.0-alpha.7',
         ]
     steps:
       - name: Checkout
