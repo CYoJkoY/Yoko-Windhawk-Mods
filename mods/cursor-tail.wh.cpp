@@ -62,7 +62,7 @@ The trail is suppressed when the foreground application reports a D3D fullscreen
 
 ## Performance
 
-Cursor state is sampled at 125 Hz while the trail is active and backs off to 30 Hz when the trail is fully idle. Layered-window submission is paced separately at 60 FPS while actively moving and 30 FPS while fading. Background luminance sampling is additionally limited by both time and cursor travel distance so repeated screen captures are avoided during short, fast sampling intervals. The back buffer and Direct2D resources are reused between frames and resized only when the required trail bounds grow beyond the current buffer.
+Mouse movement and foreground changes wake the worker from an indefinite wait during ordinary idle, avoiding periodic cursor polling. Sampling runs at 125 Hz while an effect is active; a bounded 60 Hz fallback is used if raw input or foreground notifications are unavailable, or if a higher-integrity foreground window prevents raw input. Layered-window submission is paced separately at 60 FPS while actively moving and 30 FPS while fading. Input reports that fall inside the short wake-throttling window are coalesced and handled by a one-shot timer, and the idle back buffer is released after five seconds. Background luminance sampling is additionally limited by both time and cursor travel distance so repeated screen captures are avoided during short, fast sampling intervals. The back buffer and Direct2D resources are reused between frames and resized only when the required trail bounds grow beyond the current buffer.
 
 ## Related mods
 
@@ -343,7 +343,6 @@ This mod is derived in part from the Windhawk **Cursor Motion Blur** mod by Thea
 
 constexpr UINT kSettingsChangedMessage = WM_APP + 1;
 constexpr int kTargetFrameRate = 125;
-constexpr int kIdleFrameRate = 30;
 constexpr int kActiveRenderFrameRate = 60;
 constexpr int kFadeRenderFrameRate = 30;
 constexpr int kFallbackFrameRate = 60;
@@ -2121,13 +2120,25 @@ DWORD WINAPI OverlayThreadProc(LPVOID) {
         const LONGLONG currentQpc = QpcNow();
         const bool trailActive = g_isSmearing || g_historyCount >= 2;
         const bool rippleActive = HasActiveRipples(currentQpc);
+        const LONGLONG inputWakeInterval = std::max<LONGLONG>(
+            1,
+            g_qpcFrequency * static_cast<LONGLONG>(kInputWakeThrottleMs) / 1000);
+        const bool inputCatchUpNeeded =
+            g_rawMouseMovementPending && !g_rawInputWakePending;
         const bool sampleTimerNeeded =
-            trailActive || rippleActive || g_pollingFallback;
+            trailActive || rippleActive || g_pollingFallback || inputCatchUpNeeded;
         bool trimTimerNeeded = false;
 
         LONGLONG timerDeadline = 0;
         if (sampleTimerNeeded) {
-            if (g_nextSampleDeadline <= currentQpc) {
+            if (inputCatchUpNeeded && !trailActive && !rippleActive && !g_pollingFallback) {
+                // If the input wake was coalesced by the throttle, schedule one
+                // bounded wake rather than waiting indefinitely and losing the
+                // final sub-interval of a short movement burst.
+                g_nextSampleDeadline = std::max(
+                    currentQpc + 1,
+                    g_lastRawInputWakeQpc + inputWakeInterval);
+            } else if (g_nextSampleDeadline <= currentQpc) {
                 const LONGLONG interval = (trailActive || rippleActive)
                     ? simulationTicks
                     : fallbackTicks;
