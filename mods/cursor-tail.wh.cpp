@@ -383,7 +383,6 @@ bool g_rawMouseMovementPending = false;
 bool g_foregroundChangePending = false;
 bool g_elevatedForeground = false;
 bool g_pollingFallback = true;
-bool g_samplePending = false;
 LONGLONG g_nextSampleDeadline = 0;
 LONGLONG g_lastRawInputWakeQpc = 0;
 HWINEVENTHOOK g_foregroundEventHook = nullptr;
@@ -1070,14 +1069,6 @@ static void RefreshForegroundInputState() {
     g_pollingFallback = !g_rawInputRegistered || !g_foregroundEventHook || g_elevatedForeground;
     g_foregroundChangePending = false;
 }
-
-static void PrimeCursorSample() {
-    POINT point = {};
-    if (!GetCursorPos(&point)) return;
-    g_lastPos = point;
-    g_lastSampleQpc = QpcNow();
-}
-
 
 static bool UpdateCursorMonitorDpi(HWND hwnd, const POINT& cursorPoint) {
     const HMONITOR monitor = MonitorFromPoint(cursorPoint, MONITOR_DEFAULTTONEAREST);
@@ -2131,13 +2122,13 @@ DWORD WINAPI OverlayThreadProc(LPVOID) {
         const bool trailActive = g_isSmearing || g_historyCount >= 2;
         const bool rippleActive = HasActiveRipples(currentQpc);
         const bool sampleTimerNeeded =
-            trailActive || rippleActive || g_pollingFallback || g_samplePending;
+            trailActive || rippleActive || g_pollingFallback;
         bool trimTimerNeeded = false;
 
         LONGLONG timerDeadline = 0;
         if (sampleTimerNeeded) {
             if (g_nextSampleDeadline <= currentQpc) {
-                const LONGLONG interval = (trailActive || rippleActive || g_samplePending)
+                const LONGLONG interval = (trailActive || rippleActive)
                     ? simulationTicks
                     : fallbackTicks;
                 g_nextSampleDeadline = currentQpc + interval;
@@ -2198,7 +2189,6 @@ DWORD WINAPI OverlayThreadProc(LPVOID) {
 
             if (foregroundChanged || interactionTriggered) {
                 g_rawMouseMovementPending = false;
-                g_samplePending = false;
                 const LONGLONG eventQpc = QpcNow();
                 const bool forceRender = interactionTriggered;
                 const bool rendered = SmearFrame(hwnd, GetTickCount(), forceRender);
@@ -2223,15 +2213,27 @@ DWORD WINAPI OverlayThreadProc(LPVOID) {
                     g_isSmearing || g_historyCount >= 2 || HasActiveRipples(movementQpc);
 
                 if (!activeBeforeMovement && !g_pollingFallback) {
-                    // The first report after an unbounded idle interval only
-                    // primes velocity sampling. A one-shot sample follows even
-                    // if the cursor stops before another hardware report.
-                    if (!g_samplePending) {
-                        PrimeCursorSample();
-                        g_samplePending = true;
-                        g_nextSampleDeadline = QpcNow() + simulationTicks;
+                    // Bound the first post-idle interval instead of dividing by
+                    // the entire idle duration. This retains the first movement
+                    // burst even when no second hardware report follows it.
+                    const LONGLONG initialSampleTicks = std::max<LONGLONG>(
+                        1,
+                        g_qpcFrequency * static_cast<LONGLONG>(kInputWakeThrottleMs) / 2000);
+                    g_lastSampleQpc = movementQpc - initialSampleTicks;
+                    const bool renderFrame = movementQpc >= nextRenderDeadline;
+                    SmearFrame(hwnd, GetTickCount(), renderFrame);
+                    const LONGLONG sampledQpc = QpcNow();
+                    const bool activeAfterMovement =
+                        g_isSmearing || g_historyCount >= 2 || HasActiveRipples(sampledQpc);
+                    g_nextSampleDeadline = sampledQpc
+                        + (activeAfterMovement ? simulationTicks : 0);
+                    if (activeAfterMovement && (renderFrame || sampledQpc >= nextRenderDeadline)) {
+                        nextRenderDeadline = sampledQpc
+                            + ((g_isSmearing || g_historyCount >= 2)
+                                ? activeRenderTicks
+                                : fadeRenderTicks);
                     }
-                } else if (!g_samplePending && movementQpc >= g_nextSampleDeadline) {
+                } else if (movementQpc >= g_nextSampleDeadline) {
                     const bool renderFrame = movementQpc >= nextRenderDeadline;
                     SmearFrame(hwnd, GetTickCount(), renderFrame);
                     const LONGLONG sampledQpc = QpcNow();
@@ -2258,7 +2260,6 @@ DWORD WINAPI OverlayThreadProc(LPVOID) {
                     (g_isSmearing || g_historyCount >= 2 || interactionActiveBeforeFrame)
                     && sampleNow >= nextRenderDeadline;
                 const bool rendered = SmearFrame(hwnd, GetTickCount(), renderFrame);
-                g_samplePending = false;
                 g_rawMouseMovementPending = false;
 
                 const LONGLONG sampledQpc = QpcNow();
