@@ -455,6 +455,12 @@ uint32_t g_currentOuterRGB = kFallbackOuterColor;
 DWORD g_lastAutoColorUpdate = 0;
 HCURSOR g_lastAutoColorCursor = nullptr;
 bool g_autoColorInitialized = false;
+float g_lastAutoColorPickLuminance = 0.5f;
+bool g_autoColorPickLuminanceValid = false;
+
+HMONITOR g_cursorMonitor = nullptr;
+UINT g_cursorDpi = 96;
+float g_currentDpiScale = 1.0f;
 
 int g_clickFeedbackEnabled = 0;
 int g_wheelFeedbackEnabled = 0;
@@ -1072,6 +1078,35 @@ static void PrimeCursorSample() {
     g_lastSampleQpc = QpcNow();
 }
 
+
+static bool UpdateCursorMonitorDpi(HWND hwnd, const POINT& cursorPoint) {
+    const HMONITOR monitor = MonitorFromPoint(cursorPoint, MONITOR_DEFAULTTONEAREST);
+    if (!monitor || monitor == g_cursorMonitor) return false;
+
+    HideOverlay();
+    if (hwnd && IsWindow(hwnd)
+        && !SetWindowPos(
+            hwnd,
+            nullptr,
+            cursorPoint.x,
+            cursorPoint.y,
+            1,
+            1,
+            SWP_NOACTIVATE | SWP_NOZORDER | SWP_NOREDRAW)) {
+        Wh_Log(L"SetWindowPos for DPI transition failed: %lu", GetLastError());
+        g_currentDpiScale = 1.0f;
+        g_cursorDpi = 96;
+        g_cursorMonitor = monitor;
+        return true;
+    }
+
+    g_cursorMonitor = monitor;
+    const UINT dpi = hwnd && IsWindow(hwnd) ? GetDpiForWindow(hwnd) : 96;
+    g_cursorDpi = dpi > 0 ? dpi : 96;
+    g_currentDpiScale = std::clamp(static_cast<float>(g_cursorDpi) / 96.0f, 0.5f, 4.0f);
+    return true;
+}
+
 static bool IsDesktopShellWindow(HWND hwnd) {
     wchar_t className[64] = {};
     const int length = GetClassNameW(hwnd, className, ARRAYSIZE(className));
@@ -1287,7 +1322,9 @@ void SmoothTrail(int iterations, int renderLength) {
     const int pointCount = std::min(g_historyCount, std::max(renderLength, 2));
     for (int i = 0; i < pointCount; ++i) {
         const POINT& point = HistoryAt(i);
-        current.push_back(D2D1::Point2F(static_cast<float>(point.x + g_tailOffsetX), static_cast<float>(point.y + g_tailOffsetY)));
+        current.push_back(D2D1::Point2F(
+            static_cast<float>(point.x) + static_cast<float>(g_tailOffsetX) * g_currentDpiScale,
+            static_cast<float>(point.y) + static_cast<float>(g_tailOffsetY) * g_currentDpiScale));
     }
     for (int iteration = 0; iteration < iterations && current.size() >= 3; ++iteration) {
         next.clear();
@@ -1378,12 +1415,16 @@ void UpdateTrailState(const POINT& point, float velocity) {
 
 struct ColorCandidate { uint32_t rgb; int count; };
 
-static bool ExtractCursorColorCandidates(std::vector<ColorCandidate>& out) {
+static HCURSOR g_cachedCursorCandidateHandle = nullptr;
+static std::vector<ColorCandidate> g_cachedCursorColorCandidates;
+static bool g_cachedCursorCandidatesReady = false;
+constexpr float kAutoColorLuminanceChangeThreshold = 0.04f;
+
+static bool ExtractCursorColorCandidates(HCURSOR cursorHandle, std::vector<ColorCandidate>& out) {
     out.clear();
-    CURSORINFO cursorInfo = {sizeof(cursorInfo)};
-    if (!GetCursorInfo(&cursorInfo) || !(cursorInfo.flags & CURSOR_SHOWING) || !cursorInfo.hCursor) return false;
+    if (!cursorHandle) return false;
     ICONINFO iconInfo = {};
-    if (!GetIconInfo(cursorInfo.hCursor, &iconInfo)) return false;
+    if (!GetIconInfo(cursorHandle, &iconInfo)) return false;
     const auto cleanup = [&] {
         if (iconInfo.hbmColor) DeleteObject(iconInfo.hbmColor);
         if (iconInfo.hbmMask) DeleteObject(iconInfo.hbmMask);
@@ -1552,46 +1593,81 @@ static void UpdateTrailColorIfNeeded(DWORD now) {
         g_currentOuterRGB = ResolveOutlineColor(g_currentCoreRGB);
         return;
     }
+
     CURSORINFO cursorInfo = {sizeof(cursorInfo)};
-    const bool cursorInfoAvailable = GetCursorInfo(&cursorInfo);
-    bool resample = !g_autoColorInitialized;
-    if (!resample && cursorInfoAvailable) {
-        if (g_autoResampleInterval > 0) resample = now - g_lastAutoColorUpdate >= static_cast<DWORD>(g_autoResampleInterval);
-        else if (cursorInfo.hCursor != g_lastAutoColorCursor) resample = now - g_lastAutoColorUpdate >= kMinCursorChangeResampleIntervalMs;
-    }
-    if (!resample) return;
-    if (cursorInfoAvailable) g_lastAutoColorCursor = cursorInfo.hCursor;
-    g_lastAutoColorUpdate = now;
-    g_autoColorInitialized = true;
-    POINT point = {};
-    if (!GetCursorPos(&point)) return;
-    std::vector<ColorCandidate> candidates;
-    if (!ExtractCursorColorCandidates(candidates) || candidates.empty()) {
+    if (!GetCursorInfo(&cursorInfo) || !(cursorInfo.flags & CURSOR_SHOWING) || !cursorInfo.hCursor) {
+        g_lastAutoColorCursor = nullptr;
+        g_autoColorInitialized = true;
+        g_autoColorPickLuminanceValid = false;
+        g_cachedCursorCandidateHandle = nullptr;
+        g_cachedCursorColorCandidates.clear();
+        g_cachedCursorCandidatesReady = false;
         g_currentCoreRGB = kFallbackCoreColor;
         g_currentOuterRGB = ResolveOutlineColor(g_currentCoreRGB);
         return;
     }
-    // In Auto mode the overlay is excluded from screen capture, so the sample
-    // can't pick up the trail's own pixels and the window doesn't need to be
-    // hidden (which would make a visible trail blink on every resample).
+
+    const HCURSOR cursorHandle = cursorInfo.hCursor;
+    const bool cursorChanged = !g_autoColorInitialized || cursorHandle != g_lastAutoColorCursor;
+    const bool intervalElapsed = g_autoResampleInterval > 0
+        && now - g_lastAutoColorUpdate >= static_cast<DWORD>(g_autoResampleInterval);
+    const bool refreshCandidates = cursorChanged || intervalElapsed
+        || !g_cachedCursorCandidatesReady
+        || g_cachedCursorCandidateHandle != cursorHandle;
+
+    POINT point = {};
+    if (!GetCursorPos(&point)) return;
+
+    // SampleBackgroundLuminance already throttles screen reads by both time and
+    // cursor travel. Use its cached value to adapt contrast without re-reading
+    // the cursor bitmap when only the content beneath the pointer changed.
     const float background = SampleBackgroundLuminance(now, point);
-    for (const auto& candidate : candidates) {
+
+    if (refreshCandidates) {
+        g_cachedCursorColorCandidates.clear();
+        g_cachedCursorCandidatesReady = true;
+        g_cachedCursorCandidateHandle = cursorHandle;
+        ExtractCursorColorCandidates(cursorHandle, g_cachedCursorColorCandidates);
+        g_lastAutoColorCursor = cursorHandle;
+        g_lastAutoColorUpdate = now;
+        g_autoColorInitialized = true;
+    }
+
+    if (g_cachedCursorColorCandidates.empty()) {
+        g_currentCoreRGB = kFallbackCoreColor;
+        g_currentOuterRGB = ResolveOutlineColor(g_currentCoreRGB);
+        g_autoColorPickLuminanceValid = false;
+        return;
+    }
+
+    const bool backgroundChanged = !g_autoColorPickLuminanceValid
+        || fabsf(background - g_lastAutoColorPickLuminance) >= kAutoColorLuminanceChangeThreshold;
+    if (!refreshCandidates && !backgroundChanged) return;
+
+    // In Auto mode the overlay is excluded from screen capture, so the sample
+    // can't pick up the trail's own pixels and the window need not be hidden.
+    for (const ColorCandidate& candidate : g_cachedCursorColorCandidates) {
         if (ContrastRatio(RgbLuminance(candidate.rgb), background) >= kMinColorContrast) {
             g_currentCoreRGB = candidate.rgb;
             g_currentOuterRGB = ResolveOutlineColor(candidate.rgb);
+            g_lastAutoColorPickLuminance = background;
+            g_autoColorPickLuminanceValid = true;
             return;
         }
     }
+
     g_currentCoreRGB = kFallbackCoreColor;
     g_currentOuterRGB = ResolveOutlineColor(g_currentCoreRGB);
+    g_lastAutoColorPickLuminance = background;
+    g_autoColorPickLuminanceValid = true;
 }
 
 bool RenderOverlay(HWND hwnd, LONGLONG nowQpc) {
     bool drawTrail = g_historyCount >= 2;
     const float speed = g_speedScaling ? (g_isSmearing ? g_smoothedSpeedNorm : g_frozenSpeedNorm) : 1.0f;
     const int renderLength = GetEffectiveTailLength(speed);
-    const float outerHalf = g_widthMin + (g_widthMax - g_widthMin) * speed;
-    const float coreHalf = g_coreWidthMin + (g_coreWidthMax - g_coreWidthMin) * speed;
+    const float outerHalf = (g_widthMin + (g_widthMax - g_widthMin) * speed) * g_currentDpiScale;
+    const float coreHalf = (g_coreWidthMin + (g_coreWidthMax - g_coreWidthMin) * speed) * g_currentDpiScale;
     const float alphaScale = g_alphaMin + (g_alphaMax - g_alphaMin) * speed;
     const float trailAlpha = alphaScale * g_fadeAlpha;
 
@@ -1625,8 +1701,10 @@ bool RenderOverlay(HWND hwnd, LONGLONG nowQpc) {
     }
 
     // These values originate from integer settings, so no floating-point round-up is needed.
+    const float scaledRippleRadius = g_rippleRadius * g_currentDpiScale;
+    const float scaledRippleStrokeWidth = g_rippleStrokeWidth * g_currentDpiScale;
     const LONG ripplePadding = static_cast<LONG>(
-        g_rippleRadius + g_rippleStrokeWidth + kRenderPadding + 1.0f);
+        scaledRippleRadius + scaledRippleStrokeWidth + kRenderPadding * g_currentDpiScale + 1.0f);
     const RippleEffect* newestRipple = nullptr;
     for (const RippleEffect& ripple : g_ripples) {
         if (ripple.active && (!newestRipple || ripple.startQpc > newestRipple->startQpc)) {
@@ -1729,8 +1807,8 @@ bool RenderOverlay(HWND hwnd, LONGLONG nowQpc) {
             0.0f,
             1.0f);
         const float easedProgress = progress * (2.0f - progress);
-        const float radius = kRippleInitialRadius
-            + (g_rippleRadius - kRippleInitialRadius) * easedProgress;
+        const float radius = (kRippleInitialRadius
+            + (g_rippleRadius - kRippleInitialRadius) * easedProgress) * g_currentDpiScale;
         const float remaining = 1.0f - progress;
         const float alpha = g_rippleOpacity * remaining * remaining;
         if (alpha < 0.005f) continue;
@@ -1744,7 +1822,7 @@ bool RenderOverlay(HWND hwnd, LONGLONG nowQpc) {
                 radius,
                 radius),
             g_rippleBrush,
-            g_rippleStrokeWidth,
+            scaledRippleStrokeWidth,
             g_strokeStyle);
         g_rippleBrush->SetColor(ToColorF(ripple.color, alpha * 0.48f));
         const float innerRadius = radius * 0.58f;
@@ -1756,7 +1834,7 @@ bool RenderOverlay(HWND hwnd, LONGLONG nowQpc) {
                 innerRadius,
                 innerRadius),
             g_rippleBrush,
-            std::max(1.0f, g_rippleStrokeWidth * 0.65f),
+            std::max(g_currentDpiScale, scaledRippleStrokeWidth * 0.65f),
             g_strokeStyle);
     }
 
@@ -1807,6 +1885,11 @@ bool SmearFrame(HWND hwnd, DWORD now, bool renderFrame) {
     POINT point = {};
     if (!GetCursorPos(&point)) return false;
     const LONGLONG sampleQpc = QpcNow();
+    if (UpdateCursorMonitorDpi(hwnd, point)) {
+        ResetTrailState();
+        g_lastPos = point;
+        g_lastSampleQpc = sampleQpc;
+    }
     const HWND foreground = GetForegroundWindow();
     const int appRule = CheckAppRuleCached(foreground);
     // While the trail is suppressed the pointer still moves. Keep the previous
@@ -1902,6 +1985,9 @@ LRESULT CALLBACK OverlayWndProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM l
         ReleaseScreenDC();
         g_lastFullscreenStrongCheck = 0;
         g_nextSampleDeadline = 0;
+        g_cursorMonitor = nullptr;
+        g_cursorDpi = 96;
+        g_currentDpiScale = 1.0f;
         return 0;
     case WM_CLOSE:
         DestroyWindow(hwnd);
@@ -1982,7 +2068,11 @@ DWORD WINAPI OverlayThreadProc(LPVOID) {
     g_overlayHwnd.store(hwnd, std::memory_order_release);
     ApplyOverlayCaptureAffinity();
     HideOverlay();
-    GetCursorPos(&g_lastPos);
+    POINT initialCursorPosition = {};
+    if (GetCursorPos(&initialCursorPosition)) {
+        UpdateCursorMonitorDpi(hwnd, initialCursorPosition);
+        g_lastPos = initialCursorPosition;
+    }
     g_lastSampleQpc = QpcNow();
     g_fullscreenForegroundWindow = nullptr;
     g_lastFullscreenStrongCheck = 0;
