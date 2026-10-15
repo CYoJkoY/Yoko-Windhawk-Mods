@@ -1126,6 +1126,27 @@ static bool IsFullscreenCandidate(DWORD now, HWND hwnd, POINT cursorPoint) {
 }
 
 static bool UpdateFullscreenState(DWORD now, HWND foreground, POINT cursorPoint) {
+    const HMONITOR cursorMonitor = MonitorFromPoint(cursorPoint, MONITOR_DEFAULTTONEAREST);
+    const HMONITOR foregroundMonitor = foreground
+        ? MonitorFromWindow(foreground, MONITOR_DEFAULTTONEAREST)
+        : nullptr;
+    const bool isDesktopShell = !foreground
+        || foreground == GetDesktopWindow()
+        || foreground == GetShellWindow()
+        || IsDesktopShellWindow(foreground);
+    const bool pointerLeftFullscreenMonitor =
+        cursorMonitor && foregroundMonitor && cursorMonitor != foregroundMonitor;
+
+    // The desktop shell is never a fullscreen app. Likewise, a fullscreen
+    // window on another monitor must not suppress an overlay under the pointer.
+    // These transitions are immediate; ordinary same-monitor fullscreen exit
+    // still uses the 500 ms confirmation below to avoid flicker.
+    if (isDesktopShell || pointerLeftFullscreenMonitor) {
+        g_fullscreenSuppressed = false;
+        g_fullscreenFalseSince = 0;
+        return false;
+    }
+
     const bool candidate = IsFullscreenCandidate(now, foreground, cursorPoint);
     if (candidate) {
         g_fullscreenFalseSince = 0;
@@ -2051,12 +2072,11 @@ DWORD WINAPI OverlayThreadProc(LPVOID) {
 
             if (foregroundChanged) {
                 RefreshForegroundInputState();
-                // A monitor change is not a 500 ms fullscreen-exit transition:
-                // do not keep suppressing the cursor on the other display.
+                // Recheck the new foreground immediately. UpdateFullscreenState
+                // retains normal same-monitor exit hysteresis but releases
+                // suppression for the desktop shell or a different cursor monitor.
                 g_fullscreenForegroundWindow = nullptr;
                 g_lastFullscreenStrongCheck = 0;
-                g_fullscreenSuppressed = false;
-                g_fullscreenFalseSince = 0;
             }
 
             if (foregroundChanged || interactionTriggered) {
