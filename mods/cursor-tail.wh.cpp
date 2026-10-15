@@ -46,19 +46,19 @@ The outline can either be derived automatically from the trail luminance or set 
 
 ## Per-app rules
 
-Use one rule per line:
+Use one rule per entry in the settings list:
 
 `program.exe=on`
 
 `program.exe=off`
 
-Lines beginning with `#` are comments. Executable names are matched case-insensitively.
+Entries beginning with `#` are comments. Executable names are matched case-insensitively.
 
 Rules follow the foreground window. An `exe=off` rule suppresses the trail everywhere on screen while that application has focus. An `exe=on` rule also overrides fullscreen suppression, so a force-enabled application keeps its trail even when it reports a fullscreen state.
 
 ## Fullscreen behavior
 
-The trail is suppressed when the foreground application reports a D3D fullscreen state or when a borderless, captionless window covers its monitor. Leaving fullscreen must remain stable for 500 ms before the trail is shown again, which reduces flicker during application transitions.
+The trail is suppressed when the foreground application reports a D3D fullscreen state or when a borderless, captionless window covers the monitor under the pointer. Desktop shell windows are excluded, and a fullscreen app on another monitor does not suppress the trail where the pointer currently resides. Leaving fullscreen must remain stable for 500 ms before suppression ends, which reduces flicker during application transitions.
 
 ## Performance
 
@@ -66,15 +66,20 @@ Cursor state is sampled at 125 Hz while the trail is active and backs off to 30 
 
 ## Related mods
 
-Windhawk also ships **Cursor Motion Blur** and **Mouse Trail**, which cover similar ground. Cursor Tail began as a fork of Cursor Motion Blur (see Attribution) and keeps its speed-gated, tapered-ribbon look, but it is submitted as a separate mod because the runtime and the feature set have diverged:
+Windhawk also ships **Cursor Motion Blur**, **Mouse Trail**, **Simple Cursor Trail**, and **Pointer Afterimage Motion Blur**, all of which overlap with cursor-trail behavior. Cursor Tail began as a fork of Cursor Motion Blur (see Attribution); its configurable appearance and runtime behavior have since diverged, but whether it should remain a separate catalog entry is for the upstream maintainer to decide:
 
-- **Sampling and timing:** a dedicated 125 Hz sampling loop that backs off to 30 Hz while idle, with layered-window submission paced separately at 60 FPS while moving and 30 FPS while fading, instead of a single `USER_TIMER_MINIMUM` timer. Pointer speed is normalised to pixels per second, so the trigger and stop thresholds keep their meaning when the sample rate changes.
+- **Sampling and timing:** event-driven input wakeups with bounded sampling while active, plus a separate render cadence. Pointer speed is normalised to pixels per second, so trigger and stop thresholds keep their meaning when the sample rate changes.
 - **Appearance:** separately configurable minimum/maximum outer and core widths, an optional gradient fill and an optional glow layer on top of the plain two-layer ribbon.
 - **Adaptive color:** cursor-image color extraction with histogram ranking, contrast selection against the sampled background luminance, and automatic or manual outline colors.
 - **Context awareness:** per-app `exe=on|off` rules and fullscreen suppression (D3D exclusive or borderless) with an exit confirmation delay.
 - **Interaction layer:** optional, button-specific click ripples and scroll-direction pulses rendered through the same bounded Direct2D backbuffer, without a particle subsystem. The low-level mouse hook is installed only while one of these effects is enabled.
 
-Users who want the original, minimal behavior should stay on Cursor Motion Blur. Cursor Tail is for users who want a more configurable motion trail, adaptive color, per-app rules, and optional click/scroll feedback.
+- [**Cursor Motion Blur**](https://github.com/ramensoftware/windhawk-mods/blob/main/mods/cursor-motion-blur.wh.cpp): the original basis for Cursor Tail, with a tapered motion-blur ribbon.
+- [**Mouse Trail**](https://github.com/ramensoftware/windhawk-mods/blob/main/mods/mouse-trail.wh.cpp): a ribbon-style trail with glow and cursor-extracted color.
+- [**Simple Cursor Trail**](https://github.com/ramensoftware/windhawk-mods/blob/main/mods/cursor-trail.wh.cpp): a simpler line trail with a head-to-tail gradient.
+- [**Pointer Afterimage Motion Blur**](https://github.com/ramensoftware/windhawk-mods/blob/main/mods/pointer-afterimage-motion-blur.wh.cpp): an afterimage-based motion blur with event-driven sampling.
+
+Cursor Tail remains functionally close to the existing trail mods. Its future direction should be evaluated with the upstream maintainer and original mod author rather than on a claim of being a wholly distinct category.
 
 ## Attribution
 
@@ -307,11 +312,11 @@ This mod is derived in part from the Windhawk **Cursor Motion Blur** mod by Thea
   $name:zh-CN: 交互反馈
 
 - Application:
-    - app_rules: ""
+    - app_rules: [""]
       $name: Per-app rules
       $name:zh-CN: 按应用规则
-      $description: One rule per line using `exe=on` or `exe=off`. Lines beginning with `#` are comments. Executable names are matched case-insensitively.
-      $description:zh-CN: 每行一个规则，格式为 `exe=on` 或 `exe=off`。以 `#` 开头的行为注释。可执行文件名不区分大小写。
+      $description: One rule per entry, `program.exe=on` or `program.exe=off`. Entries beginning with `#` are comments. Executable names are matched case-insensitively.
+      $description:zh-CN: 每个条目填写一条规则，格式为 `program.exe=on` 或 `program.exe=off`。以 `#` 开头的条目为注释。可执行文件名不区分大小写。
   $name: Application
   $name:zh-CN: 应用程序
 */
@@ -403,8 +408,8 @@ int g_cachedHeight = 0;
 DWORD g_backbufferIdleSince = 0;
 HDC g_screenDc = nullptr;
 
-float g_triggerVelocity = 25.0f;
-float g_stopVelocity = 10.0f;
+float g_triggerVelocity = 3000.0f;
+float g_stopVelocity = 1200.0f;
 int g_tailOffsetX = 6;
 int g_tailOffsetY = 10;
 int g_tailLength = 10;
@@ -413,8 +418,8 @@ float g_widthMin = 4.0f;
 float g_widthMax = 14.0f;
 float g_coreWidthMin = 2.0f;
 float g_coreWidthMax = 9.0f;
-float g_alphaMin = 0.45f;
-float g_alphaMax = 0.90f;
+float g_alphaMin = 0.39f;
+float g_alphaMax = 0.77f;
 float g_taperPower = 1.0f;
 int g_smoothIterations = 2;
 int g_gradientEnabled = 0;
@@ -689,34 +694,75 @@ static bool GetProcessExeName(DWORD pid, std::wstring& out) {
     return true;
 }
 
-static void ParseAppRules(const wchar_t* text) {
-    g_appRules.clear();
+static void ParseAppRuleText(const wchar_t* text) {
     if (!text) return;
+
     const std::wstring input(text);
     size_t start = 0;
     while (start <= input.size()) {
         size_t end = input.find_first_of(L"\r\n", start);
         if (end == std::wstring::npos) end = input.size();
-        std::wstring line = input.substr(start, end - start);
-        const size_t comment = line.find(L'#');
-        if (comment != std::wstring::npos) line.resize(comment);
-        const size_t equals = line.find(L'=');
+        std::wstring ruleText = input.substr(start, end - start);
+        const size_t comment = ruleText.find(L'#');
+        if (comment != std::wstring::npos) ruleText.resize(comment);
+        const size_t equals = ruleText.find(L'=');
         if (equals != std::wstring::npos) {
-            std::wstring exe = line.substr(0, equals);
-            std::wstring value = line.substr(equals + 1);
+            std::wstring exe = ruleText.substr(0, equals);
+            std::wstring value = ruleText.substr(equals + 1);
             const auto trim = [](std::wstring& value) {
                 const size_t first = value.find_first_not_of(L" \t");
-                if (first == std::wstring::npos) { value.clear(); return; }
+                if (first == std::wstring::npos) {
+                    value.clear();
+                    return;
+                }
                 const size_t last = value.find_last_not_of(L" \t");
                 value = value.substr(first, last - first + 1);
             };
             trim(exe);
             trim(value);
-            if (!exe.empty()) g_appRules.push_back({ToLowerW(exe), value == L"on" || value == L"1" || value == L"true" || value == L"yes"});
+
+            const bool enabled = _wcsicmp(value.c_str(), L"on") == 0
+                || value == L"1"
+                || _wcsicmp(value.c_str(), L"true") == 0
+                || _wcsicmp(value.c_str(), L"yes") == 0;
+            const bool disabled = _wcsicmp(value.c_str(), L"off") == 0
+                || value == L"0"
+                || _wcsicmp(value.c_str(), L"false") == 0
+                || _wcsicmp(value.c_str(), L"no") == 0;
+            if (!exe.empty() && (enabled || disabled)) {
+                g_appRules.push_back({ToLowerW(exe), enabled});
+            }
         }
+
         if (end == input.size()) break;
         start = input.find_first_not_of(L"\r\n", end);
         if (start == std::wstring::npos) break;
+    }
+}
+
+static void ParseAppRules() {
+    g_appRules.clear();
+
+    constexpr int kMaxAppRuleEntries = 64;
+    int consecutiveEmptyEntries = 0;
+    for (int index = 0; index < kMaxAppRuleEntries; ++index) {
+        WindhawkUtils::StringSetting setting =
+            WindhawkUtils::StringSetting::make(L"Application.app_rules[%d]", index);
+        const wchar_t* value = setting.get();
+        if (!value || !*value) {
+            if (++consecutiveEmptyEntries >= 2) break;
+            continue;
+        }
+
+        consecutiveEmptyEntries = 0;
+        ParseAppRuleText(value);
+    }
+
+    // Existing installs may still have the former multiline string stored.
+    if (g_appRules.empty()) {
+        WindhawkUtils::StringSetting legacySetting =
+            WindhawkUtils::StringSetting::make(L"Application.app_rules");
+        ParseAppRuleText(legacySetting.get());
     }
 }
 
@@ -814,11 +860,7 @@ void LoadSettings() {
     g_middleClickRGB = readInteractionColor(L"Interaction.middle_click_color", 0x00FFD166);
     g_wheelUpRGB = readInteractionColor(L"Interaction.wheel_up_color", 0x007CFF6B);
     g_wheelDownRGB = readInteractionColor(L"Interaction.wheel_down_color", 0x00A78BFA);
-    {
-        WindhawkUtils::StringSetting value =
-            WindhawkUtils::StringSetting::make(L"Application.app_rules");
-        ParseAppRules(value.get());
-    }
+    ParseAppRules();
     g_cachedForegroundWindow = nullptr;
     g_cachedAppRule = 0;
     g_renderCache.ReserveForTailLength(g_tailLength);
@@ -954,14 +996,23 @@ static void SyncMouseHook() {
     g_mouseHook = mouseHook;
 }
 
-static bool CoversMonitor(HWND hwnd) {
+static bool IsDesktopShellWindow(HWND hwnd) {
+    wchar_t className[64] = {};
+    const int length = GetClassNameW(hwnd, className, ARRAYSIZE(className));
+    if (length <= 0) return false;
+    return _wcsicmp(className, L"Progman") == 0
+        || _wcsicmp(className, L"WorkerW") == 0;
+}
+
+static bool CoversMonitor(HWND hwnd, HMONITOR cursorMonitor) {
     const LONG_PTR style = GetWindowLongPtrW(hwnd, GWL_STYLE);
     if ((style & WS_CAPTION) != 0) return false;
     RECT windowRect = {};
     if (!GetWindowRect(hwnd, &windowRect)) return false;
-    const HMONITOR monitor = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
+    const HMONITOR windowMonitor = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
+    if (!cursorMonitor || windowMonitor != cursorMonitor) return false;
     MONITORINFO monitorInfo = {sizeof(monitorInfo)};
-    if (!GetMonitorInfoW(monitor, &monitorInfo)) return false;
+    if (!GetMonitorInfoW(windowMonitor, &monitorInfo)) return false;
     return windowRect.left <= monitorInfo.rcMonitor.left + kFullscreenTolerancePx
         && windowRect.top <= monitorInfo.rcMonitor.top + kFullscreenTolerancePx
         && windowRect.right >= monitorInfo.rcMonitor.right - kFullscreenTolerancePx
@@ -974,8 +1025,16 @@ static bool CheckStrongFullscreenSignal() {
     return SUCCEEDED(SHQueryUserNotificationState(&state)) && state == QUNS_RUNNING_D3D_FULL_SCREEN;
 }
 
-static bool IsFullscreenCandidate(DWORD now, HWND hwnd) {
-    if (!hwnd || hwnd == GetDesktopWindow() || hwnd == GetShellWindow() || IsIconic(hwnd) || !IsWindowVisible(hwnd)) return false;
+static bool IsFullscreenCandidate(DWORD now, HWND hwnd, POINT cursorPoint) {
+    if (!hwnd || hwnd == GetDesktopWindow() || hwnd == GetShellWindow()
+        || IsDesktopShellWindow(hwnd) || IsIconic(hwnd) || !IsWindowVisible(hwnd)) {
+        return false;
+    }
+
+    const HMONITOR cursorMonitor = MonitorFromPoint(cursorPoint, MONITOR_DEFAULTTONEAREST);
+    const HMONITOR windowMonitor = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
+    if (!cursorMonitor || windowMonitor != cursorMonitor) return false;
+
     if (hwnd != g_fullscreenForegroundWindow) {
         g_fullscreenForegroundWindow = hwnd;
         g_lastFullscreenStrongCheck = 0;
@@ -983,37 +1042,34 @@ static bool IsFullscreenCandidate(DWORD now, HWND hwnd) {
         g_fullscreenCoversMonitor = false;
         g_fullscreenFalseSince = 0;
     }
-    // Window geometry can't meaningfully change at the 125 Hz sampling rate, so
-    // the whole query is refreshed on the same 100 ms gate as the shell query.
+
+    // Window geometry and the shell's D3D state do not need to be queried on
+    // every input report, even though fullscreen transitions are event-driven.
     if (now - g_lastFullscreenStrongCheck >= kFullscreenStrongCheckIntervalMs) {
         g_lastFullscreenStrongCheck = now;
         g_fullscreenStrongSignal = CheckStrongFullscreenSignal();
-        g_fullscreenCoversMonitor = CoversMonitor(hwnd);
+        g_fullscreenCoversMonitor = CoversMonitor(hwnd, cursorMonitor);
     }
     return g_fullscreenStrongSignal || g_fullscreenCoversMonitor;
 }
 
-static bool UpdateFullscreenState(DWORD now, HWND foreground) {
-    const bool candidate = IsFullscreenCandidate(now, foreground);
+static bool UpdateFullscreenState(DWORD now, HWND foreground, POINT cursorPoint) {
+    const bool candidate = IsFullscreenCandidate(now, foreground, cursorPoint);
     if (candidate) {
         g_fullscreenFalseSince = 0;
-        if (!g_fullscreenSuppressed) {
-            g_fullscreenSuppressed = true;
-            ResetTrailState();
-            HideOverlay();
-        }
+        g_fullscreenSuppressed = true;
         return true;
     }
+
     if (g_fullscreenSuppressed) {
         if (g_fullscreenFalseSince == 0) g_fullscreenFalseSince = now;
         if (now - g_fullscreenFalseSince >= kFullscreenExitConfirmMs) {
             g_fullscreenSuppressed = false;
             g_fullscreenFalseSince = 0;
-            ResetTrailState();
-            HideOverlay();
         }
         return g_fullscreenSuppressed;
     }
+
     g_fullscreenFalseSince = 0;
     return false;
 }
@@ -1650,15 +1706,14 @@ bool SmearFrame(HWND hwnd, DWORD now, bool renderFrame) {
         return false;
     }
 
-    const bool fullscreenActive = UpdateFullscreenState(now, foreground);
-    if (fullscreenActive) {
+    const bool fullscreenActive = UpdateFullscreenState(now, foreground, point);
+    if (fullscreenActive && appRule == 0) {
+        ResetTrailState();
+        ClearRipples();
         parkSample();
-        if (appRule == 0) {
-            ClearRipples();
-            HideOverlay();
-            MaybeReleaseIdleBackbuffer(now);
-            return false;
-        }
+        HideOverlay();
+        MaybeReleaseIdleBackbuffer(now);
+        return false;
     }
 
     const bool wasSmearing = g_isSmearing;
@@ -1723,7 +1778,6 @@ static LONGLONG FrameIntervalTicks(LONGLONG frequency, int frameRate) {
 DWORD WINAPI OverlayThreadProc(LPVOID) {
     const HRESULT coResult = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
     if (FAILED(coResult)) return 0;
-    SetThreadDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
     LARGE_INTEGER qpcFrequency = {};
     if (!QueryPerformanceFrequency(&qpcFrequency) || qpcFrequency.QuadPart <= 0) {
         CoUninitialize();
@@ -1736,7 +1790,7 @@ DWORD WINAPI OverlayThreadProc(LPVOID) {
         return 0;
     }
     HINSTANCE instance = GetModuleHandle(nullptr);
-    const wchar_t className[] = L"SmearFrameOverlayClass";
+    const wchar_t className[] = L"CursorTailOverlayWindowClass";
     WNDCLASSW windowClass = {};
     windowClass.lpfnWndProc = OverlayWndProc;
     windowClass.hInstance = instance;
@@ -1751,7 +1805,7 @@ DWORD WINAPI OverlayThreadProc(LPVOID) {
     HWND hwnd = CreateWindowExW(
         WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE,
         className,
-        L"SmearOverlay",
+        L"CursorTailOverlay",
         WS_POPUP,
         0,
         0,
