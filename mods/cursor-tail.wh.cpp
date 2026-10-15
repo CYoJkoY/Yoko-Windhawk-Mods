@@ -403,6 +403,8 @@ bool g_windowVisible = false;
 
 ID2D1Factory* g_d2dFactory = nullptr;
 ID2D1DCRenderTarget* g_renderTarget = nullptr;
+ID2D1Layer* g_trailOpacityLayer = nullptr;
+ID2D1Layer* g_glowOpacityLayer = nullptr;
 ID2D1SolidColorBrush* g_outerBrush = nullptr;
 ID2D1SolidColorBrush* g_coreBrush = nullptr;
 ID2D1SolidColorBrush* g_glowBrush = nullptr;
@@ -598,6 +600,8 @@ static LONGLONG QpcNow() {
 static uint32_t ResolveOutlineColor(uint32_t core);
 
 void ReleaseRenderResources() {
+    if (g_glowOpacityLayer) { g_glowOpacityLayer->Release(); g_glowOpacityLayer = nullptr; }
+    if (g_trailOpacityLayer) { g_trailOpacityLayer->Release(); g_trailOpacityLayer = nullptr; }
     if (g_gradientBrush) { g_gradientBrush->Release(); g_gradientBrush = nullptr; }
     if (g_gradientStops) { g_gradientStops->Release(); g_gradientStops = nullptr; }
     if (g_strokeStyle) { g_strokeStyle->Release(); g_strokeStyle = nullptr; }
@@ -1231,8 +1235,12 @@ bool EnsureD2DResources() {
     if (FAILED(hr)) { ReleaseRenderResources(); return false; }
     hr = g_renderTarget->CreateSolidColorBrush(ToColorF(g_currentCoreRGB, 1.0f), &g_coreBrush);
     if (FAILED(hr)) { ReleaseRenderResources(); return false; }
-    hr = g_renderTarget->CreateSolidColorBrush(ToColorF(g_glowRGB, g_glowAlpha), &g_glowBrush);
+    hr = g_renderTarget->CreateSolidColorBrush(ToColorF(g_glowRGB, 1.0f), &g_glowBrush);
     if (FAILED(hr)) { ReleaseRenderResources(); return false; }
+    hr = g_renderTarget->CreateLayer(nullptr, &g_trailOpacityLayer);
+    if (FAILED(hr) || !g_trailOpacityLayer) { ReleaseRenderResources(); return false; }
+    hr = g_renderTarget->CreateLayer(nullptr, &g_glowOpacityLayer);
+    if (FAILED(hr) || !g_glowOpacityLayer) { ReleaseRenderResources(); return false; }
     hr = g_renderTarget->CreateSolidColorBrush(ToColorF(g_leftClickRGB, 1.0f), &g_rippleBrush);
     if (FAILED(hr)) { ReleaseRenderResources(); return false; }
     D2D1_STROKE_STYLE_PROPERTIES strokeProperties = {};
@@ -1670,25 +1678,44 @@ bool RenderOverlay(HWND hwnd, LONGLONG nowQpc) {
     g_renderTarget->Clear(D2D1::ColorF(0, 0, 0, 0));
 
     if (drawTrail) {
-        g_outerBrush->SetColor(ToColorF(g_currentOuterRGB, trailAlpha));
-        g_glowBrush->SetColor(ToColorF(g_glowRGB, g_glowAlpha * trailAlpha));
-        g_coreBrush->SetColor(ToColorF(g_currentCoreRGB, std::min(1.0f, trailAlpha * 1.02f)));
+        const D2D1_LAYER_PARAMETERS trailLayerParameters = D2D1::LayerParameters(
+            clipBounds,
+            nullptr,
+            D2D1_ANTIALIAS_MODE_PER_PRIMITIVE,
+            D2D1::IdentityMatrix(),
+            std::clamp(trailAlpha, 0.0f, 1.0f));
+        g_renderTarget->PushLayer(&trailLayerParameters, g_trailOpacityLayer);
+
         if (g_glowEnabled) {
+            const D2D1_LAYER_PARAMETERS glowLayerParameters = D2D1::LayerParameters(
+                clipBounds,
+                nullptr,
+                D2D1_ANTIALIAS_MODE_PER_PRIMITIVE,
+                D2D1::IdentityMatrix(),
+                std::clamp(g_glowAlpha, 0.0f, 1.0f));
+            g_renderTarget->PushLayer(&glowLayerParameters, g_glowOpacityLayer);
+            g_glowBrush->SetColor(ToColorF(g_glowRGB, 1.0f));
             DrawTrailStroke(
                 g_renderTarget,
                 g_glowBrush,
                 outerHalf * std::max(1.0f, g_glowWidthFactor),
                 true);
+            g_renderTarget->PopLayer();
         }
+
+        g_outerBrush->SetColor(ToColorF(g_currentOuterRGB, 1.0f));
+        g_coreBrush->SetColor(ToColorF(g_currentCoreRGB, 1.0f));
         DrawTrailStroke(g_renderTarget, g_outerBrush, outerHalf, true);
+
         ID2D1Brush* coreBrush = g_coreBrush;
         if (g_gradientEnabled && EnsureGradientBrush()) {
             g_gradientBrush->SetStartPoint(g_renderCache.smoothed.front());
             g_gradientBrush->SetEndPoint(g_renderCache.smoothed.back());
-            g_gradientBrush->SetOpacity(trailAlpha);
+            g_gradientBrush->SetOpacity(1.0f);
             coreBrush = g_gradientBrush;
         }
         DrawTrailStroke(g_renderTarget, coreBrush, coreHalf, true);
+        g_renderTarget->PopLayer();
     }
 
     const LONGLONG durationTicks = std::max<LONGLONG>(
