@@ -1855,6 +1855,8 @@ static float SampleBackgroundLuminance(DWORD now, POINT center) {
         const int64_t distanceThreshold = kBackgroundResampleDistancePx;
         // Short-circuit large coordinate deltas before squaring them; the final
         // squared-distance comparison only runs when both deltas are below 20.
+        // A time limit is mandatory, while cursor travel is an additional gate
+        // so high-speed movement cannot trigger a capture on every sample.
         const bool movedFarEnough =
             dx <= -distanceThreshold || dx >= distanceThreshold ||
             dy <= -distanceThreshold || dy >= distanceThreshold ||
@@ -2632,8 +2634,6 @@ DWORD WINAPI OverlayThreadProc(LPVOID) {
 
     const LONGLONG simulationTicks =
         FrameIntervalTicks(qpcFrequency.QuadPart, kTargetFrameRate);
-    const LONGLONG fallbackTicks =
-        FrameIntervalTicks(qpcFrequency.QuadPart, kFallbackFrameRate);
     const LONGLONG activeRenderTicks =
         FrameIntervalTicks(qpcFrequency.QuadPart, kActiveRenderFrameRate);
     const LONGLONG fadeRenderTicks =
@@ -2789,7 +2789,9 @@ DWORD WINAPI OverlayThreadProc(LPVOID) {
                         || HasActiveRipples(sampledQpc)
                         || HasActiveMotionAccents(sampledQpc);
                     g_nextSampleDeadline = sampledQpc
-                        + (activeAfterMovement ? simulationTicks : (g_pollingFallback ? fallbackTicks : 0));
+                        + (activeAfterMovement
+                            ? simulationTicks
+                            : (g_pollingFallback ? GetFallbackPollIntervalTicks() : 0));
                     if (activeAfterMovement && (renderFrame || sampledQpc >= nextRenderDeadline)) {
                         nextRenderDeadline = sampledQpc
                             + ((g_isSmearing || g_historyCount >= 2)
