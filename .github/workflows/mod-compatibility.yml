@@ -73,7 +73,14 @@ jobs:
           echo "Compiling $ALL_CHANGED_AND_MODIFIED_FILES"
           windhawk_path="${{ runner.temp }}\windhawk"
           if [[ "${{ matrix.version }}" == 1.* ]]; then
-            python -u scripts/compile_mod.py -w "$windhawk_path" \
+            # This repository does not vendor Windhawk's legacy compiler helper.
+            # Pin the upstream helper revision so the 1.x compatibility build
+            # remains reproducible without duplicating the 700-line script.
+            compiler_script="${{ runner.temp }}/compile_mod.py"
+            compiler_script_url="https://raw.githubusercontent.com/ramensoftware/windhawk-mods/c121075aeb9dcc8e133423192cc9fdfb9e606ff5/scripts/compile_mod.py"
+            echo "Downloading pinned Windhawk compiler helper: $compiler_script_url"
+            curl --fail --location --retry 3 --retry-delay 1 "$compiler_script_url" -o "$compiler_script"
+            python -u "$compiler_script" -w "$windhawk_path" \
               -f "$ALL_CHANGED_AND_MODIFIED_FILES" \
               -o32 "${{ runner.temp }}\mod_32.dll" \
               -o64 "${{ runner.temp }}\mod_64.dll" \
