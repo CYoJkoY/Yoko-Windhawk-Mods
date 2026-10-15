@@ -17,8 +17,8 @@
 # Cursor Tail
 
 Cursor Tail adds a smooth, tapered motion-blur trail behind the mouse pointer
-when it moves quickly, with optional click and scroll feedback for clearer
-interaction cues. All effects use a transparent Direct2D overlay, independently
+when it moves quickly, with optional click ripples and animated directional
+scroll-wheel arrows for clearer interaction cues. All effects use a transparent Direct2D overlay, independently
 of the application under the pointer.
 
 ## Preview
@@ -34,7 +34,7 @@ of the application under the pointer.
 - **Custom appearance:** Configure trail color, outline color, gradient, and optional glow.
 - **Adaptive color:** Automatically sample the active cursor image and prefer colors with sufficient contrast against the screen background.
 - **Fade-out:** Smoothly fade the trail after the pointer slows down.
-- **Interaction feedback:** Optional expanding ripples for left, right, and middle clicks, plus direction-specific scroll-wheel pulses. These effects can run without a motion trail.
+- **Interaction feedback:** Optional expanding rings for left, right, and middle clicks, plus animated arrows that travel up or down with the scroll direction. These effects can run without a motion trail.
 - **Per-app rules:** Enable or disable the trail for selected executables.
 - **Fullscreen suppression:** Automatically hide the trail for exclusive or borderless fullscreen applications and restore it after fullscreen ends.
 
@@ -44,7 +44,7 @@ of the application under the pointer.
 
 The outline can either be derived automatically from the trail luminance or set to a fixed hexadecimal color.
 
-**Screen capture:** Auto mode reads the screen background around the pointer, and that sample must not pick up the overlay's own pixels. While Auto mode is active the entire overlay is therefore excluded from screen capture (`WDA_EXCLUDEFROMCAPTURE`), including click and scroll ripples. Manual color mode never reads the screen, so the overlay stays capturable and its effects show up normally in captures.
+**Screen capture:** Auto mode reads the screen background around the pointer, and that sample must not pick up the overlay's own pixels. While Auto mode is active the entire overlay is therefore excluded from screen capture (`WDA_EXCLUDEFROMCAPTURE`), including click rings and directional wheel arrows. Manual color mode never reads the screen, so the overlay stays capturable and its effects show up normally in captures.
 
 ## Per-app rules
 
@@ -74,7 +74,7 @@ Windhawk also ships **Cursor Motion Blur**, **Mouse Trail**, **Simple Cursor Tra
 - **Appearance:** separately configurable minimum/maximum outer and core widths, an optional gradient fill and an optional glow layer on top of the plain two-layer ribbon.
 - **Adaptive color:** cursor-image color extraction with histogram ranking, contrast selection against the sampled background luminance, and automatic or manual outline colors.
 - **Context awareness:** per-app `exe=on|off` rules and fullscreen suppression (D3D exclusive or borderless) with an exit confirmation delay.
-- **Interaction layer:** optional, button-specific click ripples and scroll-direction pulses rendered through the same bounded Direct2D backbuffer, without a particle subsystem. The low-level mouse hook is installed only while one of these effects is enabled.
+- **Interaction layer:** optional, button-specific click rings and animated up/down wheel arrows rendered through the same bounded Direct2D backbuffer, without a particle subsystem. The low-level mouse hook is installed only while one of these effects is enabled.
 - **Motion cues:** optional fixed-capacity acceleration streaks and direction-change chevrons, with cooldowns and bounded lifetimes. Large movement intervals can insert a configurable number of trail samples to reduce visual gaps.
 
 - [**Cursor Motion Blur**](https://github.com/ramensoftware/windhawk-mods/blob/main/mods/cursor-motion-blur.wh.cpp): the original basis for Cursor Tail, with a tapered motion-blur ribbon.
@@ -264,8 +264,8 @@ This mod is derived in part from the Windhawk **Cursor Motion Blur** mod by Thea
     - wheel_feedback_enabled: false
       $name: Scroll-wheel feedback
       $name:zh-CN: 滚轮反馈
-      $description: Show a ripple when the wheel scrolls up or down, using a separate color for each direction.
-      $description:zh-CN: 滚轮向上或向下滚动时显示波纹，并为两个方向分别设置颜色。
+      $description: Show an animated arrow that moves up or down with the wheel direction, using a separate color for each direction.
+      $description:zh-CN: 滚轮向上或向下滚动时显示随方向移动的箭头，并为两个方向分别设置颜色。
     - left_click_color: "#00D7FF"
       $name: Left-click color
       $name:zh-CN: 左键颜色
@@ -284,28 +284,38 @@ This mod is derived in part from the Windhawk **Cursor Motion Blur** mod by Thea
     - wheel_up_color: "#7CFF6B"
       $name: Scroll-up color
       $name:zh-CN: 向上滚动颜色
-      $description: Hexadecimal RGB color used when the wheel scrolls up.
-      $description:zh-CN: 滚轮向上滚动时使用的十六进制 RGB 颜色。
+      $description: Hexadecimal RGB color used by the upward-moving scroll arrow.
+      $description:zh-CN: 向上移动的滚轮箭头使用的十六进制 RGB 颜色。
     - wheel_down_color: "#A78BFA"
       $name: Scroll-down color
       $name:zh-CN: 向下滚动颜色
-      $description: Hexadecimal RGB color used when the wheel scrolls down.
-      $description:zh-CN: 滚轮向下滚动时使用的十六进制 RGB 颜色。
+      $description: Hexadecimal RGB color used by the downward-moving scroll arrow.
+      $description:zh-CN: 向下移动的滚轮箭头使用的十六进制 RGB 颜色。
+    - wheel_arrow_size: 18
+      $name: Scroll-arrow size
+      $name:zh-CN: 滚轮箭头大小
+      $description: Overall size of the animated scroll arrow in pixels. Range 6-40.
+      $description:zh-CN: 滚轮动画箭头的整体大小，单位为像素。范围为 6-40。
+    - wheel_arrow_distance: 32
+      $name: Scroll-arrow travel distance
+      $name:zh-CN: 滚轮箭头移动距离
+      $description: Distance travelled by each scroll arrow during its animation, in pixels. Range 8-120.
+      $description:zh-CN: 滚轮箭头在动画过程中移动的距离，单位为像素。范围为 8-120。
     - ripple_radius: 36
-      $name: Ripple radius
-      $name:zh-CN: 波纹半径
-      $description: Maximum ripple radius in pixels. Range 10-200.
-      $description:zh-CN: 波纹的最大半径，单位为像素。范围为 10-200。
+      $name: Click-ring radius
+      $name:zh-CN: 点击圆环半径
+      $description: Maximum radius of the expanding click ring in pixels. Range 10-200.
+      $description:zh-CN: 点击扩散圆环的最大半径，单位为像素。范围为 10-200。
     - ripple_duration_ms: 420
       $name: Ripple duration
       $name:zh-CN: 波纹持续时间
       $description: Duration of each ripple in milliseconds. Range 100-2000.
       $description:zh-CN: 每个波纹的动画持续时间，单位为毫秒。范围为 100-2000。
-    - ripple_width: 2
-      $name: Ripple stroke width
-      $name:zh-CN: 波纹线宽
-      $description: Stroke width of the ripple outline in pixels. Range 1-10.
-      $description:zh-CN: 波纹轮廓的线宽，单位为像素。范围为 1-10。
+    - ripple_width: 3
+      $name: Interaction stroke width
+      $name:zh-CN: 交互线条粗细
+      $description: Stroke width of click-ring outlines and scroll arrows in pixels. Range 1-10.
+      $description:zh-CN: 点击圆环轮廓与滚轮箭头的线宽，单位为像素。范围为 1-10。
     - ripple_opacity: 78
       $name: Ripple opacity
       $name:zh-CN: 波纹不透明度
@@ -542,8 +552,10 @@ uint32_t g_middleClickRGB = 0x00FFD166;
 uint32_t g_wheelUpRGB = 0x007CFF6B;
 uint32_t g_wheelDownRGB = 0x00A78BFA;
 float g_rippleRadius = 36.0f;
+float g_wheelArrowSize = 18.0f;
+float g_wheelArrowDistance = 32.0f;
 int g_rippleDurationMs = 420;
-float g_rippleStrokeWidth = 2.0f;
+float g_rippleStrokeWidth = 3.0f;
 float g_rippleOpacity = 0.78f;
 int g_accelerationAccentEnabled = 0;
 int g_turnAccentEnabled = 0;
@@ -556,10 +568,17 @@ float g_motionAccentOpacity = 0.82f;
 int g_maxInterpolationSteps = 4;
 uint32_t g_motionAccentRGB = 0x00FFD166;
 
+enum class RippleKind : uint8_t {
+    Click,
+    WheelUp,
+    WheelDown,
+};
+
 struct RippleEffect {
     POINT center = {};
     LONGLONG startQpc = 0;
     uint32_t color = 0x0000D7FF;
+    RippleKind kind = RippleKind::Click;
     bool active = false;
 };
 
@@ -972,6 +991,8 @@ void LoadSettings() {
     g_clickFeedbackEnabled = std::clamp(Wh_GetIntSetting(L"Interaction.click_feedback_enabled"), 0, 1);
     g_wheelFeedbackEnabled = std::clamp(Wh_GetIntSetting(L"Interaction.wheel_feedback_enabled"), 0, 1);
     g_rippleRadius = static_cast<float>(std::clamp(Wh_GetIntSetting(L"Interaction.ripple_radius"), 10, 200));
+    g_wheelArrowSize = static_cast<float>(std::clamp(Wh_GetIntSetting(L"Interaction.wheel_arrow_size"), 6, 40));
+    g_wheelArrowDistance = static_cast<float>(std::clamp(Wh_GetIntSetting(L"Interaction.wheel_arrow_distance"), 8, 120));
     g_rippleDurationMs = std::clamp(Wh_GetIntSetting(L"Interaction.ripple_duration_ms"), 100, 2000);
     g_rippleStrokeWidth = static_cast<float>(std::clamp(Wh_GetIntSetting(L"Interaction.ripple_width"), 1, 10));
     g_rippleOpacity = std::clamp(Wh_GetIntSetting(L"Interaction.ripple_opacity"), 5, 100) / 100.0f;
@@ -1201,7 +1222,7 @@ static bool HasActiveRipples(LONGLONG nowQpc) {
     return UpdateRippleState(nowQpc) > 0;
 }
 
-static void AddRipple(const POINT& center, uint32_t color) {
+static void AddRipple(const POINT& center, uint32_t color, RippleKind kind = RippleKind::Click) {
     int selectedSlot = -1;
     for (int offset = 0; offset < kMaxActiveRipples; ++offset) {
         const int candidateSlot = (g_nextRippleSlot + offset) % kMaxActiveRipples;
@@ -1217,6 +1238,7 @@ static void AddRipple(const POINT& center, uint32_t color) {
     ripple.center = center;
     ripple.startQpc = QpcNow();
     ripple.color = color;
+    ripple.kind = kind;
     ripple.active = true;
     g_interactionPending = true;
     if (g_inputWakeEvent) SetEvent(g_inputWakeEvent);
@@ -1226,6 +1248,7 @@ static LRESULT CALLBACK LowLevelMouseHookProc(int code, WPARAM wParam, LPARAM lP
     if (code == HC_ACTION && lParam != 0) {
         const auto* mouseInfo = reinterpret_cast<const MSLLHOOKSTRUCT*>(lParam);
         uint32_t rippleColor = 0;
+        RippleKind rippleKind = RippleKind::Click;
         bool shouldRipple = false;
         switch (wParam) {
         case WM_LBUTTONDOWN:
@@ -1245,6 +1268,7 @@ static LRESULT CALLBACK LowLevelMouseHookProc(int code, WPARAM wParam, LPARAM lP
                 const SHORT wheelDelta = static_cast<SHORT>(HIWORD(mouseInfo->mouseData));
                 if (wheelDelta != 0) {
                     shouldRipple = true;
+                    rippleKind = wheelDelta > 0 ? RippleKind::WheelUp : RippleKind::WheelDown;
                     rippleColor = wheelDelta > 0 ? g_wheelUpRGB : g_wheelDownRGB;
                 }
             }
@@ -1252,7 +1276,7 @@ static LRESULT CALLBACK LowLevelMouseHookProc(int code, WPARAM wParam, LPARAM lP
         default:
             break;
         }
-        if (shouldRipple) AddRipple(mouseInfo->pt, rippleColor);
+        if (shouldRipple) AddRipple(mouseInfo->pt, rippleColor, rippleKind);
     }
     return CallNextHookEx(g_mouseHook, code, wParam, lParam);
 }
@@ -2067,8 +2091,16 @@ bool RenderOverlay(HWND hwnd, LONGLONG nowQpc) {
     // These values originate from integer settings, so no floating-point round-up is needed.
     const float scaledRippleRadius = g_rippleRadius * g_currentDpiScale;
     const float scaledRippleStrokeWidth = g_rippleStrokeWidth * g_currentDpiScale;
+    const float scaledWheelArrowSize = g_wheelArrowSize * g_currentDpiScale;
+    const float scaledWheelArrowDistance = g_wheelArrowDistance * g_currentDpiScale;
     const LONG ripplePadding = static_cast<LONG>(
         scaledRippleRadius + scaledRippleStrokeWidth + kRenderPadding * g_currentDpiScale + 1.0f);
+    const LONG wheelArrowPadding = static_cast<LONG>(ceilf(
+        scaledWheelArrowDistance * 0.5f
+        + scaledWheelArrowSize * 0.65f
+        + scaledRippleStrokeWidth
+        + kRenderPadding * g_currentDpiScale
+        + 2.0f));
     const MotionAccent* newestMotionAccent = nullptr;
     for (const MotionAccent& accent : g_motionAccents) {
         if (accent.active && (!newestMotionAccent || accent.startQpc > newestMotionAccent->startQpc)) {
@@ -2116,11 +2148,14 @@ bool RenderOverlay(HWND hwnd, LONGLONG nowQpc) {
                 continue;
             }
         }
+        const LONG effectPadding = ripple.kind == RippleKind::Click
+            ? ripplePadding
+            : wheelArrowPadding;
         const RECT rippleBounds = {
-            ripple.center.x - ripplePadding,
-            ripple.center.y - ripplePadding,
-            ripple.center.x + ripplePadding,
-            ripple.center.y + ripplePadding,
+            ripple.center.x - effectPadding,
+            ripple.center.y - effectPadding,
+            ripple.center.x + effectPadding,
+            ripple.center.y + effectPadding,
         };
         includeBounds(rippleBounds);
     }
@@ -2274,6 +2309,38 @@ bool RenderOverlay(HWND hwnd, LONGLONG nowQpc) {
         const float alpha = g_rippleOpacity * remaining * remaining;
         if (alpha < 0.005f) continue;
 
+        if (ripple.kind != RippleKind::Click) {
+            // Scroll arrows move in the same direction as the requested wheel action.
+            const float direction = ripple.kind == RippleKind::WheelUp ? -1.0f : 1.0f;
+            const float arrowCenterY = static_cast<float>(ripple.center.y)
+                + direction * scaledWheelArrowDistance * (easedProgress - 0.5f);
+            const float arrowSize = scaledWheelArrowSize * (0.88f + 0.12f * remaining);
+            const D2D1_POINT_2F arrowTip = D2D1::Point2F(
+                static_cast<float>(ripple.center.x),
+                arrowCenterY + direction * arrowSize * 0.5f);
+            const D2D1_POINT_2F arrowLeft = D2D1::Point2F(
+                arrowTip.x - arrowSize * 0.31f,
+                arrowTip.y - direction * arrowSize * 0.29f);
+            const D2D1_POINT_2F arrowRight = D2D1::Point2F(
+                arrowTip.x + arrowSize * 0.31f,
+                arrowTip.y - direction * arrowSize * 0.29f);
+            const D2D1_POINT_2F shaftStart = D2D1::Point2F(
+                arrowTip.x,
+                arrowCenterY - direction * arrowSize * 0.42f);
+            const D2D1_POINT_2F shaftEnd = D2D1::Point2F(
+                arrowTip.x,
+                arrowCenterY - direction * arrowSize * 0.04f);
+
+            g_rippleBrush->SetColor(ToColorF(ripple.color, alpha));
+            g_renderTarget->DrawLine(
+                shaftStart, shaftEnd, g_rippleBrush, scaledRippleStrokeWidth, g_strokeStyle);
+            g_renderTarget->DrawLine(
+                arrowTip, arrowLeft, g_rippleBrush, scaledRippleStrokeWidth, g_strokeStyle);
+            g_renderTarget->DrawLine(
+                arrowTip, arrowRight, g_rippleBrush, scaledRippleStrokeWidth, g_strokeStyle);
+            continue;
+        }
+
         g_rippleBrush->SetColor(ToColorF(ripple.color, alpha));
         g_renderTarget->DrawEllipse(
             D2D1::Ellipse(
@@ -2285,7 +2352,7 @@ bool RenderOverlay(HWND hwnd, LONGLONG nowQpc) {
             g_rippleBrush,
             scaledRippleStrokeWidth,
             g_strokeStyle);
-        g_rippleBrush->SetColor(ToColorF(ripple.color, alpha * 0.48f));
+        g_rippleBrush->SetColor(ToColorF(ripple.color, alpha * 0.58f));
         const float innerRadius = radius * 0.58f;
         g_renderTarget->DrawEllipse(
             D2D1::Ellipse(
@@ -2295,7 +2362,7 @@ bool RenderOverlay(HWND hwnd, LONGLONG nowQpc) {
                 innerRadius,
                 innerRadius),
             g_rippleBrush,
-            std::max(g_currentDpiScale, scaledRippleStrokeWidth * 0.65f),
+            std::max(g_currentDpiScale * 1.5f, scaledRippleStrokeWidth * 0.78f),
             g_strokeStyle);
     }
 
