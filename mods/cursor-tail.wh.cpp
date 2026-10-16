@@ -264,7 +264,7 @@ This mod is derived in part from the Windhawk **Cursor Motion Blur** mod by Thea
     - wheel_feedback_enabled: false
       $name: Scroll-wheel feedback
       $name:zh-CN: 滚轮反馈
-      $description: Show an animated arrow in the wheel direction. Hold Shift to show horizontal feedback: wheel up points left and wheel down points right. Colors remain associated with the wheel input direction.
+      $description: Show an animated arrow in the wheel direction. Hold Shift for horizontal feedback, with wheel up pointing left and wheel down pointing right. Colors remain associated with the wheel input direction.
       $description:zh-CN: 滚轮滚动时显示沿对应方向移动的箭头。按住 Shift 时改为水平反馈：向上滚动指向左侧，向下滚动指向右侧。颜色仍按滚轮输入方向区分。
     - left_click_color: "#00D7FF"
       $name: Left-click color
