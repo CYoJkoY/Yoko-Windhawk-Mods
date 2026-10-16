@@ -2214,6 +2214,9 @@ bool RenderOverlay(HWND hwnd, LONGLONG nowQpc) {
                 center.x + directionX * along + normalX * normal,
                 center.y + directionY * along + normalY * normal);
         };
+        const float size = scaledMotionAccentSize
+            * (0.82f + 0.18f * remaining)
+            * std::clamp(accent.intensity, 0.5f, 1.8f);
 
         const float stroke = std::max(1.0f, g_currentDpiScale * (1.45f - 0.55f * progress));
         const float outlineExtra = std::max(1.25f, g_currentDpiScale * 1.25f);
