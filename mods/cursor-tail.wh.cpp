@@ -29,7 +29,7 @@ Direct2D overlay, independently of the application under the pointer.
 
 - **Speed-reactive trail:** Width, opacity, and effective length respond to pointer velocity. Trigger and stop speeds are configured in pixels per second, so they remain meaningful when the sampling rate changes.
 - **Continuous fast-motion paths:** A configurable, hard-bounded interpolation step count fills large gaps between samples without allocating extra memory in the draw loop.
-- **Motion accents:** Clear, outlined acceleration streaks help track fast pointer movement and are enabled by default. Optional sharp-turn chevrons highlight abrupt direction changes without making everyday cursor movement visually busy.
+- **Motion accents:** Directional acceleration bursts pair a forward arrowhead with expanding speed lines. Optional turn markers trace the incoming and outgoing cursor directions, making sharp changes easier to recognize at a glance.
 - **Smooth motion:** Historical cursor samples can be smoothed with Chaikin subdivision for a continuous ribbon.
 - **Custom appearance:** Configure trail color, outline color, gradient, and optional glow.
 - **Adaptive color:** Automatically sample the active cursor image and prefer colors with sufficient contrast against the screen background.
@@ -75,7 +75,7 @@ Cursor Tail shares the general cursor-trail space with other Windhawk mods, but 
 - **Adaptive color:** cursor-image color extraction with histogram ranking, contrast-aware selection, and hysteresis to avoid rapid color switching near the contrast boundary.
 - **Context awareness:** per-app `exe=on|off` rules and fullscreen suppression for exclusive or borderless applications.
 - **Interaction layer:** optional button-specific click rings and animated scroll arrows, including left/right arrows for Shift+wheel. Interaction events use asynchronous raw mouse input instead of a system-wide low-level mouse hook.
-- **Motion cues:** bounded acceleration streaks and direction-change chevrons, plus interpolation for large movement gaps. Acceleration feedback is enabled by default; sharp-turn feedback remains optional to limit visual clutter.
+- **Motion cues:** bounded directional burst glyphs and incoming-to-outgoing turn markers, plus interpolation for large movement gaps. Acceleration feedback is enabled by default; sharp-turn feedback remains optional to limit visual clutter.
 
 Comparable mods include:
 
@@ -328,13 +328,13 @@ This mod is derived in part from the Windhawk **Cursor Motion Blur** mod by Thea
     - acceleration_accent_enabled: true
       $name: Acceleration burst accents
       $name:zh-CN: 加速爆发提示
-      $description: Show brief, outlined speed streaks when the pointer accelerates sharply above the trail trigger speed. Enabled by default and limited by a cooldown to avoid visual clutter.
-      $description:zh-CN: 指针超过拖尾触发速度并明显加速时，短暂绘制带对比轮廓的速度线。默认开启，并通过冷却间隔避免提示过密。
+      $description: Show a directional burst with a forward arrowhead and expanding speed lines when the pointer accelerates sharply above the trail trigger speed. Enabled by default and limited by a cooldown to avoid visual clutter.
+      $description:zh-CN: 指针超过拖尾触发速度并明显加速时，短暂显示由前向箭头和向后扩展的速度线组成的爆发标记。默认开启，并通过冷却间隔避免提示过密。
     - turn_accent_enabled: false
       $name: Sharp-turn accents
       $name:zh-CN: 急转弯提示
-      $description: Optionally show a brief directional chevron when the pointer makes a sharp turn at high speed. Disabled by default to keep routine movement uncluttered.
-      $description:zh-CN: 可选地在指针高速急转弯时短暂绘制方向标记。默认关闭，避免日常移动产生过多视觉干扰。
+      $description: Optionally show a high-contrast path marker that connects the incoming and outgoing directions when the pointer makes a sharp turn at high speed. Disabled by default to keep routine movement uncluttered.
+      $description:zh-CN: 可选地在指针高速急转弯时，用高对比折线路径连接转向前后的方向。默认关闭，避免日常移动产生过多视觉干扰。
     - fast_move_interpolation: true
       $name: Fast-move interpolation
       $name:zh-CN: 快速移动轨迹补点
@@ -355,7 +355,7 @@ This mod is derived in part from the Windhawk **Cursor Motion Blur** mod by Thea
       $name:zh-CN: 运动提示持续时间
       $description: How long acceleration and turn accents remain visible. Range 80-1000 ms.
       $description:zh-CN: 加速和转向提示的显示时长。范围 80-1000 毫秒。
-    - motion_accent_size: 18
+    - motion_accent_size: 22
       $name: Motion accent size
       $name:zh-CN: 运动提示大小
       $description: Approximate size of the acceleration streaks and turn chevrons, in pixels. Range 4-40.
@@ -570,7 +570,7 @@ int g_fastMoveInterpolationEnabled = 1;
 int g_accelerationThreshold = 30000;
 int g_turnAngleDegrees = 65;
 int g_motionAccentDurationMs = 300;
-float g_motionAccentSize = 18.0f;
+float g_motionAccentSize = 22.0f;
 float g_motionAccentOpacity = 0.90f;
 int g_maxInterpolationSteps = 4;
 uint32_t g_motionAccentRGB = 0x00FFD166;
@@ -600,6 +600,8 @@ struct MotionAccent {
     POINT center = {};
     float directionX = 1.0f;
     float directionY = 0.0f;
+    float previousDirectionX = 0.0f;
+    float previousDirectionY = 0.0f;
     float intensity = 1.0f;
     LONGLONG startQpc = 0;
     MotionAccentKind kind = MotionAccentKind::Acceleration;
@@ -1052,7 +1054,9 @@ static void AddMotionAccent(
     float directionX,
     float directionY,
     float intensity,
-    MotionAccentKind kind) {
+    MotionAccentKind kind,
+    float previousDirectionX = 0.0f,
+    float previousDirectionY = 0.0f) {
     int selectedSlot = -1;
     for (int offset = 0; offset < kMaxActiveMotionAccents; ++offset) {
         const int candidateSlot = (g_nextMotionAccentSlot + offset) % kMaxActiveMotionAccents;
@@ -1068,6 +1072,8 @@ static void AddMotionAccent(
     accent.center = center;
     accent.directionX = directionX;
     accent.directionY = directionY;
+    accent.previousDirectionX = previousDirectionX;
+    accent.previousDirectionY = previousDirectionY;
     accent.intensity = std::clamp(intensity, 0.5f, 1.8f);
     accent.startQpc = QpcNow();
     accent.kind = kind;
@@ -1180,7 +1186,9 @@ static void UpdateMotionCueTracking(const POINT& point, LONGLONG nowQpc) {
                     directionX,
                     directionY,
                     std::clamp((1.0f - dot) * 0.9f, 0.5f, 1.8f),
-                    MotionAccentKind::Turn);
+                    MotionAccentKind::Turn,
+                    g_lastMotionDirectionX,
+                    g_lastMotionDirectionY);
                 g_lastTurnAccentQpc = nowQpc;
             }
         }
@@ -2063,7 +2071,7 @@ bool RenderOverlay(HWND hwnd, LONGLONG nowQpc) {
     }
     const float scaledMotionAccentSize = g_motionAccentSize * g_currentDpiScale;
     const LONG motionAccentPadding = static_cast<LONG>(
-        ceilf(scaledMotionAccentSize * 2.4f + kRenderPadding * g_currentDpiScale + 2.0f));
+        ceilf(scaledMotionAccentSize * 3.8f + kRenderPadding * g_currentDpiScale + 3.0f));
     for (const MotionAccent& accent : g_motionAccents) {
         if (!accent.active) continue;
         if (newestMotionAccent) {
@@ -2218,15 +2226,15 @@ bool RenderOverlay(HWND hwnd, LONGLONG nowQpc) {
             * (0.82f + 0.18f * remaining)
             * std::clamp(accent.intensity, 0.5f, 1.8f);
 
-        const float stroke = std::max(1.0f, g_currentDpiScale * (1.45f - 0.55f * progress));
-        const float outlineExtra = std::max(1.25f, g_currentDpiScale * 1.25f);
+        // Each cue uses a heavy contrast silhouette with a saturated color core.
+        // This keeps the shape readable without sampling screen pixels every frame.
+        const float stroke = std::max(1.5f, g_currentDpiScale * (2.2f - 0.6f * progress));
+        const float outlineExtra = std::max(1.5f, g_currentDpiScale * 1.5f);
         const float visibleAlpha = std::clamp(alpha, 0.0f, 1.0f);
         const float accentLuminance =
             0.2126f * static_cast<float>((g_motionAccentRGB >> 16) & 0xFF)
             + 0.7152f * static_cast<float>((g_motionAccentRGB >> 8) & 0xFF)
             + 0.0722f * static_cast<float>(g_motionAccentRGB & 0xFF);
-        // Pick an outline opposite to the accent's own brightness so custom
-        // colors retain a crisp edge without sampling the screen every frame.
         const uint32_t outlineRGB = accentLuminance >= 128.0f ? 0x00000000 : 0x00FFFFFF;
         const auto drawAccentLine = [&](const D2D1_POINT_2F& start,
                                         const D2D1_POINT_2F& end,
@@ -2240,26 +2248,58 @@ bool RenderOverlay(HWND hwnd, LONGLONG nowQpc) {
         };
 
         if (accent.kind == MotionAccentKind::Acceleration) {
+            // The forward arrow communicates travel direction; the three
+            // trailing lines expand backward so acceleration reads as a burst.
+            const float tailExpansion = size * (0.16f + 0.58f * progress);
             for (int streak = -1; streak <= 1; ++streak) {
-                const float lateral = static_cast<float>(streak) * size * 0.48f;
-                const float startAlong = -size * 0.12f;
-                const float endAlong = -size * (0.82f + 0.22f * static_cast<float>(streak + 1));
+                const float lateral = static_cast<float>(streak)
+                    * size * (0.34f + 0.05f * progress);
+                const float rearOffset = static_cast<float>(streak == 0 ? 0 : 1);
+                const float startAlong = -size * (0.10f + 0.12f * rearOffset)
+                    - size * 0.12f * progress;
+                const float endAlong = -size * (0.78f + 0.24f * rearOffset) - tailExpansion;
+                const float lineWidth = stroke * (streak == 0 ? 1.2f : 0.88f);
                 drawAccentLine(
                     pointAlong(startAlong, lateral),
                     pointAlong(endAlong, lateral),
-                    stroke);
+                    lineWidth);
             }
+
+            const D2D1_POINT_2F arrowTip = pointAlong(size * 0.42f, 0.0f);
+            const D2D1_POINT_2F arrowBase = pointAlong(size * 0.08f, 0.0f);
+            const D2D1_POINT_2F arrowWingA = pointAlong(size * 0.06f, size * 0.30f);
+            const D2D1_POINT_2F arrowWingB = pointAlong(size * 0.06f, -size * 0.30f);
+            drawAccentLine(arrowBase, arrowTip, stroke * 1.12f);
+            drawAccentLine(arrowTip, arrowWingA, stroke * 1.12f);
+            drawAccentLine(arrowTip, arrowWingB, stroke * 1.12f);
         } else {
-            const D2D1_POINT_2F tip = pointAlong(size * 0.35f, 0.0f);
-            const D2D1_POINT_2F leftWing = pointAlong(-size * 0.52f, size * 0.62f);
-            const D2D1_POINT_2F rightWing = pointAlong(-size * 0.52f, -size * 0.62f);
-            drawAccentLine(tip, leftWing, stroke);
-            drawAccentLine(tip, rightWing, stroke);
-            const D2D1_POINT_2F innerTip = pointAlong(size * 0.04f, 0.0f);
-            const D2D1_POINT_2F innerLeft = pointAlong(-size * 0.45f, size * 0.34f);
-            const D2D1_POINT_2F innerRight = pointAlong(-size * 0.45f, -size * 0.34f);
-            drawAccentLine(innerTip, innerLeft, stroke * 0.7f);
-            drawAccentLine(innerTip, innerRight, stroke * 0.7f);
+            // A turn is drawn as the actual change of path, not a generic
+            // chevron: the incoming leg arrives at the pivot and the outgoing
+            // leg terminates in an arrowhead pointing along the new direction.
+            const float previousLength = sqrtf(
+                accent.previousDirectionX * accent.previousDirectionX
+                + accent.previousDirectionY * accent.previousDirectionY);
+            const float incomingExtent = size * (0.34f + 0.36f * progress);
+            const float outgoingExtent = size * (0.30f + 0.38f * progress);
+            if (previousLength > 0.5f) {
+                const D2D1_POINT_2F incomingStart = D2D1::Point2F(
+                    center.x - accent.previousDirectionX / previousLength * incomingExtent,
+                    center.y - accent.previousDirectionY / previousLength * incomingExtent);
+                drawAccentLine(incomingStart, center, stroke * 1.18f);
+            } else {
+                drawAccentLine(pointAlong(-incomingExtent, 0.0f), center, stroke * 1.18f);
+            }
+
+            const D2D1_POINT_2F arrowTip = pointAlong(outgoingExtent, 0.0f);
+            const D2D1_POINT_2F arrowBase = pointAlong(outgoingExtent - size * 0.28f, 0.0f);
+            const D2D1_POINT_2F arrowWingA = pointAlong(
+                outgoingExtent - size * 0.30f, size * 0.22f);
+            const D2D1_POINT_2F arrowWingB = pointAlong(
+                outgoingExtent - size * 0.30f, -size * 0.22f);
+            drawAccentLine(center, arrowBase, stroke * 1.18f);
+            drawAccentLine(arrowBase, arrowTip, stroke * 1.18f);
+            drawAccentLine(arrowTip, arrowWingA, stroke * 1.18f);
+            drawAccentLine(arrowTip, arrowWingB, stroke * 1.18f);
         }
     }
 
