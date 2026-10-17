@@ -1220,9 +1220,7 @@ static void UpdateMotionCueTracking(const POINT& point, LONGLONG nowQpc) {
         const float windowDistance = sqrtf(windowDx * windowDx + windowDy * windowDy);
         const float windowSpeed = windowDistance / std::max(windowElapsedSeconds, 0.001f);
 
-        if (g_accelerationAccentEnabled
-            && g_hasAccelerationWindowSpeed
-            && windowDistance >= 2.0f) {
+        if (g_hasAccelerationWindowSpeed && windowDistance >= 2.0f) {
             const float acceleration =
                 (windowSpeed - g_accelerationWindowSpeed)
                 / std::max(windowElapsedSeconds, 0.001f);
@@ -2535,9 +2533,10 @@ bool SmearFrame(HWND hwnd, DWORD now, bool renderFrame) {
     const LONGLONG sampleElapsedTicks = sampleQpc - g_lastSampleQpc;
     const LONGLONG resumeGapTicks = std::max<LONGLONG>(
         1, g_qpcFrequency * static_cast<LONGLONG>(kMotionResumeGapMs) / 1000);
-    if (g_lastSampleQpc > 0
-        && (sampleElapsedTicks <= 0 || sampleElapsedTicks > resumeGapTicks)) {
-        // Do not infer motion speed from an idle gap or bridge an unseen cursor jump.
+    if (g_lastSampleQpc <= 0
+        || sampleElapsedTicks <= 0
+        || sampleElapsedTicks > resumeGapTicks) {
+        // Initialize or rebase instead of inferring speed across an invalid sample interval.
         ResetTrailState();
         ResetMotionCueTracking();
         g_lastPos = point;
