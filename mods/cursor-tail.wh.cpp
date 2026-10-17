@@ -1209,7 +1209,8 @@ static void UpdateMotionCueTracking(const POINT& point, LONGLONG nowQpc) {
     const LONGLONG accelerationWindowTicks = std::max<LONGLONG>(
         1, g_qpcFrequency
             * static_cast<LONGLONG>(kAccelerationMeasurementWindowMs) / 1000);
-    if (g_accelerationWindowQpc > 0
+    if (g_accelerationAccentEnabled
+        && g_hasAccelerationWindowSample
         && nowQpc - g_accelerationWindowQpc >= accelerationWindowTicks) {
         const LONGLONG windowElapsedTicks = nowQpc - g_accelerationWindowQpc;
         const float windowElapsedSeconds = static_cast<float>(windowElapsedTicks)
