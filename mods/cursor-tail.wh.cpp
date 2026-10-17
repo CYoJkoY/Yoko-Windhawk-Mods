@@ -1761,6 +1761,11 @@ void UpdateTrailState(const POINT& previousPoint, const POINT& point, float velo
         g_lowVelocityFrames = 0;
     }
     if (g_isSmearing) {
+        if (startedSmearing) {
+            // A fading tail belongs to the previous motion segment. Do not connect
+            // it to a new segment after a discontinuous cursor repositioning.
+            HistoryClear();
+        }
         const float target = std::clamp((velocity - g_stopVelocity) / (g_triggerVelocity * 2.0f), 0.0f, 1.0f);
         g_smoothedSpeedNorm = g_smoothedSpeedNorm * 0.55f + target * 0.45f;
         const float dx = static_cast<float>(point.x - previousPoint.x);
