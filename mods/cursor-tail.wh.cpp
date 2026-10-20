@@ -4,7 +4,7 @@
 // @name:zh-CN      光标拖尾
 // @description     Adds a speed-reactive cursor trail with optional interaction feedback.
 // @description:zh-CN 为鼠标指针添加速度响应式拖尾与可选的交互反馈。
-// @version         3.18
+// @version         3.19
 // @author          CYoJkoY
 // @github          https://github.com/CYoJkoY
 // @license         MIT
@@ -35,7 +35,7 @@ Direct2D overlay, independently of the application under the pointer.
 - **Adaptive color:** Automatically sample the active cursor image and prefer colors with sufficient contrast against the screen background.
 - **Fade-out:** Smoothly fade the trail after the pointer slows down.
 - **Interaction feedback:** Optional expanding rings for left, right, and middle clicks, plus animated scroll arrows. Native horizontal/tilt-wheel input points left or right directly. Hold Shift to map vertical wheel feedback to horizontal arrows: wheel up points left and wheel down points right. These effects can run without a motion trail.
-- **Pendant ornaments:** Hang a preset pendant from the pointer. Choose Classic, Bouncy, Floaty, or Comet, and optionally supply one image. The chain lags behind fast movement, swings at direction changes, and stretches while moving without decoding an animated GIF.
+- **Pendant ornaments:** Hang a preset pendant from the pointer on a simulated rope. Choose Classic, Bouncy, Floaty, or Comet, and optionally supply one image. The rope trails fast movement, swings at direction changes, and stretches while moving without decoding an animated GIF.
 - **Per-app rules:** Enable or disable the trail for selected executables.
 - **Fullscreen suppression:** Automatically hide the trail for exclusive or borderless fullscreen applications and restore it after fullscreen ends.
 
@@ -65,16 +65,16 @@ The trail is suppressed when the foreground application reports a D3D fullscreen
 
 ## Pendant ornaments
 
-Pendant ornaments hang a preset chain from the pointer. Pick a preset and, optionally, one image; the physics, node layout, and reaction strength are built in.
+Pendant ornaments hang a preset from the pointer on a rope. Pick a preset and, optionally, one image; the rope physics, rope look, node layout, and reaction strength are built in. Each rope is a fixed set of Verlet points pinned to the pointer, so the animation starts at the cursor instead of a detached chain.
 
-- **Classic:** a single pendant with a natural swing and the default feel.
-- **Bouncy:** a lighter, springier chain that swings farther and reacts strongly to clicks and wheel input.
-- **Floaty:** low gravity and high damping for a slow, gentle drift.
-- **Comet:** three nodes that shrink and fade toward the tail.
+- **Classic:** a single pendant on a thin silk cord with a natural swing.
+- **Bouncy:** a beaded chain that swings farther and reacts strongly to clicks and wheel input.
+- **Floaty:** low gravity and high damping for a slow, gentle drift on a wide ribbon.
+- **Comet:** three shrinking nodes spread along a glowing neon line.
 
 `Pendant image` accepts one file path. PNG, JPEG, BMP, GIF, and TIFF are supported; an animated GIF is decoded to its first frame. Leave the path empty to draw a circular pendant in the current trail color.
 
-Images are read only when the settings change. The chain is simulated at 125 Hz with at most eight substeps per sample, and the draw loop allocates nothing.
+Images are read only when the settings change. The rope is simulated at 125 Hz with at most eight substeps per sample. Rope points, smoothing buffers, and draw geometry are fixed-size, so the draw loop allocates nothing.
 
 ## Performance
 
@@ -396,13 +396,13 @@ This mod is derived in part from the Windhawk **Cursor Motion Blur** mod by Thea
     - enabled: false
       $name: Enable pendant ornaments
       $name:zh-CN: 启用鼠标挂坠
-      $description: Hang a preset pendant from the pointer. Choose a preset below; no additional tuning is required.
-      $description:zh-CN: 在指针上挂载预设挂坠。选择下方预设即可，无需额外调参。
+      $description: Hang a preset pendant from the pointer on a simulated rope. Choose a preset below; no additional tuning is required.
+      $description:zh-CN: 用模拟绳子在指针上挂载预设挂坠。选择下方预设即可，无需额外调参。
     - preset: classic
       $name: Pendant preset
       $name:zh-CN: 挂坠预设
-      $description: Classic is a natural single pendant, Bouncy swings more, Floaty drifts slowly, and Comet trails three shrinking nodes.
-      $description:zh-CN: “经典”为自然的单节点挂坠，“弹跳”摆动更强，“漂浮”缓慢漂移，“彗星”由三个逐渐缩小的节点组成尾迹。
+      $description: Classic hangs one pendant on a silk cord, Bouncy swings on a beaded chain, Floaty drifts on a ribbon, and Comet spreads three shrinking nodes along a neon line.
+      $description:zh-CN: “经典”为丝线挂坠，“弹跳”为摆动更强的珠链，“漂浮”为缓慢漂移的缎带，“彗星”为三个沿霓虹线分布的逐渐缩小节点。
       $options:
         - classic: Classic
         - bouncy: Bouncy
@@ -492,12 +492,15 @@ constexpr DWORD kAccelerationMeasurementWindowMs = 40;
 constexpr DWORD kAccelerationAccentCooldownMs = 180;
 constexpr DWORD kTurnAccentCooldownMs = 220;
 constexpr int kOrnamentMaxPresetNodes = 3;
+constexpr int kOrnamentMaxRopeSegments = 12;
+constexpr int kOrnamentMaxRopePoints = kOrnamentMaxRopeSegments + 1;
+// Two Chaikin passes keep at most 4N-6 points, so this fits the longest rope.
+constexpr int kOrnamentMaxRopeDrawPoints = kOrnamentMaxRopePoints * 4;
 constexpr int kOrnamentMaxImageDimension = 4096;
 constexpr uint64_t kOrnamentMaxDecodedBytes = 128ull * 1024ull * 1024ull;
-constexpr float kOrnamentDefaultLinkPx = 24.0f;
+constexpr float kOrnamentDefaultRopeLengthPx = 48.0f;
 constexpr float kOrnamentDefaultSizePx = 32.0f;
 constexpr float kOrnamentConstraintEpsilonPx = 0.0001f;
-constexpr float kOrnamentInertiaScale = 0.16f;
 constexpr float kOrnamentSpeedReferencePxPerSecond = 2400.0f;
 constexpr float kOrnamentSpeedSmoothing = 0.35f;
 constexpr float kOrnamentRestVelocityPx = 0.25f;
@@ -518,11 +521,18 @@ enum class OrnamentPreset : uint8_t {
     Comet,
 };
 
-// Every preset owns the physics, reaction strength, and node layout so the user
-// only chooses a look. Nodes are laid out from the pointer outward, and the
-// first entry attaches to the pointer anchor.
+enum class OrnamentRopeStyle : uint8_t {
+    Silk,
+    Neon,
+    Chain,
+    Ribbon,
+};
+
+// Every preset owns the physics, reaction strength, rope look, and node layout
+// so the user only chooses a look. ropeT places a node along the rope, where
+// 0 is the pointer anchor and 1 is the rope end.
 struct OrnamentPresetNode {
-    float linkPx;
+    float ropeT;
     float sizePx;
     float opacity;
     float angleDegrees;
@@ -535,11 +545,15 @@ struct OrnamentPresetDefinition {
     float gravity;
     float damping;
     int constraintIterations;
-    float swing;
     float stretch;
     float opacity;
     float clickImpulse;
     float wheelImpulse;
+    int ropeSegments;
+    float ropeLengthPx;
+    OrnamentRopeStyle ropeStyle;
+    float ropeWidthPx;
+    float ropeOpacity;
     int nodeCount;
     OrnamentPresetNode nodes[kOrnamentMaxPresetNodes];
 };
@@ -551,14 +565,18 @@ constexpr OrnamentPresetDefinition kOrnamentPresets[] = {
         12.0f,
         1400.0f,
         8.0f,
-        4,
-        1.0f,
+        12,
         0.18f,
         1.0f,
         240.0f,
         200.0f,
+        8,
+        48.0f,
+        OrnamentRopeStyle::Silk,
+        1.5f,
+        0.8f,
         1,
-        {{24.0f, 32.0f, 1.0f, 0.0f}},
+        {{1.0f, 32.0f, 1.0f, 0.0f}},
     },
     {
         L"bouncy",
@@ -566,14 +584,18 @@ constexpr OrnamentPresetDefinition kOrnamentPresets[] = {
         10.0f,
         1800.0f,
         3.0f,
-        6,
-        1.8f,
+        14,
         0.30f,
         1.0f,
         420.0f,
         320.0f,
+        10,
+        58.0f,
+        OrnamentRopeStyle::Chain,
+        1.6f,
+        0.9f,
         1,
-        {{26.0f, 34.0f, 1.0f, 0.0f}},
+        {{1.0f, 34.0f, 1.0f, 0.0f}},
     },
     {
         L"floaty",
@@ -581,14 +603,18 @@ constexpr OrnamentPresetDefinition kOrnamentPresets[] = {
         8.0f,
         220.0f,
         16.0f,
-        3,
-        0.5f,
+        10,
         0.06f,
         0.9f,
         120.0f,
         100.0f,
+        12,
+        68.0f,
+        OrnamentRopeStyle::Ribbon,
+        1.2f,
+        0.65f,
         1,
-        {{30.0f, 30.0f, 0.95f, 0.0f}},
+        {{1.0f, 30.0f, 0.95f, 0.0f}},
     },
     {
         L"comet",
@@ -596,17 +622,21 @@ constexpr OrnamentPresetDefinition kOrnamentPresets[] = {
         12.0f,
         1200.0f,
         6.0f,
-        5,
-        1.3f,
+        12,
         0.22f,
         1.0f,
         300.0f,
         240.0f,
+        10,
+        64.0f,
+        OrnamentRopeStyle::Neon,
+        1.7f,
+        0.9f,
         3,
         {
-            {18.0f, 30.0f, 1.0f, 0.0f},
-            {14.0f, 22.0f, 0.7f, 8.0f},
-            {12.0f, 15.0f, 0.4f, 16.0f},
+            {0.35f, 30.0f, 1.0f, 0.0f},
+            {0.67f, 22.0f, 0.7f, 8.0f},
+            {1.0f, 15.0f, 0.4f, 16.0f},
         },
     },
 };
@@ -750,11 +780,15 @@ float g_ornamentAnchorOffsetY = 12.0f;
 float g_ornamentGravity = 1400.0f;
 float g_ornamentDamping = 8.0f;
 int g_ornamentConstraintIterations = 4;
-float g_ornamentSwing = 1.0f;
 float g_ornamentStretch = 0.18f;
 float g_ornamentOpacity = 1.0f;
 float g_ornamentClickImpulse = kOrnamentDefaultClickImpulse;
 float g_ornamentWheelImpulse = kOrnamentDefaultWheelImpulse;
+int g_ornamentRopeSegments = 8;
+float g_ornamentRopeLengthPx = kOrnamentDefaultRopeLengthPx;
+OrnamentRopeStyle g_ornamentRopeStyle = OrnamentRopeStyle::Silk;
+float g_ornamentRopeWidthPx = 1.5f;
+float g_ornamentRopeOpacity = 0.8f;
 
 struct OrnamentImageSpec {
     std::wstring id;
@@ -763,11 +797,11 @@ struct OrnamentImageSpec {
 
 struct OrnamentNodeSpec {
     std::wstring imageId;
-    float linkPx = kOrnamentDefaultLinkPx;
+    float ropeT = 1.0f;
     float sizePx = kOrnamentDefaultSizePx;
     float angleDegrees = 0.0f;
     float pivotX = 0.5f;
-    float pivotY = 0.5f;
+    float pivotY = 0.18f;
     float opacity = 1.0f;
 };
 
@@ -782,14 +816,13 @@ struct OrnamentImage {
 
 struct OrnamentNode {
     int imageIndex = -1;
-    float linkPx = kOrnamentDefaultLinkPx;
+    float ropeT = 1.0f;
     float sizePx = kOrnamentDefaultSizePx;
     float angleDegrees = 0.0f;
     float pivotX = 0.5f;
-    float pivotY = 0.5f;
+    float pivotY = 0.18f;
     float opacity = 1.0f;
     D2D1_POINT_2F position = {};
-    D2D1_POINT_2F previous = {};
     D2D1_RECT_F localBounds = {};
     float drawAngleDegrees = 0.0f;
     float scaleX = 1.0f;
@@ -800,6 +833,12 @@ std::vector<OrnamentImageSpec> g_ornamentImageSpecs;
 std::vector<OrnamentNodeSpec> g_ornamentNodeSpecs;
 std::vector<OrnamentImage> g_ornamentImages;
 std::vector<OrnamentNode> g_ornamentNodes;
+D2D1_POINT_2F g_ornamentRopePoints[kOrnamentMaxRopePoints] = {};
+D2D1_POINT_2F g_ornamentRopePrevious[kOrnamentMaxRopePoints] = {};
+D2D1_POINT_2F g_ornamentRopeSmoothA[kOrnamentMaxRopeDrawPoints] = {};
+D2D1_POINT_2F g_ornamentRopeSmoothB[kOrnamentMaxRopeDrawPoints] = {};
+int g_ornamentRopePointCount = 0;
+float g_ornamentRopeSegmentPx = 0.0f;
 std::atomic_bool g_ornamentAssetsDirty{false};
 bool g_ornamentAssetsReady = false;
 bool g_ornamentPhysicsInitialized = false;
@@ -1238,11 +1277,15 @@ static void ApplyOrnamentPreset(OrnamentPreset preset) {
     g_ornamentGravity = definition.gravity;
     g_ornamentDamping = definition.damping;
     g_ornamentConstraintIterations = definition.constraintIterations;
-    g_ornamentSwing = definition.swing;
     g_ornamentStretch = definition.stretch;
     g_ornamentOpacity = definition.opacity;
     g_ornamentClickImpulse = definition.clickImpulse;
     g_ornamentWheelImpulse = definition.wheelImpulse;
+    g_ornamentRopeSegments = definition.ropeSegments;
+    g_ornamentRopeLengthPx = definition.ropeLengthPx;
+    g_ornamentRopeStyle = definition.ropeStyle;
+    g_ornamentRopeWidthPx = definition.ropeWidthPx;
+    g_ornamentRopeOpacity = definition.ropeOpacity;
 
     g_ornamentNodeSpecs.clear();
     const int nodeCount = std::clamp(definition.nodeCount, 0, kOrnamentMaxPresetNodes);
@@ -1253,7 +1296,7 @@ static void ApplyOrnamentPreset(OrnamentPreset preset) {
         if (!g_ornamentImageSpecs.empty()) {
             spec.imageId = g_ornamentImageSpecs.front().id;
         }
-        spec.linkPx = presetNode.linkPx;
+        spec.ropeT = presetNode.ropeT;
         spec.sizePx = presetNode.sizePx;
         spec.opacity = presetNode.opacity;
         spec.angleDegrees = presetNode.angleDegrees;
@@ -2576,7 +2619,7 @@ static void BuildOrnamentNodes() {
         // A node without a decoded image still renders the circular fallback,
         // so the index stays -1 and the preset remains usable with no image.
         node.imageIndex = FindOrnamentImageIndexById(spec.imageId);
-        node.linkPx = spec.linkPx;
+        node.ropeT = spec.ropeT;
         node.sizePx = spec.sizePx;
         node.angleDegrees = spec.angleDegrees;
         node.pivotX = spec.pivotX;
@@ -2587,15 +2630,17 @@ static void BuildOrnamentNodes() {
 }
 
 static void ResetOrnamentPhysics() {
+    const int segments = std::clamp(g_ornamentRopeSegments, 1, kOrnamentMaxRopeSegments);
+    g_ornamentRopePointCount = segments + 1;
+    const float length = std::max(1.0f, g_ornamentRopeLengthPx * g_currentDpiScale);
+    g_ornamentRopeSegmentPx = length / static_cast<float>(segments);
     D2D1_POINT_2F anchor = OrnamentAnchorPoint();
-    D2D1_POINT_2F cursor = anchor;
-    for (OrnamentNode& node : g_ornamentNodes) {
-        const float radians = node.angleDegrees * kOrnamentPi / 180.0f;
-        const float link = node.linkPx * g_currentDpiScale;
-        cursor.x += sinf(radians) * link;
-        cursor.y += cosf(radians) * link;
-        node.position = cursor;
-        node.previous = cursor;
+    for (int i = 0; i < g_ornamentRopePointCount; ++i) {
+        const D2D1_POINT_2F point = D2D1::Point2F(
+            anchor.x,
+            anchor.y + g_ornamentRopeSegmentPx * static_cast<float>(i));
+        g_ornamentRopePoints[i] = point;
+        g_ornamentRopePrevious[i] = point;
     }
     g_ornamentSmoothedSpeedNorm = 0.0f;
     g_ornamentSmoothedSpeedPx = 0.0f;
@@ -2666,18 +2711,40 @@ static D2D1_MATRIX_3X2_F OrnamentNodeMatrix(const OrnamentNode& node) {
         * D2D1::Matrix3x2F::Translation(node.position.x, node.position.y);
 }
 
+static D2D1_POINT_2F OrnamentRopePointAt(float t) {
+    const int count = g_ornamentRopePointCount;
+    if (count <= 0) return D2D1::Point2F(0.0f, 0.0f);
+    if (count == 1) return g_ornamentRopePoints[0];
+    const float location =
+        std::clamp(t, 0.0f, 1.0f) * static_cast<float>(count - 1);
+    const int index = std::min(static_cast<int>(location), count - 2);
+    const float fraction = location - static_cast<float>(index);
+    const D2D1_POINT_2F& a = g_ornamentRopePoints[index];
+    const D2D1_POINT_2F& b = g_ornamentRopePoints[index + 1];
+    return D2D1::Point2F(
+        a.x + (b.x - a.x) * fraction,
+        a.y + (b.y - a.y) * fraction);
+}
+
 static void UpdateOrnamentDrawStates() {
     if (g_ornamentNodes.empty()) return;
-    const D2D1_POINT_2F anchor = OrnamentAnchorPoint();
+    if (g_ornamentRopePointCount < 2) return;
     const float speed = std::clamp(g_ornamentSmoothedSpeedNorm, 0.0f, 1.0f);
     const float stretchScale = 1.0f + g_ornamentStretch * speed;
     const float compensatingScale = 1.0f / sqrtf(std::max(0.01f, stretchScale));
-    for (size_t i = 0; i < g_ornamentNodes.size(); ++i) {
-        OrnamentNode& node = g_ornamentNodes[i];
-        const D2D1_POINT_2F parent = i == 0 ? anchor : g_ornamentNodes[i - 1].position;
-        const float dx = node.position.x - parent.x;
-        const float dy = node.position.y - parent.y;
-        node.drawAngleDegrees = atan2f(-dx, dy) * 180.0f / kOrnamentPi + node.angleDegrees;
+    for (OrnamentNode& node : g_ornamentNodes) {
+        const float t = std::clamp(node.ropeT, 0.0f, 1.0f);
+        node.position = OrnamentRopePointAt(t);
+        const D2D1_POINT_2F before = OrnamentRopePointAt(t - 0.02f);
+        const D2D1_POINT_2F after = OrnamentRopePointAt(t + 0.02f);
+        const float dx = after.x - before.x;
+        const float dy = after.y - before.y;
+        if (dx * dx + dy * dy > kOrnamentConstraintEpsilonPx) {
+            node.drawAngleDegrees =
+                atan2f(-dx, dy) * 180.0f / kOrnamentPi + node.angleDegrees;
+        } else {
+            node.drawAngleDegrees = node.angleDegrees;
+        }
         node.scaleY = stretchScale;
         node.scaleX = compensatingScale;
         UpdateOrnamentNodeGeometry(node);
@@ -2710,49 +2777,55 @@ static void ConstrainOrnamentDistance(
 }
 
 static void StepOrnamentPhysics(float dtSeconds) {
-    if (g_ornamentNodes.empty()) return;
+    const int count = g_ornamentRopePointCount;
+    if (count < 2) return;
     const float retain = powf(std::clamp(1.0f - g_ornamentDamping / 100.0f, 0.5f, 1.0f), dtSeconds * kOrnamentSimulationHz);
     const float gravityStep = g_ornamentGravity * g_currentDpiScale * dtSeconds * dtSeconds;
-    for (OrnamentNode& node : g_ornamentNodes) {
-        const float vx = node.position.x - node.previous.x;
-        const float vy = node.position.y - node.previous.y;
-        node.previous = node.position;
-        node.position.x += vx * retain;
-        node.position.y += vy * retain + gravityStep;
+    for (int i = 1; i < count; ++i) {
+        D2D1_POINT_2F& point = g_ornamentRopePoints[i];
+        const float vx = point.x - g_ornamentRopePrevious[i].x;
+        const float vy = point.y - g_ornamentRopePrevious[i].y;
+        g_ornamentRopePrevious[i] = point;
+        point.x += vx * retain;
+        point.y += vy * retain + gravityStep;
     }
 
     D2D1_POINT_2F anchor = OrnamentAnchorPoint();
-    const int n = static_cast<int>(g_ornamentNodes.size());
     for (int iteration = 0; iteration < g_ornamentConstraintIterations; ++iteration) {
+        g_ornamentRopePoints[0] = anchor;
         ConstrainOrnamentDistance(
-            g_ornamentNodes[0].position,
+            g_ornamentRopePoints[1],
             anchor,
-            g_ornamentNodes[0].linkPx * g_currentDpiScale,
+            g_ornamentRopeSegmentPx,
             false);
-        for (int i = 1; i < n; ++i) {
+        for (int i = 1; i < count - 1; ++i) {
             ConstrainOrnamentDistance(
-                g_ornamentNodes[static_cast<size_t>(i)].position,
-                g_ornamentNodes[static_cast<size_t>(i - 1)].position,
-                g_ornamentNodes[static_cast<size_t>(i)].linkPx * g_currentDpiScale,
+                g_ornamentRopePoints[i + 1],
+                g_ornamentRopePoints[i],
+                g_ornamentRopeSegmentPx,
                 true);
+        }
+    }
+    g_ornamentRopePoints[0] = anchor;
+    for (int i = 0; i < count; ++i) {
+        if (!std::isfinite(g_ornamentRopePoints[i].x)
+            || !std::isfinite(g_ornamentRopePoints[i].y)) {
+            ResetOrnamentPhysics();
+            return;
         }
     }
 }
 
 static bool OrnamentAnimating() {
-    for (const OrnamentNode& node : g_ornamentNodes) {
-        const float dx = node.position.x - node.previous.x;
-        const float dy = node.position.y - node.previous.y;
+    for (int i = 1; i < g_ornamentRopePointCount; ++i) {
+        const float dx = g_ornamentRopePoints[i].x - g_ornamentRopePrevious[i].x;
+        const float dy = g_ornamentRopePoints[i].y - g_ornamentRopePrevious[i].y;
         if (dx * dx + dy * dy > kOrnamentRestVelocityPx * kOrnamentRestVelocityPx) return true;
     }
     return false;
 }
 
-static void UpdateOrnamentPhysics(
-    const POINT& previousPoint,
-    const POINT& currentPoint,
-    float velocity,
-    LONGLONG nowQpc) {
+static void UpdateOrnamentPhysics(float velocity, LONGLONG nowQpc) {
     const bool visible = g_ornamentEnabled && g_ornamentAssetsReady && !g_ornamentNodes.empty();
     if (!visible) {
         g_ornamentPhysicsInitialized = false;
@@ -2770,21 +2843,9 @@ static void UpdateOrnamentPhysics(
         0.0f,
         1.0f);
 
-    const float pointerDx = static_cast<float>(currentPoint.x - previousPoint.x);
-    const float pointerDy = static_cast<float>(currentPoint.y - previousPoint.y);
     if (!g_ornamentPhysicsInitialized) {
         ResetOrnamentPhysics();
         g_ornamentLastStepQpc = nowQpc;
-    }
-    if (pointerDx != 0.0f || pointerDy != 0.0f) {
-        const int n = static_cast<int>(g_ornamentNodes.size());
-        for (int i = 0; i < n; ++i) {
-            OrnamentNode& node = g_ornamentNodes[static_cast<size_t>(i)];
-            const float factor = static_cast<float>(i + 1) / static_cast<float>(n);
-            const float inertia = g_ornamentSwing * kOrnamentInertiaScale * factor;
-            node.previous.x += std::clamp(pointerDx, -128.0f, 128.0f) * inertia;
-            node.previous.y += std::clamp(pointerDy, -128.0f, 128.0f) * inertia;
-        }
     }
 
     float elapsed = 0.0f;
@@ -2802,7 +2863,7 @@ static void UpdateOrnamentPhysics(
         for (int i = 0; i < steps; ++i) StepOrnamentPhysics(step);
     }
 
-    if (pointerDx != 0.0f || pointerDy != 0.0f || OrnamentAnimating()) {
+    if (OrnamentAnimating()) {
         g_ornamentRedrawPending = true;
     }
 }
@@ -2832,8 +2893,8 @@ static void QueueOrnamentImpulse(float impulseY, LONGLONG nowQpc) {
     // velocity in position deltas, so convert it with the fixed simulation step.
     const float stepSeconds = 1.0f / kOrnamentSimulationHz;
     const float deltaY = impulseY * stepSeconds;
-    for (OrnamentNode& node : g_ornamentNodes) {
-        node.previous.y += deltaY;
+    for (int i = 1; i < g_ornamentRopePointCount; ++i) {
+        g_ornamentRopePrevious[i].y += deltaY;
     }
     g_ornamentRedrawPending = true;
     g_interactionPending = true;
@@ -2852,6 +2913,27 @@ static RECT CalculateOrnamentBounds() {
     RECT bounds = {};
     bool hasBounds = false;
     const float padding = 2.0f * g_currentDpiScale;
+    const float ropeOpacity =
+        std::clamp(g_ornamentRopeOpacity * g_ornamentOpacity, 0.0f, 1.0f);
+    if (g_ornamentRopePointCount >= 2 && ropeOpacity > kOrnamentMinDrawOpacity) {
+        const float ropePadding =
+            padding + g_ornamentRopeWidthPx * g_currentDpiScale * 4.0f;
+        float minX = std::numeric_limits<float>::max();
+        float minY = std::numeric_limits<float>::max();
+        float maxX = std::numeric_limits<float>::lowest();
+        float maxY = std::numeric_limits<float>::lowest();
+        for (int i = 0; i < g_ornamentRopePointCount; ++i) {
+            minX = std::min(minX, g_ornamentRopePoints[i].x);
+            minY = std::min(minY, g_ornamentRopePoints[i].y);
+            maxX = std::max(maxX, g_ornamentRopePoints[i].x);
+            maxY = std::max(maxY, g_ornamentRopePoints[i].y);
+        }
+        bounds.left = static_cast<LONG>(floorf(minX - ropePadding));
+        bounds.top = static_cast<LONG>(floorf(minY - ropePadding));
+        bounds.right = static_cast<LONG>(ceilf(maxX + ropePadding));
+        bounds.bottom = static_cast<LONG>(ceilf(maxY + ropePadding));
+        hasBounds = true;
+    }
     for (const OrnamentNode& node : g_ornamentNodes) {
         if (node.opacity * g_ornamentOpacity <= kOrnamentMinDrawOpacity) continue;
         const D2D1_MATRIX_3X2_F matrix = OrnamentNodeMatrix(node);
@@ -2897,11 +2979,120 @@ static RECT CalculateOrnamentBounds() {
     return bounds;
 }
 
+static int SmoothOrnamentRope(
+    const D2D1_POINT_2F* input,
+    int count,
+    D2D1_POINT_2F* output,
+    int capacity) {
+    if (count < 2 || capacity < 3) return 0;
+    int written = 0;
+    output[written++] = input[0];
+    for (int i = 0; i + 1 < count && written + 2 < capacity; ++i) {
+        const D2D1_POINT_2F& a = input[i];
+        const D2D1_POINT_2F& b = input[i + 1];
+        output[written++] = D2D1::Point2F(
+            a.x * 0.75f + b.x * 0.25f,
+            a.y * 0.75f + b.y * 0.25f);
+        output[written++] = D2D1::Point2F(
+            a.x * 0.25f + b.x * 0.75f,
+            a.y * 0.25f + b.y * 0.75f);
+    }
+    output[written++] = input[count - 1];
+    return written;
+}
+
+static void StrokeOrnamentRope(
+    const D2D1_POINT_2F* points,
+    int count,
+    float width,
+    float alpha,
+    uint32_t rgb,
+    float taper) {
+    if (!g_ornamentBrush || count < 2) return;
+    for (int i = 0; i + 1 < count; ++i) {
+        const float t =
+            (static_cast<float>(i) + 0.5f) / static_cast<float>(count - 1);
+        const float segmentAlpha =
+            std::clamp(alpha * (0.5f + 0.5f * t), 0.0f, 1.0f);
+        g_ornamentBrush->SetColor(ToColorF(rgb, segmentAlpha));
+        g_renderTarget->DrawLine(
+            points[i],
+            points[i + 1],
+            g_ornamentBrush,
+            width * (1.0f + taper * t),
+            g_strokeStyle);
+    }
+}
+
+static void DrawOrnamentRope() {
+    if (!g_ornamentBrush || g_ornamentRopePointCount < 2) return;
+    const float alpha =
+        std::clamp(g_ornamentRopeOpacity * g_ornamentOpacity, 0.0f, 1.0f);
+    if (alpha <= kOrnamentMinDrawOpacity) return;
+
+    const D2D1_POINT_2F* points = g_ornamentRopePoints;
+    int count = g_ornamentRopePointCount;
+    const int first = SmoothOrnamentRope(
+        points,
+        count,
+        g_ornamentRopeSmoothA,
+        kOrnamentMaxRopeDrawPoints);
+    if (first >= 2) {
+        const int second = SmoothOrnamentRope(
+            g_ornamentRopeSmoothA,
+            first,
+            g_ornamentRopeSmoothB,
+            kOrnamentMaxRopeDrawPoints);
+        if (second >= 2) {
+            points = g_ornamentRopeSmoothB;
+            count = second;
+        }
+    }
+
+    const float width = std::max(1.0f, g_ornamentRopeWidthPx * g_currentDpiScale);
+    switch (g_ornamentRopeStyle) {
+        case OrnamentRopeStyle::Silk:
+            StrokeOrnamentRope(
+                points, count, width, alpha, g_currentCoreRGB, -0.4f);
+            break;
+        case OrnamentRopeStyle::Neon:
+            StrokeOrnamentRope(
+                points, count, width * 3.6f, alpha * 0.16f, g_currentCoreRGB, 0.0f);
+            StrokeOrnamentRope(
+                points, count, width * 2.0f, alpha * 0.28f, g_currentCoreRGB, 0.0f);
+            StrokeOrnamentRope(
+                points, count, width, alpha, g_currentCoreRGB, 0.0f);
+            break;
+        case OrnamentRopeStyle::Chain:
+            StrokeOrnamentRope(
+                points, count, width * 0.55f, alpha * 0.6f, g_currentCoreRGB, 0.0f);
+            for (int i = 1; i < g_ornamentRopePointCount; ++i) {
+                const float t = static_cast<float>(i)
+                    / static_cast<float>(g_ornamentRopePointCount - 1);
+                g_ornamentBrush->SetColor(
+                    ToColorF(g_currentCoreRGB, alpha * (0.45f + 0.55f * t)));
+                const float radius = width * 1.6f;
+                g_renderTarget->FillEllipse(
+                    D2D1::Ellipse(g_ornamentRopePoints[i], radius, radius),
+                    g_ornamentBrush);
+            }
+            break;
+        case OrnamentRopeStyle::Ribbon:
+            StrokeOrnamentRope(
+                points, count, width * 3.2f, alpha * 0.3f, g_currentOuterRGB, 0.0f);
+            StrokeOrnamentRope(
+                points, count, width * 1.1f, alpha, g_currentCoreRGB, 0.0f);
+            break;
+    }
+}
+
 static void DrawOrnament(const RECT& renderBounds) {
     if (!g_ornamentAssetsReady || g_ornamentNodes.empty()) return;
     const D2D1_MATRIX_3X2_F baseTransform = D2D1::Matrix3x2F::Translation(
         -static_cast<float>(renderBounds.left),
         -static_cast<float>(renderBounds.top));
+    g_renderTarget->SetTransform(baseTransform);
+    DrawOrnamentRope();
     for (const OrnamentNode& node : g_ornamentNodes) {
         const float alpha = std::clamp(node.opacity * g_ornamentOpacity, 0.0f, 1.0f);
         if (alpha <= kOrnamentMinDrawOpacity) continue;
@@ -3430,7 +3621,7 @@ bool SmearFrame(HWND hwnd, DWORD now, bool renderFrame) {
     const float velocity = PointerSpeedPxPerSecond(point, sampleQpc);
     UpdateMotionCueTracking(point, sampleQpc);
     UpdateTrailState(previousPoint, point, velocity);
-    UpdateOrnamentPhysics(previousPoint, point, velocity, sampleQpc);
+    UpdateOrnamentPhysics(velocity, sampleQpc);
     MaybeReleaseIdleBackbuffer(now);
     if (g_isSmearing || g_historyCount >= 2) UpdateTrailColorIfNeeded(now);
 
