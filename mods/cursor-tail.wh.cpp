@@ -4,7 +4,7 @@
 // @name:zh-CN      光标拖尾
 // @description     Adds a speed-reactive cursor trail with optional interaction feedback.
 // @description:zh-CN 为鼠标指针添加速度响应式拖尾与可选的交互反馈。
-// @version         3.20
+// @version         3.21
 // @author          CYoJkoY
 // @github          https://github.com/CYoJkoY
 // @license         MIT
@@ -35,7 +35,7 @@ Direct2D overlay, independently of the application under the pointer.
 - **Adaptive color:** Automatically sample the active cursor image and prefer colors with sufficient contrast against the screen background.
 - **Fade-out:** Smoothly fade the trail after the pointer slows down.
 - **Interaction feedback:** Optional expanding rings for left, right, and middle clicks, plus animated scroll arrows. Native horizontal/tilt-wheel input points left or right directly. Hold Shift to map vertical wheel feedback to horizontal arrows: wheel up points left and wheel down points right. These effects can run without a motion trail.
-- **Pendant ornaments:** Hang a preset pendant from the pointer on a simulated rope. Choose Classic, Bouncy, Floaty, or Comet, and optionally supply one image. The rope follows the pointer, swings at direction changes, and stretches while moving without decoding an animated GIF.
+- **Pendant ornaments:** Hang a preset pendant from the pointer on a simulated rope. Choose Classic, Bouncy, Floaty, or Comet, optionally supply one image, and scale the rope length. The rope follows the pointer, swings at direction changes, and stretches while moving without decoding an animated GIF.
 - **Per-app rules:** Enable or disable the trail for selected executables.
 - **Fullscreen suppression:** Automatically hide the trail for exclusive or borderless fullscreen applications and restore it after fullscreen ends.
 
@@ -413,6 +413,11 @@ This mod is derived in part from the Windhawk **Cursor Motion Blur** mod by Thea
         - bouncy: 弹跳
         - floaty: 漂浮
         - comet: 彗星
+    - rope_length_scale: 100
+      $name: Rope length
+      $name:zh-CN: 绳子长度
+      $description: Pendant rope length as a percentage of the selected preset. 100 keeps the preset length; higher values hang the pendant farther from the pointer. Range 25-400.
+      $description:zh-CN: 挂坠绳子长度，按所选预设长度的百分比计算。100 为预设长度，数值越大挂坠离指针越远。范围 25-400。
     - image: ""
       $name: Pendant image
       $name:zh-CN: 挂坠图片
@@ -786,6 +791,7 @@ float g_ornamentClickImpulse = kOrnamentDefaultClickImpulse;
 float g_ornamentWheelImpulse = kOrnamentDefaultWheelImpulse;
 int g_ornamentRopeSegments = 8;
 float g_ornamentRopeLengthPx = kOrnamentDefaultRopeLengthPx;
+float g_ornamentRopeLengthScale = 1.0f;
 OrnamentRopeStyle g_ornamentRopeStyle = OrnamentRopeStyle::Silk;
 float g_ornamentRopeWidthPx = 1.5f;
 float g_ornamentRopeOpacity = 0.8f;
@@ -1283,7 +1289,7 @@ static void ApplyOrnamentPreset(OrnamentPreset preset) {
     g_ornamentClickImpulse = definition.clickImpulse;
     g_ornamentWheelImpulse = definition.wheelImpulse;
     g_ornamentRopeSegments = definition.ropeSegments;
-    g_ornamentRopeLengthPx = definition.ropeLengthPx;
+    g_ornamentRopeLengthPx = definition.ropeLengthPx * g_ornamentRopeLengthScale;
     g_ornamentRopeStyle = definition.ropeStyle;
     g_ornamentRopeWidthPx = definition.ropeWidthPx;
     g_ornamentRopeOpacity = definition.ropeOpacity;
@@ -1400,6 +1406,12 @@ void LoadSettings() {
             WindhawkUtils::StringSetting::make(L"Ornament.preset");
         ornamentPreset = ParseOrnamentPreset(value.get());
     }
+    // A settings blob written before this key existed reads as 0, so fall back
+    // to the preset length instead of clamping to the shortest rope.
+    const int ropeLengthScalePct =
+        Wh_GetIntSetting(L"Ornament.rope_length_scale");
+    g_ornamentRopeLengthScale =
+        std::clamp(ropeLengthScalePct > 0 ? ropeLengthScalePct : 100, 25, 400) / 100.0f;
     LoadOrnamentImageSpec();
     ApplyOrnamentPreset(ornamentPreset);
     g_ornamentAssetsDirty.store(true, std::memory_order_release);
