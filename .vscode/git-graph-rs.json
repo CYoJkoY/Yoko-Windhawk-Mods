@@ -1,0 +1,22 @@
+{
+    "issueLinkingConfig": {
+        "issue": "#(\\d+)",
+        "url": "https://github.com/CYoJkoY/Yoko-Windhawk-Mods/issues/$1"
+    },
+    "pinnedBranches": [],
+    "pinnedCommits": [],
+    "pullRequestConfig": {
+        "provider": "github",
+        "hostRootUrl": "https://github.com",
+        "sourceRemote": "origin",
+        "sourceOwner": "CYoJkoY",
+        "sourceRepo": "Yoko-Windhawk-Mods",
+        "destRemote": "origin",
+        "destOwner": "CYoJkoY",
+        "destRepo": "Yoko-Windhawk-Mods",
+        "destProjectId": "",
+        "destBranch": "main",
+        "custom": null
+    },
+    "exportedAt": 1792520926260
+}
