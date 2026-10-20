@@ -35,7 +35,7 @@ Direct2D overlay, independently of the application under the pointer.
 - **Adaptive color:** Automatically sample the active cursor image and prefer colors with sufficient contrast against the screen background.
 - **Fade-out:** Smoothly fade the trail after the pointer slows down.
 - **Interaction feedback:** Optional expanding rings for left, right, and middle clicks, plus animated scroll arrows. Native horizontal/tilt-wheel input points left or right directly. Hold Shift to map vertical wheel feedback to horizontal arrows: wheel up points left and wheel down points right. These effects can run without a motion trail.
-- **Pendant ornaments:** Hang custom images from the pointer as a chain of image nodes. The chain lags behind fast movement, swings at direction changes, and stretches while moving without decoding an animated GIF.
+- **Pendant ornaments:** Hang custom images from the pointer as a chain of image nodes. The chain lags behind fast movement, swings at direction changes, and stretches while moving without decoding an animated GIF. Each node can swap in separate moving, fast, click, and wheel images.
 - **Per-app rules:** Enable or disable the trail for selected executables.
 - **Fullscreen suppression:** Automatically hide the trail for exclusive or borderless fullscreen applications and restore it after fullscreen ends.
 
@@ -62,6 +62,32 @@ Rules follow the foreground window. An `exe=off` rule suppresses the trail every
 ## Fullscreen behavior
 
 The trail is suppressed when the foreground application reports a D3D fullscreen state or when a borderless, captionless window covers the monitor under the pointer. Desktop shell windows are excluded, and a fullscreen app on another monitor does not suppress the trail where the pointer currently resides. Leaving fullscreen must remain stable for 500 ms before suppression ends, which reduces flicker during application transitions.
+
+## Pendant ornaments
+
+Pendant ornaments hang a chain of image nodes from the pointer. Every node is a static image, so the motion comes from the physics simulation instead of an animated GIF.
+
+`Image files` lists the textures. Write `id=path` to name an image for reuse, or a bare path to receive an automatic id:
+
+`cat=C:\Images\cat.png`
+
+`C:\Images\star.png`
+
+`Node chain` defines the chain from the pointer outward, one node per entry with semicolon-separated parts:
+
+`image=cat;link=24;size=32;angle=0;pivot=0.5,0.5;opacity=100`
+
+`link` is the distance from the previous node, or from the pointer anchor for the first node. `size` is the longest edge in pixels, `angle` the resting direction in degrees measured clockwise from straight down, `pivot` the attachment point as a fraction of the image, and `opacity` a per-node percentage. `anchor_offset_x` and `anchor_offset_y` move the attachment point away from the cursor hotspot. When the node list is empty, the first image becomes a single node.
+
+Each node can name images for the reactive states:
+
+`image=cat;moving_image=cat_run;fast_image=cat_dash;click_image=cat_poke;wheel_image=cat_spin`
+
+- `moving_image` is selected above `moving_speed` and `fast_image` above `fast_speed`, both in pixels per second. A short stable interval and a lower release threshold keep boundary crossings from flickering between images.
+- `click_image` is selected for `reaction_ms` after a left, right, or middle button press. `wheel_image` is selected for the same duration after vertical wheel input, which also pushes the chain upward or downward with `wheel_impulse`. A button press pushes the chain upward with `click_impulse`. Set an impulse to 0 to keep the image reaction without the movement, and lower the duration to its 40 ms minimum to make the image change nearly imperceptible.
+- State images are optional and fall back to more common ones. A node that only defines `moving_image` still renders while idle and while moving fast, and `fast_image` falls back to the moving image before the base image. Click and wheel images fall back to the base image first.
+
+Images are read only when the settings change, with a limit of 32 files and 16 nodes. An animated GIF is decoded to its first frame. The chain is simulated at 125 Hz with at most eight substeps per sample, and the draw loop allocates nothing.
 
 ## Performance
 
