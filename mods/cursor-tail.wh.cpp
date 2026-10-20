@@ -425,6 +425,31 @@ This mod is derived in part from the Windhawk **Cursor Motion Blur** mod by Thea
       $name:zh-CN: 挂坠不透明度
       $description: Overall opacity from 0 to 100 percent. Per-node opacity is applied in addition.
       $description:zh-CN: 整体不透明度，范围为 0% 到 100%。每个节点的独立不透明度会在此基础上叠加。
+    - moving_speed: 800
+      $name: Moving threshold
+      $name:zh-CN: 移动速度阈值
+      $description: Pointer speed in pixels per second at which nodes switch to their moving images. Use 0 to switch with the first movement sample.
+      $description:zh-CN: 指针速度达到该像素每秒数值时，节点切换到移动状态图片。设为 0 可在出现首个移动采样时切换。
+    - fast_speed: 2400
+      $name: Fast threshold
+      $name:zh-CN: 高速速度阈值
+      $description: Pointer speed in pixels per second at which nodes switch to their fast images. Values below the moving threshold are raised to keep the states ordered.
+      $description:zh-CN: 指针速度达到该像素每秒数值时，节点切换到高速状态图片。小于移动阈值的数值会被提高，以保持状态顺序。
+    - click_impulse: 240
+      $name: Click impulse
+      $name:zh-CN: 点击冲量
+      $description: Upward velocity impulse applied to the node chain on a mouse-button press, in pixels per second. Range 0-1000.
+      $description:zh-CN: 按下鼠标按钮时施加到节点链的向上速度冲量，单位为像素每秒。范围 0-1000。
+    - wheel_impulse: 200
+      $name: Wheel impulse
+      $name:zh-CN: 滚轮冲量
+      $description: Vertical velocity impulse applied to the node chain on wheel input, in pixels per second. Positive wheel movement pushes upward. Range 0-1000.
+      $description:zh-CN: 滚轮输入时施加到节点链的纵向速度冲量，单位为像素每秒。正向滚动向上推动。范围 0-1000。
+    - reaction_ms: 180
+      $name: Reaction duration
+      $name:zh-CN: 反应持续时间
+      $description: How long click and wheel images remain selected after input, in milliseconds. Range 40-2000.
+      $description:zh-CN: 点击或滚轮输入后，反应图片保持选中的时间，单位为毫秒。范围 40-2000。
     - images: [""]
       $name: Image files
       $name:zh-CN: 图片文件
@@ -433,8 +458,8 @@ This mod is derived in part from the Windhawk **Cursor Motion Blur** mod by Thea
     - nodes: [""]
       $name: Node chain
       $name:zh-CN: 节点链
-      $description: One node per entry using semicolon-separated parts such as `image=cat;link=24;size=32;angle=0;pivot=0.5,0.5;opacity=100`. The first node attaches to the pointer anchor.
-      $description:zh-CN: 每个条目填写一个节点，各部分以分号分隔，例如 `image=cat;link=24;size=32;angle=0;pivot=0.5,0.5;opacity=100`。第一个节点连接指针挂点。
+      $description: One node per entry using semicolon-separated parts such as `image=cat;link=24;size=32;angle=0;pivot=0.5,0.5;opacity=100`. Optional state keys are `moving_image`, `fast_image`, `click_image`, and `wheel_image`. The first node attaches to the pointer anchor.
+      $description:zh-CN: 每个条目填写一个节点，各部分以分号分隔，例如 `image=cat;link=24;size=32;angle=0;pivot=0.5,0.5;opacity=100`。可选状态字段为 `moving_image`、`fast_image`、`click_image` 和 `wheel_image`。第一个节点连接指针挂点。
   $name: Ornament
   $name:zh-CN: 鼠标挂坠
 
@@ -533,6 +558,13 @@ constexpr int kOrnamentMaxSubSteps = 8;
 constexpr float kOrnamentMaxCatchUpSeconds = 0.25f;
 constexpr float kOrnamentMinDrawOpacity = 0.004f;
 constexpr float kOrnamentPi = 3.14159265f;
+constexpr float kOrnamentDefaultMovingSpeedPx = 800.0f;
+constexpr float kOrnamentDefaultFastSpeedPx = 2400.0f;
+constexpr float kOrnamentDefaultClickImpulse = 240.0f;
+constexpr float kOrnamentDefaultWheelImpulse = 200.0f;
+constexpr int kOrnamentDefaultReactionMs = 180;
+constexpr float kOrnamentSpeedStateHysteresis = 0.85f;
+constexpr int kOrnamentSpeedStateDwellMs = 80;
 
 std::atomic<HWND> g_overlayHwnd{nullptr};
 HANDLE g_threadHandle = nullptr;
@@ -667,6 +699,14 @@ float g_motionAccentOpacity = 0.90f;
 int g_maxInterpolationSteps = 4;
 uint32_t g_motionAccentRGB = 0x00FFD166;
 
+enum class OrnamentState : uint8_t {
+    Idle,
+    Moving,
+    Fast,
+    Click,
+    Wheel,
+};
+
 int g_ornamentEnabled = 0;
 float g_ornamentAnchorOffsetX = 10.0f;
 float g_ornamentAnchorOffsetY = 12.0f;
@@ -676,6 +716,11 @@ int g_ornamentConstraintIterations = 4;
 float g_ornamentSwing = 1.0f;
 float g_ornamentStretch = 0.18f;
 float g_ornamentOpacity = 1.0f;
+float g_ornamentMovingSpeedPx = kOrnamentDefaultMovingSpeedPx;
+float g_ornamentFastSpeedPx = kOrnamentDefaultFastSpeedPx;
+float g_ornamentClickImpulse = kOrnamentDefaultClickImpulse;
+float g_ornamentWheelImpulse = kOrnamentDefaultWheelImpulse;
+int g_ornamentReactionMs = kOrnamentDefaultReactionMs;
 
 struct OrnamentImageSpec {
     std::wstring id;
@@ -684,6 +729,10 @@ struct OrnamentImageSpec {
 
 struct OrnamentNodeSpec {
     std::wstring imageId;
+    std::wstring movingImageId;
+    std::wstring fastImageId;
+    std::wstring clickImageId;
+    std::wstring wheelImageId;
     float linkPx = kOrnamentDefaultLinkPx;
     float sizePx = kOrnamentDefaultSizePx;
     float angleDegrees = 0.0f;
@@ -703,6 +752,11 @@ struct OrnamentImage {
 
 struct OrnamentNode {
     int imageIndex = -1;
+    int movingImageIndex = -1;
+    int fastImageIndex = -1;
+    int clickImageIndex = -1;
+    int wheelImageIndex = -1;
+    int drawImageIndex = -1;
     float linkPx = kOrnamentDefaultLinkPx;
     float sizePx = kOrnamentDefaultSizePx;
     float angleDegrees = 0.0f;
@@ -728,6 +782,12 @@ bool g_ornamentRedrawPending = false;
 LONGLONG g_ornamentLastStepQpc = 0;
 LONGLONG g_ornamentNextRenderQpc = 0;
 float g_ornamentSmoothedSpeedNorm = 0.0f;
+float g_ornamentSmoothedSpeedPx = 0.0f;
+OrnamentState g_ornamentSpeedState = OrnamentState::Idle;
+OrnamentState g_ornamentPendingSpeedState = OrnamentState::Idle;
+OrnamentState g_ornamentReactionState = OrnamentState::Idle;
+LONGLONG g_ornamentPendingSpeedSinceQpc = 0;
+LONGLONG g_ornamentReactionEndQpc = 0;
 IWICImagingFactory* g_wicFactory = nullptr;
 ID2D1SolidColorBrush* g_ornamentBrush = nullptr;
 
@@ -1187,6 +1247,10 @@ static void ParseOrnamentImages() {
 static void ParseOrnamentNodeEntry(const std::wstring& entry) {
     OrnamentNodeSpec spec;
     std::wstring imageReference;
+    std::wstring movingImageReference;
+    std::wstring fastImageReference;
+    std::wstring clickImageReference;
+    std::wstring wheelImageReference;
     size_t partStart = 0;
     while (partStart <= entry.size()) {
         const size_t separator = entry.find(L';', partStart);
@@ -1203,6 +1267,14 @@ static void ParseOrnamentNodeEntry(const std::wstring& entry) {
                 TrimOrnamentText(value);
                 if (_wcsicmp(key.c_str(), L"image") == 0) {
                     imageReference = std::move(value);
+                } else if (_wcsicmp(key.c_str(), L"moving_image") == 0) {
+                    movingImageReference = std::move(value);
+                } else if (_wcsicmp(key.c_str(), L"fast_image") == 0) {
+                    fastImageReference = std::move(value);
+                } else if (_wcsicmp(key.c_str(), L"click_image") == 0) {
+                    clickImageReference = std::move(value);
+                } else if (_wcsicmp(key.c_str(), L"wheel_image") == 0) {
+                    wheelImageReference = std::move(value);
                 } else if (_wcsicmp(key.c_str(), L"link") == 0) {
                     float parsed = 0.0f;
                     if (TryParseOrnamentFloat(value, parsed)) {
@@ -1248,11 +1320,29 @@ static void ParseOrnamentNodeEntry(const std::wstring& entry) {
         Wh_Log(L"Skipping ornament node with unknown image id: %s", imageReference.c_str());
         return;
     }
+    // State images are optional. Unknown ids themselves become implicit image
+    // specs only when they look like a path; other unknown ids are dropped so the
+    // node still renders with its base image.
+    const auto resolveStateImage = [](std::wstring& reference) {
+        if (reference.empty()) return;
+        if (!ResolveOrnamentImageId(reference)) {
+            Wh_Log(L"Skipping ornament state image with unknown id: %s", reference.c_str());
+            reference.clear();
+        }
+    };
+    resolveStateImage(movingImageReference);
+    resolveStateImage(fastImageReference);
+    resolveStateImage(clickImageReference);
+    resolveStateImage(wheelImageReference);
     if (static_cast<int>(g_ornamentNodeSpecs.size()) >= kOrnamentMaxNodes) {
         Wh_Log(L"Ornament node limit reached");
         return;
     }
     spec.imageId = std::move(imageReference);
+    spec.movingImageId = std::move(movingImageReference);
+    spec.fastImageId = std::move(fastImageReference);
+    spec.clickImageId = std::move(clickImageReference);
+    spec.wheelImageId = std::move(wheelImageReference);
     g_ornamentNodeSpecs.push_back(std::move(spec));
 }
 
@@ -1388,6 +1478,19 @@ void LoadSettings() {
         std::clamp(Wh_GetIntSetting(L"Ornament.stretch"), 0, 80)) / 100.0f;
     g_ornamentOpacity = static_cast<float>(
         std::clamp(Wh_GetIntSetting(L"Ornament.opacity"), 0, 100)) / 100.0f;
+    g_ornamentMovingSpeedPx = static_cast<float>(
+        std::clamp(Wh_GetIntSetting(L"Ornament.moving_speed"), 0, 20000));
+    g_ornamentFastSpeedPx = static_cast<float>(
+        std::clamp(Wh_GetIntSetting(L"Ornament.fast_speed"), 100, 40000));
+    if (g_ornamentFastSpeedPx <= g_ornamentMovingSpeedPx) {
+        g_ornamentFastSpeedPx = g_ornamentMovingSpeedPx + 1.0f;
+    }
+    g_ornamentClickImpulse = static_cast<float>(
+        std::clamp(Wh_GetIntSetting(L"Ornament.click_impulse"), 0, 1000));
+    g_ornamentWheelImpulse = static_cast<float>(
+        std::clamp(Wh_GetIntSetting(L"Ornament.wheel_impulse"), 0, 1000));
+    g_ornamentReactionMs = std::clamp(
+        Wh_GetIntSetting(L"Ornament.reaction_ms"), 40, 2000);
     ParseOrnamentImages();
     ParseOrnamentNodes();
     g_ornamentAssetsDirty.store(true, std::memory_order_release);
@@ -2479,9 +2582,16 @@ static void ReleaseOrnamentAssets() {
     g_ornamentPhysicsInitialized = false;
     g_ornamentRedrawPending = false;
     g_ornamentSmoothedSpeedNorm = 0.0f;
+    g_ornamentSmoothedSpeedPx = 0.0f;
+    g_ornamentSpeedState = OrnamentState::Idle;
+    g_ornamentPendingSpeedState = OrnamentState::Idle;
+    g_ornamentReactionState = OrnamentState::Idle;
+    g_ornamentPendingSpeedSinceQpc = 0;
+    g_ornamentReactionEndQpc = 0;
 }
 
 static int FindOrnamentImageIndexById(const std::wstring& id) {
+    if (id.empty()) return -1;
     for (size_t i = 0; i < g_ornamentImages.size(); ++i) {
         if (_wcsicmp(g_ornamentImages[i].id.c_str(), id.c_str()) == 0) {
             return static_cast<int>(i);
@@ -2606,6 +2716,11 @@ static void BuildOrnamentNodes() {
         if (imageIndex < 0) continue;
         OrnamentNode node;
         node.imageIndex = imageIndex;
+        node.movingImageIndex = FindOrnamentImageIndexById(spec.movingImageId);
+        node.fastImageIndex = FindOrnamentImageIndexById(spec.fastImageId);
+        node.clickImageIndex = FindOrnamentImageIndexById(spec.clickImageId);
+        node.wheelImageIndex = FindOrnamentImageIndexById(spec.wheelImageId);
+        node.drawImageIndex = imageIndex;
         node.linkPx = spec.linkPx;
         node.sizePx = spec.sizePx;
         node.angleDegrees = spec.angleDegrees;
@@ -2628,6 +2743,7 @@ static void ResetOrnamentPhysics() {
         node.previous = cursor;
     }
     g_ornamentSmoothedSpeedNorm = 0.0f;
+    g_ornamentSmoothedSpeedPx = 0.0f;
     g_ornamentPhysicsInitialized = true;
     g_ornamentRedrawPending = true;
 }
@@ -2672,9 +2788,9 @@ static void EnsureOrnamentBitmaps() {
 
 static void UpdateOrnamentNodeGeometry(OrnamentNode& node) {
     float aspect = 1.0f;
-    if (node.imageIndex >= 0
-        && node.imageIndex < static_cast<int>(g_ornamentImages.size())) {
-        const OrnamentImage& image = g_ornamentImages[static_cast<size_t>(node.imageIndex)];
+    if (node.drawImageIndex >= 0
+        && node.drawImageIndex < static_cast<int>(g_ornamentImages.size())) {
+        const OrnamentImage& image = g_ornamentImages[static_cast<size_t>(node.drawImageIndex)];
         if (image.width > 0 && image.height > 0) {
             aspect = static_cast<float>(image.width) / static_cast<float>(image.height);
         }
@@ -2695,14 +2811,126 @@ static D2D1_MATRIX_3X2_F OrnamentNodeMatrix(const OrnamentNode& node) {
         * D2D1::Matrix3x2F::Translation(node.position.x, node.position.y);
 }
 
+static int FirstOrnamentImageIndex(const int* indices, size_t count) {
+    for (size_t i = 0; i < count; ++i) {
+        if (indices[i] >= 0) return indices[i];
+    }
+    return -1;
+}
+
+// Reactions take precedence over the speed states so a click or wheel image is
+// visible even while the pointer keeps moving.
+static OrnamentState OrnamentDisplayState() {
+    return g_ornamentReactionState != OrnamentState::Idle
+        ? g_ornamentReactionState
+        : g_ornamentSpeedState;
+}
+
+// Each state walks down to the closest more common state, so a node that only
+// defines a moving image still renders during fast movement and vice versa.
+static int SelectOrnamentDrawImageIndex(const OrnamentNode& node, OrnamentState state) {
+    switch (state) {
+    case OrnamentState::Click: {
+        const int candidates[4] = {
+            node.clickImageIndex,
+            node.imageIndex,
+            node.movingImageIndex,
+            node.fastImageIndex,
+        };
+        return FirstOrnamentImageIndex(candidates, 4);
+    }
+    case OrnamentState::Wheel: {
+        const int candidates[4] = {
+            node.wheelImageIndex,
+            node.imageIndex,
+            node.movingImageIndex,
+            node.fastImageIndex,
+        };
+        return FirstOrnamentImageIndex(candidates, 4);
+    }
+    case OrnamentState::Fast: {
+        const int candidates[3] = {
+            node.fastImageIndex,
+            node.movingImageIndex,
+            node.imageIndex,
+        };
+        return FirstOrnamentImageIndex(candidates, 3);
+    }
+    case OrnamentState::Moving: {
+        const int candidates[3] = {
+            node.movingImageIndex,
+            node.imageIndex,
+            node.fastImageIndex,
+        };
+        return FirstOrnamentImageIndex(candidates, 3);
+    }
+    default: {
+        const int candidates[3] = {
+            node.imageIndex,
+            node.movingImageIndex,
+            node.fastImageIndex,
+        };
+        return FirstOrnamentImageIndex(candidates, 3);
+    }
+    }
+}
+
+static OrnamentState SelectOrnamentSpeedState(float speedPx, OrnamentState current) {
+    const float movingEnter = std::max(1.0f, g_ornamentMovingSpeedPx);
+    const float fastEnter = std::max(movingEnter + 1.0f, g_ornamentFastSpeedPx);
+    const float movingStay = std::max(1.0f, movingEnter * kOrnamentSpeedStateHysteresis);
+    const float fastStay = std::max(movingStay, fastEnter * kOrnamentSpeedStateHysteresis);
+    switch (current) {
+    case OrnamentState::Fast:
+        if (speedPx >= fastStay) return OrnamentState::Fast;
+        if (speedPx >= movingStay) return OrnamentState::Moving;
+        return OrnamentState::Idle;
+    case OrnamentState::Moving:
+        if (speedPx >= fastEnter) return OrnamentState::Fast;
+        if (speedPx >= movingStay) return OrnamentState::Moving;
+        return OrnamentState::Idle;
+    default:
+        if (speedPx >= fastEnter) return OrnamentState::Fast;
+        if (speedPx >= movingEnter) return OrnamentState::Moving;
+        return OrnamentState::Idle;
+    }
+}
+
+// A short stable interval keeps threshold crossings from flickering between
+// images when the smoothed speed sits on a boundary.
+static void UpdateOrnamentSpeedState(LONGLONG nowQpc) {
+    const OrnamentState target =
+        SelectOrnamentSpeedState(g_ornamentSmoothedSpeedPx, g_ornamentSpeedState);
+    if (target == g_ornamentSpeedState) {
+        g_ornamentPendingSpeedState = target;
+        g_ornamentPendingSpeedSinceQpc = nowQpc;
+        return;
+    }
+    if (target != g_ornamentPendingSpeedState) {
+        g_ornamentPendingSpeedState = target;
+        g_ornamentPendingSpeedSinceQpc = nowQpc;
+        return;
+    }
+    if (g_qpcFrequency > 0 && g_ornamentPendingSpeedSinceQpc > 0) {
+        const LONGLONG dwellTicks = std::max<LONGLONG>(
+            1,
+            g_qpcFrequency * static_cast<LONGLONG>(kOrnamentSpeedStateDwellMs) / 1000);
+        if (nowQpc - g_ornamentPendingSpeedSinceQpc < dwellTicks) return;
+    }
+    g_ornamentSpeedState = target;
+    g_ornamentRedrawPending = true;
+}
+
 static void UpdateOrnamentDrawStates() {
     if (g_ornamentNodes.empty()) return;
     const D2D1_POINT_2F anchor = OrnamentAnchorPoint();
     const float speed = std::clamp(g_ornamentSmoothedSpeedNorm, 0.0f, 1.0f);
     const float stretchScale = 1.0f + g_ornamentStretch * speed;
     const float compensatingScale = 1.0f / sqrtf(std::max(0.01f, stretchScale));
+    const OrnamentState displayState = OrnamentDisplayState();
     for (size_t i = 0; i < g_ornamentNodes.size(); ++i) {
         OrnamentNode& node = g_ornamentNodes[i];
+        node.drawImageIndex = SelectOrnamentDrawImageIndex(node, displayState);
         const D2D1_POINT_2F parent = i == 0 ? anchor : g_ornamentNodes[i - 1].position;
         const float dx = node.position.x - parent.x;
         const float dy = node.position.y - parent.y;
@@ -2786,14 +3014,27 @@ static void UpdateOrnamentPhysics(
     if (!visible) {
         g_ornamentPhysicsInitialized = false;
         g_ornamentRedrawPending = false;
+        g_ornamentReactionState = OrnamentState::Idle;
+        g_ornamentReactionEndQpc = 0;
         return;
     }
-    const float targetSpeed = std::clamp(
-        velocity / kOrnamentSpeedReferencePxPerSecond,
+    if (g_ornamentReactionState != OrnamentState::Idle
+        && g_ornamentReactionEndQpc > 0
+        && nowQpc >= g_ornamentReactionEndQpc) {
+        // Restore the speed image with one final redraw after the reaction ends.
+        g_ornamentReactionState = OrnamentState::Idle;
+        g_ornamentReactionEndQpc = 0;
+        g_ornamentRedrawPending = true;
+    }
+
+    const float targetSpeedPx = std::max(0.0f, velocity);
+    g_ornamentSmoothedSpeedPx += (targetSpeedPx - g_ornamentSmoothedSpeedPx)
+        * kOrnamentSpeedSmoothing;
+    g_ornamentSmoothedSpeedNorm = std::clamp(
+        g_ornamentSmoothedSpeedPx / kOrnamentSpeedReferencePxPerSecond,
         0.0f,
         1.0f);
-    g_ornamentSmoothedSpeedNorm += (targetSpeed - g_ornamentSmoothedSpeedNorm)
-        * kOrnamentSpeedSmoothing;
+    UpdateOrnamentSpeedState(nowQpc);
 
     const float pointerDx = static_cast<float>(currentPoint.x - previousPoint.x);
     const float pointerDy = static_cast<float>(currentPoint.y - previousPoint.y);
@@ -2840,13 +3081,51 @@ static bool OrnamentVisible() {
 }
 
 static bool OrnamentActive() {
-    return OrnamentVisible() && (g_ornamentRedrawPending || OrnamentAnimating());
+    return OrnamentVisible()
+        && (g_ornamentRedrawPending
+            || g_ornamentReactionState != OrnamentState::Idle
+            || OrnamentAnimating());
+}
+
+static void QueueOrnamentReaction(
+    OrnamentState state,
+    float impulseY,
+    LONGLONG nowQpc) {
+    if (state == OrnamentState::Idle || !OrnamentVisible()) return;
+    if (!g_ornamentPhysicsInitialized) {
+        ResetOrnamentPhysics();
+    }
+    // Rebase the simulation clock so the impulse is not consumed by a catch-up
+    // step covering the idle interval before the input.
+    g_ornamentLastStepQpc = nowQpc;
+    // The impulse is a velocity in pixels per second applied once. Verlet keeps
+    // velocity in position deltas, so convert it with the fixed simulation step.
+    const float stepSeconds = 1.0f / kOrnamentSimulationHz;
+    const float deltaY = impulseY * stepSeconds;
+    for (OrnamentNode& node : g_ornamentNodes) {
+        node.previous.y += deltaY;
+    }
+    g_ornamentReactionState = state;
+    const LONGLONG durationTicks = std::max<LONGLONG>(
+        1,
+        g_qpcFrequency * static_cast<LONGLONG>(g_ornamentReactionMs) / 1000);
+    g_ornamentReactionEndQpc = nowQpc + durationTicks;
+    g_ornamentRedrawPending = true;
+    g_interactionPending = true;
+    if (g_inputWakeEvent) SetEvent(g_inputWakeEvent);
 }
 
 static void SuppressOrnament(LONGLONG nowQpc) {
     g_ornamentPhysicsInitialized = false;
     g_ornamentLastStepQpc = nowQpc;
     g_ornamentRedrawPending = false;
+    g_ornamentSmoothedSpeedPx = 0.0f;
+    g_ornamentSmoothedSpeedNorm = 0.0f;
+    g_ornamentSpeedState = OrnamentState::Idle;
+    g_ornamentPendingSpeedState = OrnamentState::Idle;
+    g_ornamentPendingSpeedSinceQpc = 0;
+    g_ornamentReactionState = OrnamentState::Idle;
+    g_ornamentReactionEndQpc = 0;
 }
 
 static RECT CalculateOrnamentBounds() {
@@ -2854,7 +3133,7 @@ static RECT CalculateOrnamentBounds() {
     bool hasBounds = false;
     const float padding = 2.0f * g_currentDpiScale;
     for (const OrnamentNode& node : g_ornamentNodes) {
-        if (node.imageIndex < 0) continue;
+        if (node.drawImageIndex < 0) continue;
         const D2D1_MATRIX_3X2_F matrix = OrnamentNodeMatrix(node);
         const D2D1_POINT_2F corners[4] = {
             D2D1::Point2F(node.localBounds.left, node.localBounds.top),
@@ -2907,9 +3186,9 @@ static void DrawOrnament(const RECT& renderBounds) {
         const float alpha = std::clamp(node.opacity * g_ornamentOpacity, 0.0f, 1.0f);
         if (alpha <= kOrnamentMinDrawOpacity) continue;
         g_renderTarget->SetTransform(OrnamentNodeMatrix(node) * baseTransform);
-        const OrnamentImage* image = node.imageIndex >= 0
-            && node.imageIndex < static_cast<int>(g_ornamentImages.size())
-            ? &g_ornamentImages[static_cast<size_t>(node.imageIndex)]
+        const OrnamentImage* image = node.drawImageIndex >= 0
+            && node.drawImageIndex < static_cast<int>(g_ornamentImages.size())
+            ? &g_ornamentImages[static_cast<size_t>(node.drawImageIndex)]
             : nullptr;
         if (image && image->bitmap) {
             g_renderTarget->DrawBitmap(
@@ -3482,10 +3761,10 @@ LRESULT CALLBACK OverlayWndProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM l
             const USHORT clickDownMask = RI_MOUSE_LEFT_BUTTON_DOWN
                 | RI_MOUSE_RIGHT_BUTTON_DOWN
                 | RI_MOUSE_MIDDLE_BUTTON_DOWN;
-            const bool clickEvent = g_clickFeedbackEnabled
-                && (buttons & clickDownMask) != 0;
-            const bool wheelEvent = g_wheelFeedbackEnabled
-                && (buttons & (RI_MOUSE_WHEEL | RI_MOUSE_HWHEEL)) != 0;
+            const bool clickDown = (buttons & clickDownMask) != 0;
+            const bool wheelDown = (buttons & (RI_MOUSE_WHEEL | RI_MOUSE_HWHEEL)) != 0;
+            const bool clickEvent = g_clickFeedbackEnabled && clickDown;
+            const bool wheelEvent = g_wheelFeedbackEnabled && wheelDown;
             if (clickEvent || wheelEvent) {
                 POINT interactionPoint = {};
                 if (GetCursorPos(&interactionPoint)) {
@@ -3522,6 +3801,28 @@ LRESULT CALLBACK OverlayWndProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM l
                                 wheelDelta > 0 ? g_wheelUpRGB : g_wheelDownRGB,
                                 kind);
                         }
+                    }
+                }
+            }
+
+            // Pendant reactions do not depend on the ripple feedback settings.
+            if (g_ornamentEnabled && (clickDown || wheelDown)) {
+                const LONGLONG reactionQpc = QpcNow();
+                if (clickDown) {
+                    QueueOrnamentReaction(
+                        OrnamentState::Click,
+                        -g_ornamentClickImpulse,
+                        reactionQpc);
+                }
+                if ((buttons & RI_MOUSE_WHEEL) != 0) {
+                    const SHORT wheelDelta = static_cast<SHORT>(mouse.usButtonData);
+                    if (wheelDelta != 0) {
+                        QueueOrnamentReaction(
+                            OrnamentState::Wheel,
+                            wheelDelta > 0
+                                ? -g_ornamentWheelImpulse
+                                : g_ornamentWheelImpulse,
+                            reactionQpc);
                     }
                 }
             }
