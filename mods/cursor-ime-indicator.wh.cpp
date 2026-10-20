@@ -302,7 +302,7 @@ HGDIOBJ g_surfaceOriginalBitmap = nullptr;
 void* g_surfaceBits = nullptr;
 int g_surfaceWidth = 0;
 int g_surfaceHeight = 0;
-DWORD g_surfaceIdleSince = 0;
+ULONGLONG g_surfaceIdleSince = 0;
 
 enum class ImeMode : uint8_t {
     Unknown,
@@ -326,7 +326,7 @@ bool g_badgeVisible = false;
 bool g_hasPresentedBadge = false;
 // Tick of the last detected language or IME mode change, so the badge stays
 // visible for the linger time after a change even without further input.
-DWORD g_lastStateChangeTick = 0;
+ULONGLONG g_lastStateChangeTick = 0;
 
 ////////////////////////////////////////////////////////////////////////////////
 // Small helpers
@@ -451,55 +451,100 @@ static void LoadSettings() {
 #define IMC_GETOPENSTATUS 0x0005
 #endif
 
-static ImeMode QueryImeMode(HWND foreground) {
-    HWND imeWindow = ImmGetDefaultIMEWnd(foreground);
-    if (imeWindow) {
-        DWORD_PTR conversionMode = 0;
-        const LRESULT conversionResult = SendMessageTimeoutW(
-            imeWindow,
-            WM_IME_CONTROL,
-            IMC_GETCONVERSIONMODE,
-            0,
-            kImeMessageTimeoutFlags,
-            kImeQueryTimeoutMs,
-            &conversionMode);
-        if (conversionResult != 0 && conversionMode != 0) {
-            return (conversionMode & IME_CMODE_NATIVE) != 0
-                ? ImeMode::Native
-                : ImeMode::Alphanumeric;
-        }
+// Microsoft's Chinese, Japanese and Korean input methods keep the native and
+// the Latin mode on one and the same keyboard layout, so only they need the
+// extra IME conversion-mode query. Every other layout reports its language.
+static bool IsImeToggleLanguage(LANGID langId) {
+    const LANGID primary = PRIMARYLANGID(langId);
+    return primary == LANG_CHINESE || primary == LANG_JAPANESE
+        || primary == LANG_KOREAN;
+}
 
-        // A zero conversion mode is also what a failed send returns, so confirm
-        // that the IME window answers at all before reporting English mode.
-        DWORD_PTR openStatus = 0;
-        const LRESULT openResult = SendMessageTimeoutW(
-            imeWindow,
-            WM_IME_CONTROL,
-            IMC_GETOPENSTATUS,
-            0,
-            kImeMessageTimeoutFlags,
-            kImeQueryTimeoutMs,
-            &openStatus);
-        if (openResult != 0) {
-            return ImeMode::Alphanumeric;
+// The focused child window owns the IME context in most applications, and it
+// can belong to a thread other than the one that owns the foreground window,
+// so ask the GUI thread for its focus window before falling back.
+static HWND ResolveQueryWindow(HWND foreground) {
+    if (!foreground) return nullptr;
+
+    const DWORD threadId = GetWindowThreadProcessId(foreground, nullptr);
+    if (threadId) {
+        GUITHREADINFO info = {};
+        info.cbSize = sizeof(info);
+        if (GetGUIThreadInfo(threadId, &info) && info.hwndFocus) {
+            return info.hwndFocus;
         }
     }
+    return foreground;
+}
 
-    // Fallback for windows whose IME context is reachable from this process.
-    HIMC context = ImmGetContext(foreground);
-    if (context) {
-        DWORD conversionMode = 0;
-        DWORD sentenceMode = 0;
-        const BOOL statusOk =
-            ImmGetConversionStatus(context, &conversionMode, &sentenceMode);
-        ImmReleaseContext(foreground, context);
-        if (statusOk) {
-            return (conversionMode & IME_CMODE_NATIVE) != 0
-                ? ImeMode::Native
-                : ImeMode::Alphanumeric;
-        }
+// Returns true when the IME window answered, so a zero conversion mode is not
+// confused with a failed send.
+static bool QueryImeWindow(HWND window, ImeMode* mode) {
+    if (!window || !mode) return false;
+
+    HWND imeWindow = ImmGetDefaultIMEWnd(window);
+    if (!imeWindow) return false;
+
+    DWORD_PTR conversionMode = 0;
+    const LRESULT conversionResult = SendMessageTimeoutW(
+        imeWindow,
+        WM_IME_CONTROL,
+        IMC_GETCONVERSIONMODE,
+        0,
+        kImeMessageTimeoutFlags,
+        kImeQueryTimeoutMs,
+        &conversionMode);
+    if (conversionResult != 0 && conversionMode != 0) {
+        *mode = (conversionMode & IME_CMODE_NATIVE) != 0
+            ? ImeMode::Native
+            : ImeMode::Alphanumeric;
+        return true;
     }
 
+    // A zero conversion mode is also what a failed send returns, so confirm
+    // that the IME window answers at all before reporting English mode.
+    DWORD_PTR openStatus = 0;
+    const LRESULT openResult = SendMessageTimeoutW(
+        imeWindow,
+        WM_IME_CONTROL,
+        IMC_GETOPENSTATUS,
+        0,
+        kImeMessageTimeoutFlags,
+        kImeQueryTimeoutMs,
+        &openStatus);
+    if (openResult != 0) {
+        *mode = ImeMode::Alphanumeric;
+        return true;
+    }
+    return false;
+}
+
+// Fallback for windows whose IME context is reachable from this process.
+static bool QueryImeContext(HWND window, ImeMode* mode) {
+    if (!window || !mode) return false;
+
+    HIMC context = ImmGetContext(window);
+    if (!context) return false;
+
+    DWORD conversionMode = 0;
+    DWORD sentenceMode = 0;
+    const BOOL statusOk =
+        ImmGetConversionStatus(context, &conversionMode, &sentenceMode);
+    ImmReleaseContext(window, context);
+    if (!statusOk) return false;
+
+    *mode = (conversionMode & IME_CMODE_NATIVE) != 0
+        ? ImeMode::Native
+        : ImeMode::Alphanumeric;
+    return true;
+}
+
+static ImeMode QueryImeMode(HWND queryWindow, HWND foreground) {
+    ImeMode mode = ImeMode::Unknown;
+    if (QueryImeWindow(queryWindow, &mode)) return mode;
+    if (queryWindow != foreground && QueryImeWindow(foreground, &mode)) return mode;
+    if (QueryImeContext(queryWindow, &mode)) return mode;
+    if (queryWindow != foreground && QueryImeContext(foreground, &mode)) return mode;
     return ImeMode::Unknown;
 }
 
@@ -510,7 +555,8 @@ static InputState QueryInputState() {
     if (!foreground) return state;
     if (foreground == g_overlayHwnd.load(std::memory_order_acquire)) return state;
 
-    const DWORD threadId = GetWindowThreadProcessId(foreground, nullptr);
+    const HWND queryWindow = ResolveQueryWindow(foreground);
+    const DWORD threadId = GetWindowThreadProcessId(queryWindow, nullptr);
     if (!threadId) return state;
 
     const HKL layout = GetKeyboardLayout(threadId);
@@ -521,8 +567,8 @@ static InputState QueryInputState() {
     if (state.langId == 0) return state;
 
     state.hasForeground = true;
-    if (PRIMARYLANGID(state.langId) == LANG_CHINESE && ImmIsIME(layout)) {
-        state.imeMode = QueryImeMode(foreground);
+    if (IsImeToggleLanguage(state.langId) && ImmIsIME(layout)) {
+        state.imeMode = QueryImeMode(queryWindow, foreground);
     }
 
     return state;
@@ -921,7 +967,7 @@ static void SetBadgeVisible(bool visible) {
     ShowWindow(hwnd, visible ? SW_SHOWNA : SW_HIDE);
     g_badgeVisible = visible;
     if (!visible) {
-        g_surfaceIdleSince = GetTickCount();
+        g_surfaceIdleSince = GetTickCount64();
     }
 }
 
@@ -963,7 +1009,7 @@ static void UpdateBadge() {
     const DWORD lingerMs = static_cast<DWORD>(g_settings.lingerMs);
     const bool recentInput = HasRecentInput(g_settings.lingerMs);
     const bool recentStateChange = g_lastStateChangeTick != 0
-        && (GetTickCount() - g_lastStateChangeTick) <= lingerMs;
+        && (GetTickCount64() - g_lastStateChangeTick) <= lingerMs;
     const bool visible = g_settings.visibilityMode == 1
         || recentInput
         || recentStateChange;
@@ -1017,7 +1063,7 @@ static void MaybeReleaseIdleSurface() {
         g_surfaceIdleSince = 0;
         return;
     }
-    const DWORD now = GetTickCount();
+    const ULONGLONG now = GetTickCount64();
     if (g_surfaceIdleSince == 0) {
         g_surfaceIdleSince = now;
         return;
@@ -1124,7 +1170,7 @@ DWORD WINAPI OverlayThreadProc(LPVOID) {
             nextStatePoll = now + pollInterval;
 
             if (!SameInputState(previous, g_inputState)) {
-                g_lastStateChangeTick = GetTickCount();
+                g_lastStateChangeTick = GetTickCount64();
             }
         }
 
