@@ -4,12 +4,12 @@
 // @name:zh-CN      光标拖尾
 // @description     Adds a speed-reactive cursor trail with optional interaction feedback.
 // @description:zh-CN 为鼠标指针添加速度响应式拖尾与可选的交互反馈。
-// @version         3.16
+// @version         3.17
 // @author          CYoJkoY
 // @github          https://github.com/CYoJkoY
 // @license         MIT
 // @include         windhawk.exe
-// @compilerOptions -ladvapi32 -ld2d1 -lole32 -lgdi32 -lshell32 -lshcore
+// @compilerOptions -ladvapi32 -ld2d1 -lole32 -lgdi32 -lshell32 -lshcore -lwindowscodecs
 // ==/WindhawkMod==
 
 // ==WindhawkModReadme==
@@ -35,6 +35,7 @@ Direct2D overlay, independently of the application under the pointer.
 - **Adaptive color:** Automatically sample the active cursor image and prefer colors with sufficient contrast against the screen background.
 - **Fade-out:** Smoothly fade the trail after the pointer slows down.
 - **Interaction feedback:** Optional expanding rings for left, right, and middle clicks, plus animated scroll arrows. Native horizontal/tilt-wheel input points left or right directly. Hold Shift to map vertical wheel feedback to horizontal arrows: wheel up points left and wheel down points right. These effects can run without a motion trail.
+- **Pendant ornaments:** Hang custom images from the pointer as a chain of image nodes. The chain lags behind fast movement, swings at direction changes, and stretches while moving without decoding an animated GIF.
 - **Per-app rules:** Enable or disable the trail for selected executables.
 - **Fullscreen suppression:** Automatically hide the trail for exclusive or borderless fullscreen applications and restore it after fullscreen ends.
 
@@ -378,6 +379,65 @@ This mod is derived in part from the Windhawk **Cursor Motion Blur** mod by Thea
   $name: Motion
   $name:zh-CN: 运动反馈
 
+- Ornament:
+    - enabled: false
+      $name: Enable pendant ornaments
+      $name:zh-CN: 启用鼠标挂坠
+      $description: Hang one or more image nodes from the pointer. Each node is an ordinary image; motion is produced by transforming the node chain instead of decoding animation frames.
+      $description:zh-CN: 在指针上挂载一个或多个图片节点。每个节点都是普通图片，运动效果由节点链变换生成，无需解码动画帧。
+    - anchor_offset_x: 10
+      $name: Anchor X offset
+      $name:zh-CN: 挂点 X 偏移
+      $description: Horizontal offset from the pointer hotspot to the first node, in pixels. Positive values place the anchor to the right.
+      $description:zh-CN: 第一个节点相对于指针热点的水平偏移，单位为像素。正值将挂点放到右侧。
+    - anchor_offset_y: 12
+      $name: Anchor Y offset
+      $name:zh-CN: 挂点 Y 偏移
+      $description: Vertical offset from the pointer hotspot to the first node, in pixels. Positive values place the anchor below the pointer.
+      $description:zh-CN: 第一个节点相对于指针热点的垂直偏移，单位为像素。正值将挂点放到指针下方。
+    - gravity: 1400
+      $name: Gravity
+      $name:zh-CN: 重力
+      $description: Downward acceleration applied to every node, in scaled pixels per second squared. Range 0-8000.
+      $description:zh-CN: 施加到每个节点上的向下加速度，单位为缩放后的像素每秒平方。范围 0-8000。
+    - damping: 8
+      $name: Damping
+      $name:zh-CN: 阻尼
+      $description: Motion damping from 0 to 40. Higher values settle the chain faster and reduce overshoot.
+      $description:zh-CN: 运动阻尼，范围为 0 到 40。数值越高，节点链稳定得越快，过冲越少。
+    - constraint_iterations: 4
+      $name: Constraint iterations
+      $name:zh-CN: 约束迭代次数
+      $description: Number of distance-constraint passes per physics step. Range 1-8.
+      $description:zh-CN: 每个物理步执行的距离约束求解次数。范围 1-8。
+    - swing: 100
+      $name: Swing strength
+      $name:zh-CN: 摆动强度
+      $description: How strongly pointer movement perturbs the chain, from 0 to 300 percent. Higher values produce more lag and a wider swing.
+      $description:zh-CN: 指针运动对节点链的扰动强度，范围为 0% 到 300%。数值越高，滞后和摆动越明显。
+    - stretch: 18
+      $name: Speed stretch
+      $name:zh-CN: 速度拉伸
+      $description: Maximum vertical stretch at high pointer speed, from 0 to 80 percent. Horizontal scale compensates to preserve area.
+      $description:zh-CN: 高速移动时的最大纵向拉伸比例，范围为 0% 到 80%。横向会同步缩放以保持面积。
+    - opacity: 100
+      $name: Ornament opacity
+      $name:zh-CN: 挂坠不透明度
+      $description: Overall opacity from 0 to 100 percent. Per-node opacity is applied in addition.
+      $description:zh-CN: 整体不透明度，范围为 0% 到 100%。每个节点的独立不透明度会在此基础上叠加。
+    - images: [""]
+      $name: Image files
+      $name:zh-CN: 图片文件
+      $description: One image per entry. Use `id=path` to name an image, or a bare path for an automatic id. PNG, JPEG, BMP, GIF, and TIFF are supported. The first frame is decoded once.
+      $description:zh-CN: 每个条目填写一张图片。使用 `id=path` 命名图片，或只填路径以自动生成标识。支持 PNG、JPEG、BMP、GIF 和 TIFF，并且只解码第一帧。
+    - nodes: [""]
+      $name: Node chain
+      $name:zh-CN: 节点链
+      $description: One node per entry using semicolon-separated parts such as `image=cat;link=24;size=32;angle=0;pivot=0.5,0.5;opacity=100`. The first node attaches to the pointer anchor.
+      $description:zh-CN: 每个条目填写一个节点，各部分以分号分隔，例如 `image=cat;link=24;size=32;angle=0;pivot=0.5,0.5;opacity=100`。第一个节点连接指针挂点。
+  $name: Ornament
+  $name:zh-CN: 鼠标挂坠
+
 - Application:
     - app_rules: [""]
       $name: Per-app rules
@@ -392,6 +452,7 @@ This mod is derived in part from the Windhawk **Cursor Motion Blur** mod by Thea
 #include <windows.h>
 #include <windhawk_utils.h>
 #include <d2d1.h>
+#include <wincodec.h>
 #include <math.h>
 #include <cmath>
 #include <shellapi.h>
@@ -401,6 +462,7 @@ This mod is derived in part from the Windhawk **Cursor Motion Blur** mod by Thea
 #include <algorithm>
 #include <atomic>
 #include <cstdint>
+#include <cstdlib>
 #include <limits>
 #include <string>
 #include <unordered_map>
@@ -446,6 +508,31 @@ constexpr DWORD kMotionResumeGapMs = 120;
 constexpr DWORD kAccelerationMeasurementWindowMs = 40;
 constexpr DWORD kAccelerationAccentCooldownMs = 180;
 constexpr DWORD kTurnAccentCooldownMs = 220;
+constexpr int kOrnamentMaxNodes = 16;
+constexpr int kOrnamentMaxImages = 32;
+constexpr int kOrnamentMaxScannedEntries = 64;
+constexpr int kOrnamentMaxImageDimension = 4096;
+constexpr uint64_t kOrnamentMaxDecodedBytes = 128ull * 1024ull * 1024ull;
+constexpr float kOrnamentDefaultLinkPx = 24.0f;
+constexpr float kOrnamentDefaultSizePx = 32.0f;
+constexpr float kOrnamentMinLinkPx = 0.0f;
+constexpr float kOrnamentMaxLinkPx = 400.0f;
+constexpr float kOrnamentMinSizePx = 1.0f;
+constexpr float kOrnamentMaxSizePx = 512.0f;
+constexpr float kOrnamentMinAngleDegrees = -180.0f;
+constexpr float kOrnamentMaxAngleDegrees = 180.0f;
+constexpr float kOrnamentMinGravity = 0.0f;
+constexpr float kOrnamentMaxGravity = 8000.0f;
+constexpr float kOrnamentConstraintEpsilonPx = 0.0001f;
+constexpr float kOrnamentInertiaScale = 0.16f;
+constexpr float kOrnamentSpeedReferencePxPerSecond = 2400.0f;
+constexpr float kOrnamentSpeedSmoothing = 0.35f;
+constexpr float kOrnamentRestVelocityPx = 0.25f;
+constexpr float kOrnamentSimulationHz = 125.0f;
+constexpr int kOrnamentMaxSubSteps = 8;
+constexpr float kOrnamentMaxCatchUpSeconds = 0.25f;
+constexpr float kOrnamentMinDrawOpacity = 0.004f;
+constexpr float kOrnamentPi = 3.14159265f;
 
 std::atomic<HWND> g_overlayHwnd{nullptr};
 HANDLE g_threadHandle = nullptr;
@@ -579,6 +666,70 @@ float g_motionAccentSize = 22.0f;
 float g_motionAccentOpacity = 0.90f;
 int g_maxInterpolationSteps = 4;
 uint32_t g_motionAccentRGB = 0x00FFD166;
+
+int g_ornamentEnabled = 0;
+float g_ornamentAnchorOffsetX = 10.0f;
+float g_ornamentAnchorOffsetY = 12.0f;
+float g_ornamentGravity = 1400.0f;
+float g_ornamentDamping = 8.0f;
+int g_ornamentConstraintIterations = 4;
+float g_ornamentSwing = 1.0f;
+float g_ornamentStretch = 0.18f;
+float g_ornamentOpacity = 1.0f;
+
+struct OrnamentImageSpec {
+    std::wstring id;
+    std::wstring path;
+};
+
+struct OrnamentNodeSpec {
+    std::wstring imageId;
+    float linkPx = kOrnamentDefaultLinkPx;
+    float sizePx = kOrnamentDefaultSizePx;
+    float angleDegrees = 0.0f;
+    float pivotX = 0.5f;
+    float pivotY = 0.5f;
+    float opacity = 1.0f;
+};
+
+struct OrnamentImage {
+    std::wstring id;
+    std::wstring path;
+    UINT width = 0;
+    UINT height = 0;
+    std::vector<uint8_t> pixels;
+    ID2D1Bitmap* bitmap = nullptr;
+};
+
+struct OrnamentNode {
+    int imageIndex = -1;
+    float linkPx = kOrnamentDefaultLinkPx;
+    float sizePx = kOrnamentDefaultSizePx;
+    float angleDegrees = 0.0f;
+    float pivotX = 0.5f;
+    float pivotY = 0.5f;
+    float opacity = 1.0f;
+    D2D1_POINT_2F position = {};
+    D2D1_POINT_2F previous = {};
+    D2D1_RECT_F localBounds = {};
+    float drawAngleDegrees = 0.0f;
+    float scaleX = 1.0f;
+    float scaleY = 1.0f;
+};
+
+std::vector<OrnamentImageSpec> g_ornamentImageSpecs;
+std::vector<OrnamentNodeSpec> g_ornamentNodeSpecs;
+std::vector<OrnamentImage> g_ornamentImages;
+std::vector<OrnamentNode> g_ornamentNodes;
+std::atomic_bool g_ornamentAssetsDirty{false};
+bool g_ornamentAssetsReady = false;
+bool g_ornamentPhysicsInitialized = false;
+bool g_ornamentRedrawPending = false;
+LONGLONG g_ornamentLastStepQpc = 0;
+LONGLONG g_ornamentNextRenderQpc = 0;
+float g_ornamentSmoothedSpeedNorm = 0.0f;
+IWICImagingFactory* g_wicFactory = nullptr;
+ID2D1SolidColorBrush* g_ornamentBrush = nullptr;
 
 enum class RippleKind : uint8_t {
     Click,
@@ -736,8 +887,11 @@ static LONGLONG QpcNow() {
 }
 
 static uint32_t ResolveOutlineColor(uint32_t core);
+static void ReleaseOrnamentBitmaps();
 
 void ReleaseRenderResources() {
+    ReleaseOrnamentBitmaps();
+    if (g_ornamentBrush) { g_ornamentBrush->Release(); g_ornamentBrush = nullptr; }
     if (g_glowOpacityLayer) { g_glowOpacityLayer->Release(); g_glowOpacityLayer = nullptr; }
     if (g_trailOpacityLayer) { g_trailOpacityLayer->Release(); g_trailOpacityLayer = nullptr; }
     if (g_gradientBrush) { g_gradientBrush->Release(); g_gradientBrush = nullptr; }
@@ -926,6 +1080,208 @@ static int CheckAppRuleCached(HWND foreground) {
 static void ClearRipples();
 static void ClearMotionAccents();
 static void ResetMotionCueTracking();
+static bool OrnamentActive();
+
+static void TrimOrnamentText(std::wstring& text) {
+    const size_t first = text.find_first_not_of(L" \t\r\n");
+    if (first == std::wstring::npos) {
+        text.clear();
+        return;
+    }
+    const size_t last = text.find_last_not_of(L" \t\r\n");
+    text = text.substr(first, last - first + 1);
+}
+
+static bool TryParseOrnamentFloat(const std::wstring& text, float& value) {
+    if (text.empty()) return false;
+    wchar_t* end = nullptr;
+    const double parsed = wcstod(text.c_str(), &end);
+    if (end == text.c_str()) return false;
+    while (*end == L' ' || *end == L'\t' || *end == L'\r' || *end == L'\n') ++end;
+    if (*end != L'\0' || !std::isfinite(parsed) || fabs(parsed) > 1.0e9) return false;
+    value = static_cast<float>(parsed);
+    return true;
+}
+
+static bool LooksLikeOrnamentPath(const std::wstring& text) {
+    return text.find(L'\\') != std::wstring::npos
+        || text.find(L'/') != std::wstring::npos
+        || text.find(L':') != std::wstring::npos;
+}
+
+static int FindOrnamentImageSpecIndex(const std::wstring& id) {
+    for (size_t i = 0; i < g_ornamentImageSpecs.size(); ++i) {
+        if (_wcsicmp(g_ornamentImageSpecs[i].id.c_str(), id.c_str()) == 0) {
+            return static_cast<int>(i);
+        }
+    }
+    return -1;
+}
+
+static bool ResolveOrnamentImageId(std::wstring& imageReference) {
+    if (FindOrnamentImageSpecIndex(imageReference) >= 0) return true;
+    if (!LooksLikeOrnamentPath(imageReference)) return false;
+    if (static_cast<int>(g_ornamentImageSpecs.size()) >= kOrnamentMaxImages) {
+        Wh_Log(L"Ornament image limit reached while adding a node image");
+        return false;
+    }
+    OrnamentImageSpec implicitSpec;
+    implicitSpec.id = imageReference;
+    implicitSpec.path = imageReference;
+    g_ornamentImageSpecs.push_back(std::move(implicitSpec));
+    return true;
+}
+
+static void ParseOrnamentImages() {
+    g_ornamentImageSpecs.clear();
+    int consecutiveEmptyEntries = 0;
+    int automaticId = 0;
+    for (int index = 0; index < kOrnamentMaxScannedEntries; ++index) {
+        WindhawkUtils::StringSetting setting =
+            WindhawkUtils::StringSetting::make(L"Ornament.images[%d]", index);
+        const wchar_t* raw = setting.get();
+        if (!raw || !*raw) {
+            if (++consecutiveEmptyEntries >= 2) break;
+            continue;
+        }
+        consecutiveEmptyEntries = 0;
+
+        std::wstring entry(raw);
+        TrimOrnamentText(entry);
+        if (entry.empty() || entry[0] == L'#') continue;
+
+        std::wstring id;
+        std::wstring path = entry;
+        const size_t equals = entry.find(L'=');
+        if (equals != std::wstring::npos) {
+            std::wstring candidateId = entry.substr(0, equals);
+            std::wstring candidatePath = entry.substr(equals + 1);
+            TrimOrnamentText(candidateId);
+            TrimOrnamentText(candidatePath);
+            if (!candidateId.empty()
+                && !candidatePath.empty()
+                && !LooksLikeOrnamentPath(candidateId)) {
+                id = std::move(candidateId);
+                path = std::move(candidatePath);
+            }
+        }
+        TrimOrnamentText(path);
+        if (path.empty()) continue;
+        if (id.empty()) {
+            do {
+                id = L"image" + std::to_wstring(automaticId++);
+            } while (FindOrnamentImageSpecIndex(id) >= 0);
+        }
+        if (FindOrnamentImageSpecIndex(id) >= 0) {
+            Wh_Log(L"Skipping duplicate ornament image id: %s", id.c_str());
+            continue;
+        }
+        if (static_cast<int>(g_ornamentImageSpecs.size()) >= kOrnamentMaxImages) {
+            Wh_Log(L"Ornament image limit reached");
+            break;
+        }
+        g_ornamentImageSpecs.push_back({std::move(id), std::move(path)});
+    }
+}
+
+static void ParseOrnamentNodeEntry(const std::wstring& entry) {
+    OrnamentNodeSpec spec;
+    std::wstring imageReference;
+    size_t partStart = 0;
+    while (partStart <= entry.size()) {
+        const size_t separator = entry.find(L';', partStart);
+        std::wstring part = entry.substr(
+            partStart,
+            separator == std::wstring::npos ? std::wstring::npos : separator - partStart);
+        TrimOrnamentText(part);
+        if (!part.empty()) {
+            const size_t equals = part.find(L'=');
+            if (equals != std::wstring::npos) {
+                std::wstring key = part.substr(0, equals);
+                std::wstring value = part.substr(equals + 1);
+                TrimOrnamentText(key);
+                TrimOrnamentText(value);
+                if (_wcsicmp(key.c_str(), L"image") == 0) {
+                    imageReference = std::move(value);
+                } else if (_wcsicmp(key.c_str(), L"link") == 0) {
+                    float parsed = 0.0f;
+                    if (TryParseOrnamentFloat(value, parsed)) {
+                        spec.linkPx = std::clamp(parsed, kOrnamentMinLinkPx, kOrnamentMaxLinkPx);
+                    }
+                } else if (_wcsicmp(key.c_str(), L"size") == 0) {
+                    float parsed = 0.0f;
+                    if (TryParseOrnamentFloat(value, parsed)) {
+                        spec.sizePx = std::clamp(parsed, kOrnamentMinSizePx, kOrnamentMaxSizePx);
+                    }
+                } else if (_wcsicmp(key.c_str(), L"angle") == 0) {
+                    float parsed = 0.0f;
+                    if (TryParseOrnamentFloat(value, parsed)) {
+                        spec.angleDegrees = std::clamp(parsed, kOrnamentMinAngleDegrees, kOrnamentMaxAngleDegrees);
+                    }
+                } else if (_wcsicmp(key.c_str(), L"pivot") == 0) {
+                    const size_t comma = value.find(L',');
+                    std::wstring pivotXText = comma == std::wstring::npos ? value : value.substr(0, comma);
+                    std::wstring pivotYText = comma == std::wstring::npos ? value : value.substr(comma + 1);
+                    TrimOrnamentText(pivotXText);
+                    TrimOrnamentText(pivotYText);
+                    float pivotX = 0.0f;
+                    float pivotY = 0.0f;
+                    if (TryParseOrnamentFloat(pivotXText, pivotX)) spec.pivotX = std::clamp(pivotX, 0.0f, 1.0f);
+                    if (TryParseOrnamentFloat(pivotYText, pivotY)) spec.pivotY = std::clamp(pivotY, 0.0f, 1.0f);
+                } else if (_wcsicmp(key.c_str(), L"opacity") == 0) {
+                    float parsed = 0.0f;
+                    if (TryParseOrnamentFloat(value, parsed)) {
+                        spec.opacity = std::clamp(parsed, 0.0f, 100.0f) / 100.0f;
+                    }
+                }
+            }
+        }
+        if (separator == std::wstring::npos) break;
+        partStart = separator + 1;
+    }
+
+    if (imageReference.empty()) {
+        Wh_Log(L"Skipping ornament node without an image");
+        return;
+    }
+    if (!ResolveOrnamentImageId(imageReference)) {
+        Wh_Log(L"Skipping ornament node with unknown image id: %s", imageReference.c_str());
+        return;
+    }
+    if (static_cast<int>(g_ornamentNodeSpecs.size()) >= kOrnamentMaxNodes) {
+        Wh_Log(L"Ornament node limit reached");
+        return;
+    }
+    spec.imageId = std::move(imageReference);
+    g_ornamentNodeSpecs.push_back(std::move(spec));
+}
+
+static void ParseOrnamentNodes() {
+    g_ornamentNodeSpecs.clear();
+    int consecutiveEmptyEntries = 0;
+    for (int index = 0; index < kOrnamentMaxScannedEntries; ++index) {
+        WindhawkUtils::StringSetting setting =
+            WindhawkUtils::StringSetting::make(L"Ornament.nodes[%d]", index);
+        const wchar_t* raw = setting.get();
+        if (!raw || !*raw) {
+            if (++consecutiveEmptyEntries >= 2) break;
+            continue;
+        }
+        consecutiveEmptyEntries = 0;
+        std::wstring entry(raw);
+        TrimOrnamentText(entry);
+        if (entry.empty() || entry[0] == L'#') continue;
+        ParseOrnamentNodeEntry(entry);
+        if (static_cast<int>(g_ornamentNodeSpecs.size()) >= kOrnamentMaxNodes) break;
+    }
+    if (g_ornamentNodeSpecs.empty() && !g_ornamentImageSpecs.empty()) {
+        OrnamentNodeSpec spec;
+        spec.imageId = g_ornamentImageSpecs.front().id;
+        spec.linkPx = kOrnamentDefaultLinkPx;
+        spec.sizePx = kOrnamentDefaultSizePx;
+        g_ornamentNodeSpecs.push_back(std::move(spec));
+    }
+}
 
 void LoadSettings() {
     g_triggerVelocity = static_cast<float>(std::clamp(Wh_GetIntSetting(L"Behavior.trigger_velocity"), 50, 20000));
@@ -1015,6 +1371,26 @@ void LoadSettings() {
     g_motionAccentSize = static_cast<float>(std::clamp(Wh_GetIntSetting(L"Motion.motion_accent_size"), 4, 40));
     g_maxInterpolationSteps = std::clamp(Wh_GetIntSetting(L"Motion.max_interpolation_steps"), 1, 6);
     g_motionAccentRGB = readInteractionColor(L"Motion.motion_accent_color", 0x00FFD166);
+    g_ornamentEnabled = std::clamp(Wh_GetIntSetting(L"Ornament.enabled"), 0, 1);
+    g_ornamentAnchorOffsetX = static_cast<float>(
+        std::clamp(Wh_GetIntSetting(L"Ornament.anchor_offset_x"), -400, 400));
+    g_ornamentAnchorOffsetY = static_cast<float>(
+        std::clamp(Wh_GetIntSetting(L"Ornament.anchor_offset_y"), -400, 400));
+    g_ornamentGravity = static_cast<float>(
+        std::clamp(Wh_GetIntSetting(L"Ornament.gravity"), 0, 8000));
+    g_ornamentDamping = static_cast<float>(
+        std::clamp(Wh_GetIntSetting(L"Ornament.damping"), 0, 40));
+    g_ornamentConstraintIterations = std::clamp(
+        Wh_GetIntSetting(L"Ornament.constraint_iterations"), 1, 8);
+    g_ornamentSwing = static_cast<float>(
+        std::clamp(Wh_GetIntSetting(L"Ornament.swing"), 0, 300)) / 100.0f;
+    g_ornamentStretch = static_cast<float>(
+        std::clamp(Wh_GetIntSetting(L"Ornament.stretch"), 0, 80)) / 100.0f;
+    g_ornamentOpacity = static_cast<float>(
+        std::clamp(Wh_GetIntSetting(L"Ornament.opacity"), 0, 100)) / 100.0f;
+    ParseOrnamentImages();
+    ParseOrnamentNodes();
+    g_ornamentAssetsDirty.store(true, std::memory_order_release);
     ResetMotionCueTracking();
     ParseAppRules();
     g_cachedForegroundWindow = nullptr;
@@ -1604,7 +1980,7 @@ bool EnsureBackbuffer(int width, int height, HDC referenceDc) {
 }
 
 static void MaybeReleaseIdleBackbuffer(DWORD now) {
-    if (g_isSmearing || g_historyCount > 0 || HasActiveRipples(QpcNow())) {
+    if (g_isSmearing || g_historyCount > 0 || HasActiveRipples(QpcNow()) || OrnamentActive()) {
         g_backbufferIdleSince = 0;
         return;
     }
@@ -1640,6 +2016,8 @@ bool EnsureD2DResources() {
     hr = g_renderTarget->CreateLayer(nullptr, &g_glowOpacityLayer);
     if (FAILED(hr) || !g_glowOpacityLayer) { ReleaseRenderResources(); return false; }
     hr = g_renderTarget->CreateSolidColorBrush(ToColorF(g_leftClickRGB, 1.0f), &g_rippleBrush);
+    if (FAILED(hr)) { ReleaseRenderResources(); return false; }
+    hr = g_renderTarget->CreateSolidColorBrush(ToColorF(g_currentCoreRGB, 1.0f), &g_ornamentBrush);
     if (FAILED(hr)) { ReleaseRenderResources(); return false; }
     D2D1_STROKE_STYLE_PROPERTIES strokeProperties = {};
     strokeProperties.startCap = D2D1_CAP_STYLE_ROUND;
@@ -2074,7 +2452,493 @@ static void UpdateTrailColorIfNeeded(DWORD now) {
     g_autoColorPickLuminanceValid = true;
 }
 
+static D2D1_POINT_2F OrnamentAnchorPoint() {
+    return D2D1::Point2F(
+        static_cast<float>(g_lastPos.x) + g_ornamentAnchorOffsetX * g_currentDpiScale,
+        static_cast<float>(g_lastPos.y) + g_ornamentAnchorOffsetY * g_currentDpiScale);
+}
+
+static void ReleaseOrnamentBitmaps() {
+    for (OrnamentImage& image : g_ornamentImages) {
+        if (image.bitmap) {
+            image.bitmap->Release();
+            image.bitmap = nullptr;
+        }
+    }
+}
+
+static void ReleaseOrnamentAssets() {
+    ReleaseOrnamentBitmaps();
+    g_ornamentImages.clear();
+    g_ornamentNodes.clear();
+    if (g_wicFactory) {
+        g_wicFactory->Release();
+        g_wicFactory = nullptr;
+    }
+    g_ornamentAssetsReady = false;
+    g_ornamentPhysicsInitialized = false;
+    g_ornamentRedrawPending = false;
+    g_ornamentSmoothedSpeedNorm = 0.0f;
+}
+
+static int FindOrnamentImageIndexById(const std::wstring& id) {
+    for (size_t i = 0; i < g_ornamentImages.size(); ++i) {
+        if (_wcsicmp(g_ornamentImages[i].id.c_str(), id.c_str()) == 0) {
+            return static_cast<int>(i);
+        }
+    }
+    return -1;
+}
+
+static bool DecodeOrnamentImage(
+    const OrnamentImageSpec& spec,
+    OrnamentImage& output,
+    uint64_t& decodedBytes) {
+    output.id = spec.id;
+    output.path = spec.path;
+    if (!g_wicFactory) return false;
+
+    IWICBitmapDecoder* decoder = nullptr;
+    IWICBitmapFrameDecode* frame = nullptr;
+    IWICFormatConverter* converter = nullptr;
+    const auto releaseInterfaces = [&] {
+        if (converter) { converter->Release(); converter = nullptr; }
+        if (frame) { frame->Release(); frame = nullptr; }
+        if (decoder) { decoder->Release(); decoder = nullptr; }
+    };
+
+    HRESULT hr = g_wicFactory->CreateDecoderFromFilename(
+        spec.path.c_str(),
+        nullptr,
+        GENERIC_READ,
+        WICDecodeMetadataCacheOnLoad,
+        &decoder);
+    if (FAILED(hr) || !decoder) {
+        Wh_Log(L"Failed to open ornament image: %s", spec.path.c_str());
+        releaseInterfaces();
+        return false;
+    }
+    hr = decoder->GetFrame(0, &frame);
+    if (FAILED(hr) || !frame) {
+        Wh_Log(L"Failed to read first frame of ornament image: %s", spec.path.c_str());
+        releaseInterfaces();
+        return false;
+    }
+    UINT width = 0;
+    UINT height = 0;
+    hr = frame->GetSize(&width, &height);
+    if (FAILED(hr)
+        || width == 0
+        || height == 0
+        || width > static_cast<UINT>(kOrnamentMaxImageDimension)
+        || height > static_cast<UINT>(kOrnamentMaxImageDimension)) {
+        Wh_Log(L"Unsupported ornament image dimensions: %s", spec.path.c_str());
+        releaseInterfaces();
+        return false;
+    }
+    const uint64_t imageBytes = static_cast<uint64_t>(width) * height * 4ull;
+    if (imageBytes > kOrnamentMaxDecodedBytes
+        || decodedBytes + imageBytes > kOrnamentMaxDecodedBytes) {
+        Wh_Log(L"Ornament image memory limit reached: %s", spec.path.c_str());
+        releaseInterfaces();
+        return false;
+    }
+    hr = g_wicFactory->CreateFormatConverter(&converter);
+    if (FAILED(hr) || !converter) {
+        releaseInterfaces();
+        return false;
+    }
+    hr = converter->Initialize(
+        frame,
+        GUID_WICPixelFormat32bppPBGRA,
+        WICBitmapDitherTypeNone,
+        nullptr,
+        0.0,
+        WICBitmapPaletteTypeCustom);
+    if (FAILED(hr)) {
+        Wh_Log(L"Failed to convert ornament image pixels: %s", spec.path.c_str());
+        releaseInterfaces();
+        return false;
+    }
+    const UINT stride = width * 4u;
+    const UINT bufferSize = stride * height;
+    output.pixels.resize(bufferSize);
+    hr = converter->CopyPixels(nullptr, stride, bufferSize, output.pixels.data());
+    if (FAILED(hr)) {
+        output.pixels.clear();
+        Wh_Log(L"Failed to copy ornament image pixels: %s", spec.path.c_str());
+        releaseInterfaces();
+        return false;
+    }
+    output.width = width;
+    output.height = height;
+    decodedBytes += imageBytes;
+    releaseInterfaces();
+    return true;
+}
+
+static void BuildOrnamentImages() {
+    g_ornamentImages.clear();
+    g_ornamentImages.reserve(g_ornamentImageSpecs.size());
+    if (!g_ornamentImageSpecs.empty()) {
+        const HRESULT hr = CoCreateInstance(
+            CLSID_WICImagingFactory,
+            nullptr,
+            CLSCTX_INPROC_SERVER,
+            IID_PPV_ARGS(&g_wicFactory));
+        if (FAILED(hr) || !g_wicFactory) {
+            Wh_Log(L"Failed to create WIC imaging factory for ornaments");
+        }
+    }
+    uint64_t decodedBytes = 0;
+    for (const OrnamentImageSpec& spec : g_ornamentImageSpecs) {
+        OrnamentImage image;
+        DecodeOrnamentImage(spec, image, decodedBytes);
+        g_ornamentImages.push_back(std::move(image));
+    }
+}
+
+static void BuildOrnamentNodes() {
+    g_ornamentNodes.clear();
+    g_ornamentNodes.reserve(g_ornamentNodeSpecs.size());
+    for (const OrnamentNodeSpec& spec : g_ornamentNodeSpecs) {
+        const int imageIndex = FindOrnamentImageIndexById(spec.imageId);
+        if (imageIndex < 0) continue;
+        OrnamentNode node;
+        node.imageIndex = imageIndex;
+        node.linkPx = spec.linkPx;
+        node.sizePx = spec.sizePx;
+        node.angleDegrees = spec.angleDegrees;
+        node.pivotX = spec.pivotX;
+        node.pivotY = spec.pivotY;
+        node.opacity = spec.opacity;
+        g_ornamentNodes.push_back(node);
+    }
+}
+
+static void ResetOrnamentPhysics() {
+    D2D1_POINT_2F anchor = OrnamentAnchorPoint();
+    D2D1_POINT_2F cursor = anchor;
+    for (OrnamentNode& node : g_ornamentNodes) {
+        const float radians = node.angleDegrees * kOrnamentPi / 180.0f;
+        const float link = node.linkPx * g_currentDpiScale;
+        cursor.x += sinf(radians) * link;
+        cursor.y += cosf(radians) * link;
+        node.position = cursor;
+        node.previous = cursor;
+    }
+    g_ornamentSmoothedSpeedNorm = 0.0f;
+    g_ornamentPhysicsInitialized = true;
+    g_ornamentRedrawPending = true;
+}
+
+static void EnsureOrnamentAssetsLoaded() {
+    if (!g_ornamentEnabled) {
+        if (g_ornamentAssetsReady || !g_ornamentImages.empty()) ReleaseOrnamentAssets();
+        return;
+    }
+    const bool dirty = g_ornamentAssetsDirty.exchange(false, std::memory_order_acq_rel);
+    if (!dirty && g_ornamentAssetsReady) return;
+    ReleaseOrnamentAssets();
+    BuildOrnamentImages();
+    BuildOrnamentNodes();
+    g_ornamentAssetsReady = true;
+    g_ornamentPhysicsInitialized = false;
+    g_ornamentRedrawPending = true;
+}
+
+static void EnsureOrnamentBitmaps() {
+    if (!g_renderTarget || !g_ornamentAssetsReady) return;
+    for (OrnamentImage& image : g_ornamentImages) {
+        if (image.bitmap || image.width == 0 || image.height == 0 || image.pixels.empty()) continue;
+        const D2D1_BITMAP_PROPERTIES properties = D2D1::BitmapProperties(
+            D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED),
+            96.0f,
+            96.0f);
+        const D2D1_SIZE_U size = D2D1::SizeU(image.width, image.height);
+        const UINT stride = image.width * 4u;
+        const HRESULT hr = g_renderTarget->CreateBitmap(
+            size,
+            image.pixels.data(),
+            stride,
+            properties,
+            &image.bitmap);
+        if (FAILED(hr)) {
+            image.bitmap = nullptr;
+            Wh_Log(L"Failed to upload ornament image: %s", image.path.c_str());
+        }
+    }
+}
+
+static void UpdateOrnamentNodeGeometry(OrnamentNode& node) {
+    float aspect = 1.0f;
+    if (node.imageIndex >= 0
+        && node.imageIndex < static_cast<int>(g_ornamentImages.size())) {
+        const OrnamentImage& image = g_ornamentImages[static_cast<size_t>(node.imageIndex)];
+        if (image.width > 0 && image.height > 0) {
+            aspect = static_cast<float>(image.width) / static_cast<float>(image.height);
+        }
+    }
+    const float size = std::max(1.0f, node.sizePx * g_currentDpiScale);
+    const float width = aspect >= 1.0f ? size : size * aspect;
+    const float height = aspect >= 1.0f ? size / aspect : size;
+    node.localBounds = D2D1::RectF(
+        -node.pivotX * width,
+        -node.pivotY * height,
+        (1.0f - node.pivotX) * width,
+        (1.0f - node.pivotY) * height);
+}
+
+static D2D1_MATRIX_3X2_F OrnamentNodeMatrix(const OrnamentNode& node) {
+    return D2D1::Matrix3x2F::Scale(node.scaleX, node.scaleY)
+        * D2D1::Matrix3x2F::Rotation(node.drawAngleDegrees)
+        * D2D1::Matrix3x2F::Translation(node.position.x, node.position.y);
+}
+
+static void UpdateOrnamentDrawStates() {
+    if (g_ornamentNodes.empty()) return;
+    const D2D1_POINT_2F anchor = OrnamentAnchorPoint();
+    const float speed = std::clamp(g_ornamentSmoothedSpeedNorm, 0.0f, 1.0f);
+    const float stretchScale = 1.0f + g_ornamentStretch * speed;
+    const float compensatingScale = 1.0f / sqrtf(std::max(0.01f, stretchScale));
+    for (size_t i = 0; i < g_ornamentNodes.size(); ++i) {
+        OrnamentNode& node = g_ornamentNodes[i];
+        const D2D1_POINT_2F parent = i == 0 ? anchor : g_ornamentNodes[i - 1].position;
+        const float dx = node.position.x - parent.x;
+        const float dy = node.position.y - parent.y;
+        node.drawAngleDegrees = atan2f(-dx, dy) * 180.0f / kOrnamentPi + node.angleDegrees;
+        node.scaleY = stretchScale;
+        node.scaleX = compensatingScale;
+        UpdateOrnamentNodeGeometry(node);
+    }
+}
+
+static void ConstrainOrnamentDistance(
+    D2D1_POINT_2F& moving,
+    D2D1_POINT_2F& fixed,
+    float targetDistance,
+    bool moveBoth) {
+    float dx = moving.x - fixed.x;
+    float dy = moving.y - fixed.y;
+    float distance = sqrtf(dx * dx + dy * dy);
+    if (distance < kOrnamentConstraintEpsilonPx) {
+        moving = D2D1::Point2F(fixed.x, fixed.y + targetDistance);
+        return;
+    }
+    const float correction = (distance - targetDistance) / distance;
+    if (moveBoth) {
+        const float half = correction * 0.5f;
+        moving.x -= dx * half;
+        moving.y -= dy * half;
+        fixed.x += dx * half;
+        fixed.y += dy * half;
+    } else {
+        moving.x -= dx * correction;
+        moving.y -= dy * correction;
+    }
+}
+
+static void StepOrnamentPhysics(float dtSeconds) {
+    if (g_ornamentNodes.empty()) return;
+    const float retain = powf(std::clamp(1.0f - g_ornamentDamping / 100.0f, 0.5f, 1.0f), dtSeconds * kOrnamentSimulationHz);
+    const float gravityStep = g_ornamentGravity * g_currentDpiScale * dtSeconds * dtSeconds;
+    for (OrnamentNode& node : g_ornamentNodes) {
+        const float vx = node.position.x - node.previous.x;
+        const float vy = node.position.y - node.previous.y;
+        node.previous = node.position;
+        node.position.x += vx * retain;
+        node.position.y += vy * retain + gravityStep;
+    }
+
+    D2D1_POINT_2F anchor = OrnamentAnchorPoint();
+    const int n = static_cast<int>(g_ornamentNodes.size());
+    for (int iteration = 0; iteration < g_ornamentConstraintIterations; ++iteration) {
+        ConstrainOrnamentDistance(
+            g_ornamentNodes[0].position,
+            anchor,
+            g_ornamentNodes[0].linkPx * g_currentDpiScale,
+            false);
+        for (int i = 1; i < n; ++i) {
+            ConstrainOrnamentDistance(
+                g_ornamentNodes[static_cast<size_t>(i)].position,
+                g_ornamentNodes[static_cast<size_t>(i - 1)].position,
+                g_ornamentNodes[static_cast<size_t>(i)].linkPx * g_currentDpiScale,
+                true);
+        }
+    }
+}
+
+static bool OrnamentAnimating() {
+    for (const OrnamentNode& node : g_ornamentNodes) {
+        const float dx = node.position.x - node.previous.x;
+        const float dy = node.position.y - node.previous.y;
+        if (dx * dx + dy * dy > kOrnamentRestVelocityPx * kOrnamentRestVelocityPx) return true;
+    }
+    return false;
+}
+
+static void UpdateOrnamentPhysics(
+    const POINT& previousPoint,
+    const POINT& currentPoint,
+    float velocity,
+    LONGLONG nowQpc) {
+    const bool visible = g_ornamentEnabled && g_ornamentAssetsReady && !g_ornamentNodes.empty();
+    if (!visible) {
+        g_ornamentPhysicsInitialized = false;
+        g_ornamentRedrawPending = false;
+        return;
+    }
+    const float targetSpeed = std::clamp(
+        velocity / kOrnamentSpeedReferencePxPerSecond,
+        0.0f,
+        1.0f);
+    g_ornamentSmoothedSpeedNorm += (targetSpeed - g_ornamentSmoothedSpeedNorm)
+        * kOrnamentSpeedSmoothing;
+
+    const float pointerDx = static_cast<float>(currentPoint.x - previousPoint.x);
+    const float pointerDy = static_cast<float>(currentPoint.y - previousPoint.y);
+    if (!g_ornamentPhysicsInitialized) {
+        ResetOrnamentPhysics();
+        g_ornamentLastStepQpc = nowQpc;
+    }
+    if (pointerDx != 0.0f || pointerDy != 0.0f) {
+        const int n = static_cast<int>(g_ornamentNodes.size());
+        for (int i = 0; i < n; ++i) {
+            OrnamentNode& node = g_ornamentNodes[static_cast<size_t>(i)];
+            const float factor = static_cast<float>(i + 1) / static_cast<float>(n);
+            const float inertia = g_ornamentSwing * kOrnamentInertiaScale * factor;
+            node.previous.x += std::clamp(pointerDx, -128.0f, 128.0f) * inertia;
+            node.previous.y += std::clamp(pointerDy, -128.0f, 128.0f) * inertia;
+        }
+    }
+
+    float elapsed = 0.0f;
+    if (g_ornamentLastStepQpc > 0 && nowQpc > g_ornamentLastStepQpc && g_qpcFrequency > 0) {
+        elapsed = static_cast<float>(nowQpc - g_ornamentLastStepQpc)
+            / static_cast<float>(g_qpcFrequency);
+    }
+    elapsed = std::clamp(elapsed, 0.0f, kOrnamentMaxCatchUpSeconds);
+    g_ornamentLastStepQpc = nowQpc;
+    if (elapsed > 0.0f) {
+        const float fixedStep = 1.0f / kOrnamentSimulationHz;
+        int steps = std::max(1, static_cast<int>(ceilf(elapsed / fixedStep)));
+        steps = std::min(steps, kOrnamentMaxSubSteps);
+        const float step = elapsed / static_cast<float>(steps);
+        for (int i = 0; i < steps; ++i) StepOrnamentPhysics(step);
+    }
+
+    if (pointerDx != 0.0f || pointerDy != 0.0f || OrnamentAnimating()) {
+        g_ornamentRedrawPending = true;
+    }
+}
+
+static bool OrnamentVisible() {
+    return g_ornamentEnabled
+        && g_ornamentAssetsReady
+        && !g_ornamentNodes.empty()
+        && g_ornamentOpacity > 0.0f;
+}
+
+static bool OrnamentActive() {
+    return OrnamentVisible() && (g_ornamentRedrawPending || OrnamentAnimating());
+}
+
+static void SuppressOrnament(LONGLONG nowQpc) {
+    g_ornamentPhysicsInitialized = false;
+    g_ornamentLastStepQpc = nowQpc;
+    g_ornamentRedrawPending = false;
+}
+
+static RECT CalculateOrnamentBounds() {
+    RECT bounds = {};
+    bool hasBounds = false;
+    const float padding = 2.0f * g_currentDpiScale;
+    for (const OrnamentNode& node : g_ornamentNodes) {
+        if (node.imageIndex < 0) continue;
+        const D2D1_MATRIX_3X2_F matrix = OrnamentNodeMatrix(node);
+        const D2D1_POINT_2F corners[4] = {
+            D2D1::Point2F(node.localBounds.left, node.localBounds.top),
+            D2D1::Point2F(node.localBounds.right, node.localBounds.top),
+            D2D1::Point2F(node.localBounds.right, node.localBounds.bottom),
+            D2D1::Point2F(node.localBounds.left, node.localBounds.bottom),
+        };
+        float minX = std::numeric_limits<float>::max();
+        float minY = std::numeric_limits<float>::max();
+        float maxX = std::numeric_limits<float>::lowest();
+        float maxY = std::numeric_limits<float>::lowest();
+        for (const D2D1_POINT_2F& corner : corners) {
+            const D2D1_POINT_2F point = D2D1::Point2F(
+                corner.x * matrix._11 + corner.y * matrix._21 + matrix._31,
+                corner.x * matrix._12 + corner.y * matrix._22 + matrix._32);
+            minX = std::min(minX, point.x);
+            minY = std::min(minY, point.y);
+            maxX = std::max(maxX, point.x);
+            maxY = std::max(maxY, point.y);
+        }
+        const RECT candidate = {
+            static_cast<LONG>(floorf(minX - padding)),
+            static_cast<LONG>(floorf(minY - padding)),
+            static_cast<LONG>(ceilf(maxX + padding)),
+            static_cast<LONG>(ceilf(maxY + padding)),
+        };
+        if (!hasBounds) {
+            bounds = candidate;
+            hasBounds = true;
+        } else {
+            bounds.left = std::min(bounds.left, candidate.left);
+            bounds.top = std::min(bounds.top, candidate.top);
+            bounds.right = std::max(bounds.right, candidate.right);
+            bounds.bottom = std::max(bounds.bottom, candidate.bottom);
+        }
+    }
+    if (hasBounds) {
+        if (bounds.right <= bounds.left) bounds.right = bounds.left + 1;
+        if (bounds.bottom <= bounds.top) bounds.bottom = bounds.top + 1;
+    }
+    return bounds;
+}
+
+static void DrawOrnament(const RECT& renderBounds) {
+    if (!g_ornamentAssetsReady || g_ornamentNodes.empty()) return;
+    const D2D1_MATRIX_3X2_F baseTransform = D2D1::Matrix3x2F::Translation(
+        -static_cast<float>(renderBounds.left),
+        -static_cast<float>(renderBounds.top));
+    for (const OrnamentNode& node : g_ornamentNodes) {
+        const float alpha = std::clamp(node.opacity * g_ornamentOpacity, 0.0f, 1.0f);
+        if (alpha <= kOrnamentMinDrawOpacity) continue;
+        g_renderTarget->SetTransform(OrnamentNodeMatrix(node) * baseTransform);
+        const OrnamentImage* image = node.imageIndex >= 0
+            && node.imageIndex < static_cast<int>(g_ornamentImages.size())
+            ? &g_ornamentImages[static_cast<size_t>(node.imageIndex)]
+            : nullptr;
+        if (image && image->bitmap) {
+            g_renderTarget->DrawBitmap(
+                image->bitmap,
+                &node.localBounds,
+                alpha,
+                D2D1_BITMAP_INTERPOLATION_MODE_LINEAR,
+                nullptr);
+        } else if (g_ornamentBrush) {
+            const float width = node.localBounds.right - node.localBounds.left;
+            const float height = node.localBounds.bottom - node.localBounds.top;
+            if (width <= 0.0f || height <= 0.0f) continue;
+            g_ornamentBrush->SetColor(ToColorF(g_currentCoreRGB, alpha * 0.72f));
+            g_renderTarget->FillEllipse(
+                D2D1::Ellipse(
+                    D2D1::Point2F(
+                        (node.localBounds.left + node.localBounds.right) * 0.5f,
+                        (node.localBounds.top + node.localBounds.bottom) * 0.5f),
+                    width * 0.5f,
+                    height * 0.5f),
+                g_ornamentBrush);
+        }
+    }
+    g_renderTarget->SetTransform(baseTransform);
+}
+
 bool RenderOverlay(HWND hwnd, LONGLONG nowQpc) {
+    UpdateOrnamentDrawStates();
+    const bool ornamentVisible = OrnamentVisible();
     bool drawTrail = g_historyCount >= 2;
     const float speed = g_speedScaling ? (g_isSmearing ? g_smoothedSpeedNorm : g_frozenSpeedNorm) : 1.0f;
     const int renderLength = GetEffectiveTailLength(speed);
@@ -2090,7 +2954,12 @@ bool RenderOverlay(HWND hwnd, LONGLONG nowQpc) {
 
     const int activeRippleCount = UpdateRippleState(nowQpc);
     const int activeMotionAccentCount = UpdateMotionAccentState(nowQpc);
-    if (!drawTrail && activeRippleCount == 0 && activeMotionAccentCount == 0) return false;
+    if (!drawTrail
+        && activeRippleCount == 0
+        && activeMotionAccentCount == 0
+        && !ornamentVisible) {
+        return false;
+    }
 
     RECT bounds = {};
     bool hasBounds = false;
@@ -2184,6 +3053,7 @@ bool RenderOverlay(HWND hwnd, LONGLONG nowQpc) {
         };
         includeBounds(rippleBounds);
     }
+    if (ornamentVisible) includeBounds(CalculateOrnamentBounds());
     if (!hasBounds) return false;
 
     const int width = bounds.right - bounds.left;
@@ -2195,6 +3065,8 @@ bool RenderOverlay(HWND hwnd, LONGLONG nowQpc) {
         if (FAILED(g_renderTarget->BindDC(g_backBufferDc, &bindRect))) return false;
         g_dcBound = true;
     }
+
+    if (ornamentVisible) EnsureOrnamentBitmaps();
 
     g_renderTarget->BeginDraw();
     g_renderTarget->SetTransform(D2D1::Matrix3x2F::Translation(
@@ -2451,6 +3323,8 @@ bool RenderOverlay(HWND hwnd, LONGLONG nowQpc) {
             g_strokeStyle);
     }
 
+    if (ornamentVisible) DrawOrnament(bounds);
+
     g_renderTarget->PopAxisAlignedClip();
     g_renderTarget->SetTransform(D2D1::Matrix3x2F::Identity());
     const HRESULT drawResult = g_renderTarget->EndDraw();
@@ -2501,6 +3375,7 @@ bool SmearFrame(HWND hwnd, DWORD now, bool renderFrame) {
     if (UpdateCursorMonitorDpi(point)) {
         ResetTrailState();
         ResetMotionCueTracking();
+        g_ornamentPhysicsInitialized = false;
         g_lastPos = point;
         g_lastSampleQpc = sampleQpc;
     }
@@ -2518,6 +3393,7 @@ bool SmearFrame(HWND hwnd, DWORD now, bool renderFrame) {
         ResetTrailState();
         ResetMotionCueTracking();
         ClearRipples();
+        SuppressOrnament(sampleQpc);
         parkSample();
         HideOverlay();
         MaybeReleaseIdleBackbuffer(now);
@@ -2529,6 +3405,7 @@ bool SmearFrame(HWND hwnd, DWORD now, bool renderFrame) {
         ResetTrailState();
         ResetMotionCueTracking();
         ClearRipples();
+        SuppressOrnament(sampleQpc);
         parkSample();
         HideOverlay();
         MaybeReleaseIdleBackbuffer(now);
@@ -2554,6 +3431,7 @@ bool SmearFrame(HWND hwnd, DWORD now, bool renderFrame) {
     const float velocity = PointerSpeedPxPerSecond(point, sampleQpc);
     UpdateMotionCueTracking(point, sampleQpc);
     UpdateTrailState(previousPoint, point, velocity);
+    UpdateOrnamentPhysics(previousPoint, point, velocity, sampleQpc);
     MaybeReleaseIdleBackbuffer(now);
     if (g_isSmearing || g_historyCount >= 2) UpdateTrailColorIfNeeded(now);
 
@@ -2561,14 +3439,23 @@ bool SmearFrame(HWND hwnd, DWORD now, bool renderFrame) {
         || (previousHistoryCount >= 2) != (g_historyCount >= 2);
     const bool hasRipples = HasActiveRipples(sampleQpc);
     const bool hasMotionAccents = HasActiveMotionAccents(sampleQpc);
-    if (g_historyCount < 2 && !hasRipples && !hasMotionAccents) {
+    const bool ornamentVisible = OrnamentVisible();
+    if (g_historyCount < 2 && !hasRipples && !hasMotionAccents && !ornamentVisible) {
         HideOverlay();
         return false;
     }
-    if (!renderFrame && !stateChanged) return false;
+    const bool ornamentRedrawDue = ornamentVisible
+        && g_ornamentRedrawPending
+        && sampleQpc >= g_ornamentNextRenderQpc;
+    if (!renderFrame && !stateChanged && !ornamentRedrawDue) return false;
     if (!RenderOverlay(hwnd, sampleQpc)) {
         HideOverlay();
         return false;
+    }
+    g_ornamentRedrawPending = false;
+    if (g_qpcFrequency > 0) {
+        g_ornamentNextRenderQpc = sampleQpc
+            + std::max<LONGLONG>(1, g_qpcFrequency / kActiveRenderFrameRate);
     }
     ShowOverlay();
     return true;
@@ -2668,6 +3555,7 @@ LRESULT CALLBACK OverlayWndProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM l
         g_cursorMonitor = nullptr;
         g_cursorDpi = 96;
         g_currentDpiScale = 1.0f;
+        g_ornamentPhysicsInitialized = false;
         ResetAutoColorSamplingCache();
         return 0;
     case WM_CLOSE:
@@ -2788,6 +3676,8 @@ DWORD WINAPI OverlayThreadProc(LPVOID) {
         Wh_Log(L"SetWinEventHook(EVENT_SYSTEM_FOREGROUND) failed: %lu", GetLastError());
     }
     RefreshForegroundInputState();
+    EnsureOrnamentAssetsLoaded();
+    SmearFrame(hwnd, GetTickCount(), true);
 
     const LONGLONG simulationTicks =
         FrameIntervalTicks(qpcFrequency.QuadPart, kTargetFrameRate);
@@ -2802,23 +3692,26 @@ DWORD WINAPI OverlayThreadProc(LPVOID) {
     while (running) {
         if (g_settingsDirty.exchange(false, std::memory_order_acq_rel)) {
             LoadSettings();
+            EnsureOrnamentAssetsLoaded();
+            SmearFrame(hwnd, GetTickCount(), true);
         }
 
         const LONGLONG currentQpc = QpcNow();
         const bool trailActive = g_isSmearing || g_historyCount >= 2;
         const bool rippleActive = HasActiveRipples(currentQpc) || HasActiveMotionAccents(currentQpc);
+        const bool ornamentActive = OrnamentActive();
         const LONGLONG inputWakeInterval = std::max<LONGLONG>(
             1,
             g_qpcFrequency * static_cast<LONGLONG>(kInputWakeThrottleMs) / 1000);
         const bool inputCatchUpNeeded =
-            g_rawMouseMovementPending && !g_rawInputWakePending;
+            g_rawMouseMovementPending && !g_rawInputWakePending && !ornamentActive;
         const bool sampleTimerNeeded =
-            trailActive || rippleActive || g_pollingFallback || inputCatchUpNeeded;
+            trailActive || rippleActive || ornamentActive || g_pollingFallback || inputCatchUpNeeded;
         bool trimTimerNeeded = false;
 
         LONGLONG timerDeadline = 0;
         if (sampleTimerNeeded) {
-            if (inputCatchUpNeeded && !trailActive && !rippleActive && !g_pollingFallback) {
+            if (inputCatchUpNeeded && !trailActive && !rippleActive && !ornamentActive && !g_pollingFallback) {
                 // If the input wake was coalesced by the throttle, schedule one
                 // bounded wake rather than waiting indefinitely and losing the
                 // final sub-interval of a short movement burst.
@@ -2826,7 +3719,7 @@ DWORD WINAPI OverlayThreadProc(LPVOID) {
                     currentQpc + 1,
                     g_lastRawInputWakeQpc + inputWakeInterval);
             } else if (g_nextSampleDeadline <= currentQpc) {
-                const LONGLONG interval = (trailActive || rippleActive)
+                const LONGLONG interval = (trailActive || rippleActive || ornamentActive)
                     ? simulationTicks
                     : GetFallbackPollIntervalTicks();
                 g_nextSampleDeadline = currentQpc + interval;
@@ -2893,10 +3786,12 @@ DWORD WINAPI OverlayThreadProc(LPVOID) {
                 const bool activeAfterEvent =
                     g_isSmearing || g_historyCount >= 2
                     || HasActiveRipples(QpcNow())
-                    || HasActiveMotionAccents(QpcNow());
+                    || HasActiveMotionAccents(QpcNow())
+                    || OrnamentActive();
                 if (activeAfterEvent) {
+                    const bool fastActive = g_isSmearing || g_historyCount >= 2 || OrnamentActive();
                     nextRenderDeadline = eventQpc
-                        + (g_isSmearing || g_historyCount >= 2
+                        + (fastActive
                             ? activeRenderTicks
                             : fadeRenderTicks);
                     g_nextSampleDeadline = eventQpc + simulationTicks;
@@ -2928,12 +3823,13 @@ DWORD WINAPI OverlayThreadProc(LPVOID) {
                     const bool activeAfterMovement =
                         g_isSmearing || g_historyCount >= 2
                         || HasActiveRipples(sampledQpc)
-                        || HasActiveMotionAccents(sampledQpc);
+                        || HasActiveMotionAccents(sampledQpc)
+                        || OrnamentActive();
                     g_nextSampleDeadline = sampledQpc
                         + (activeAfterMovement ? simulationTicks : 0);
                     if (activeAfterMovement && (renderFrame || sampledQpc >= nextRenderDeadline)) {
                         nextRenderDeadline = sampledQpc
-                            + ((g_isSmearing || g_historyCount >= 2)
+                            + ((g_isSmearing || g_historyCount >= 2 || OrnamentActive())
                                 ? activeRenderTicks
                                 : fadeRenderTicks);
                     }
@@ -2944,14 +3840,15 @@ DWORD WINAPI OverlayThreadProc(LPVOID) {
                     const bool activeAfterMovement =
                         g_isSmearing || g_historyCount >= 2
                         || HasActiveRipples(sampledQpc)
-                        || HasActiveMotionAccents(sampledQpc);
+                        || HasActiveMotionAccents(sampledQpc)
+                        || OrnamentActive();
                     g_nextSampleDeadline = sampledQpc
                         + (activeAfterMovement
                             ? simulationTicks
                             : (g_pollingFallback ? GetFallbackPollIntervalTicks() : 0));
                     if (activeAfterMovement && (renderFrame || sampledQpc >= nextRenderDeadline)) {
                         nextRenderDeadline = sampledQpc
-                            + ((g_isSmearing || g_historyCount >= 2)
+                            + ((g_isSmearing || g_historyCount >= 2 || OrnamentActive())
                                 ? activeRenderTicks
                                 : fadeRenderTicks);
                     }
@@ -2964,17 +3861,21 @@ DWORD WINAPI OverlayThreadProc(LPVOID) {
             if (sampleTimerNeeded) {
                 const LONGLONG sampleNow = QpcNow();
                 const bool interactionActiveBeforeFrame =
-                    HasActiveRipples(sampleNow) || HasActiveMotionAccents(sampleNow);
+                    HasActiveRipples(sampleNow)
+                    || HasActiveMotionAccents(sampleNow)
+                    || OrnamentActive();
                 const bool renderFrame =
-                    (g_isSmearing || g_historyCount >= 2 || interactionActiveBeforeFrame)
+                    (g_isSmearing || g_historyCount >= 2 || interactionActiveBeforeFrame || OrnamentActive())
                     && sampleNow >= nextRenderDeadline;
                 const bool rendered = SmearFrame(hwnd, GetTickCount(), renderFrame);
                 g_rawMouseMovementPending = false;
 
                 const LONGLONG sampledQpc = QpcNow();
                 const bool interactionActive =
-                    HasActiveRipples(sampledQpc) || HasActiveMotionAccents(sampledQpc);
-                const bool active = g_isSmearing;
+                    HasActiveRipples(sampledQpc)
+                    || HasActiveMotionAccents(sampledQpc)
+                    || OrnamentActive();
+                const bool active = g_isSmearing || OrnamentActive();
                 const bool fading = !active && g_historyCount >= 2;
                 if (active || fading || interactionActive) {
                     const LONGLONG interval = (active || interactionActive)
@@ -3025,6 +3926,7 @@ DWORD WINAPI OverlayThreadProc(LPVOID) {
     }
     ClearRipples();
     HideOverlay();
+    ReleaseOrnamentAssets();
     ReleaseBackbuffer();
     ReleaseBackgroundSampler();
     ReleaseScreenDC();
