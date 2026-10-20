@@ -23,15 +23,19 @@ clicks, and disappears when it is not needed.
 
 ## What the badge shows
 
-- **Zh** - a Chinese input method is in its native (Chinese) mode.
-- **En** - a Chinese input method is in alphanumeric (English) mode, or an
-  English keyboard layout is active.
-- **CL** - Caps Lock is on. This pill is shown by itself when Caps Lock is on
-  with any language.
-- Other languages fall back to their ISO 639 language code with a leading
-  capital letter, for example "Ja" or "Ru".
+- **Zh** - a Simplified Chinese input method is in its native (Chinese) mode.
+- **Zh-TW**, **Zh-HK**, **Zh-MO**, **Zh-SG** - the corresponding Chinese
+  sub-language is active.
+- **En** - an English keyboard layout is active, or an IME is in its Latin
+  (alphanumeric) mode.
+- **Ja**, **Ko**, **Fr**, **De**, **Es**, **Pt**, **Ru**, **Pl**, **It**, **Tr**
+  and every other layout - the ISO 639 language code with a capital first
+  letter and an upper-case region.
+- **CL** - Caps Lock is on, drawn as a separate pill next to the language pill.
 
-The three labels are configurable, so the badge can show "中" and "英" instead.
+The Chinese, English and Caps Lock labels are configurable, so the badge can
+show "中", "英" and "大写" instead. Any other language can be relabelled with
+the override list, for example "ja=日" or "zh-TW=繁".
 
 ## How the language is detected
 
@@ -40,16 +44,24 @@ keyboard layout of the foreground thread is read with `GetKeyboardLayout`, which
 reports the layout that the focused window is actually using, including windows
 that switch layout per application.
 
-For Chinese input methods the layout alone does not say whether the IME is in
-Chinese or English mode, because both modes share the same layout. In that case
-the mod sends `WM_IME_CONTROL` / `IMC_GETCONVERSIONMODE` to the IME window of
-the foreground window and checks `IME_CMODE_NATIVE`. If the IME window does not
-answer, the mod falls back to `ImmGetConversionStatus` and otherwise shows the
-Chinese label rather than guessing.
+Microsoft's Chinese, Japanese and Korean input methods keep their native and
+their Latin mode on the same layout, so the layout alone cannot tell those modes
+apart. For these three languages the mod sends `WM_IME_CONTROL` /
+`IMC_GETCONVERSIONMODE` to the IME window and checks `IME_CMODE_NATIVE`, and
+falls back to `ImmGetConversionStatus` when the IME window does not answer. A
+query that fails completely reports the language label, so a hung application
+can never make the badge claim that Latin mode is active. Other input
+frameworks are reported from their layout only, without an IME query.
 
-IME mode is a per-window property on Windows, so the badge follows the window
-that has focus. A window whose IME mode cannot be queried at all shows the
-Chinese label; the mod never reports "En" from a failed query.
+IME mode is a per-window property, so the mod resolves the focused window of
+the foreground thread with `GetGUIThreadInfo` and asks that window first,
+falling back to the foreground window itself. The language comes from
+`GetKeyboardLayout` of the same thread, which covers applications that switch
+layouts per window. Chinese codes come from the sub-language of the layout,
+because all Chinese layouts share the ISO 639 code "zh"; other languages use
+`GetLocaleInfoW`. Only Chinese codes therefore carry a region ("zh-TW",
+"zh-HK"); every other language uses the bare two-letter code that the override
+list expects. A layout without a resolvable code shows the unknown label.
 
 Caps Lock is read from the documented toggle bit of `GetKeyState(VK_CAPITAL)`,
 which Windows keeps synchronized for the lock keys across processes, so the
@@ -214,6 +226,16 @@ the same time.
       $name:zh-CN: 大写锁定标签
       $description: Text shown while Caps Lock is on.
       $description:zh-CN: 大写锁定开启时显示的文字。
+    - unknown: "??"
+      $name: Unknown label
+      $name:zh-CN: 未知标签
+      $description: Text shown when the code of the active input language cannot be resolved.
+      $description:zh-CN: 无法解析当前输入语言代码时显示的文字。
+    - overrides: [""]
+      $name: Language label overrides
+      $name:zh-CN: 语言标签覆盖
+      $description: One entry per line in the form code=label, for example "ja=日" or "zh-TW=繁". The code is the language code the badge already uses, matched case-insensitively; an exact code such as zh-TW wins over its primary language zh.
+      $description:zh-CN: 每行一条，格式为 代码=标签，例如 "ja=日" 或 "zh-TW=繁"。代码即徽标本身使用的语言代码，不区分大小写；精确代码（如 zh-TW）优先于其主语言（如 zh）。
   $name: Labels
   $name:zh-CN: 标签
 */
@@ -236,6 +258,7 @@ the same time.
 #include <cstdint>
 #include <cwctype>
 #include <string>
+#include <vector>
 
 ////////////////////////////////////////////////////////////////////////////////
 // Constants
@@ -274,13 +297,14 @@ struct IndicatorSettings {
     std::wstring chineseLabel;
     std::wstring englishLabel;
     std::wstring capsLabel;
+    std::wstring unknownLabel;
 };
 
 IndicatorSettings g_settings = {
     0, 1400, 1, 18, 20, 120,
     0x001B1D23u, 0.88f, 0x00FFFFFFu, 0.20f, 0x00FFFFFFu, 0x00FFC14Du, 0.22f,
     L"Segoe UI", 13.0f, 7.0f, 3.0f, 8.0f, 4.0f,
-    L"Zh", L"En", L"CL",
+    L"Zh", L"En", L"CL", L"??",
 };
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -292,6 +316,14 @@ HANDLE g_threadHandle = nullptr;
 HANDLE g_stopEvent = nullptr;
 HANDLE g_wakeEvent = nullptr;
 std::atomic_bool g_settingsDirty{false};
+
+// One "code=label" entry from the Labels.overrides list.
+struct LanguageOverride {
+    std::wstring code;
+    std::wstring label;
+};
+
+std::vector<LanguageOverride> g_languageOverrides;
 
 bool g_gdiplusReady = false;
 ULONG_PTR g_gdiplusToken = 0;
@@ -394,6 +426,156 @@ static uint32_t ReadSettingColor(const wchar_t* path, uint32_t fallback) {
 }
 
 ////////////////////////////////////////////////////////////////////////////////
+// Language labels
+////////////////////////////////////////////////////////////////////////////////
+
+static constexpr int kMaxLanguageOverrideEntries = 64;
+
+static std::wstring TrimWhitespace(const std::wstring& text) {
+    size_t begin = 0;
+    size_t end = text.size();
+    while (begin < end && iswspace(text[begin]) != 0) ++begin;
+    while (end > begin && iswspace(text[end - 1]) != 0) --end;
+    return text.substr(begin, end - begin);
+}
+
+static std::wstring ToLowerCode(const std::wstring& text) {
+    std::wstring lowered = text;
+    for (wchar_t& character : lowered) {
+        character = static_cast<wchar_t>(towlower(character));
+    }
+    return lowered;
+}
+
+// The Chinese sub-languages share the ISO 639-1 code "zh", so the region has
+// to come from the sub-language of the layout instead of the locale name.
+static std::wstring ChineseLanguageCode(LANGID langId) {
+    switch (SUBLANGID(langId)) {
+        case SUBLANG_CHINESE_TRADITIONAL:
+            return std::wstring(L"zh-TW");
+        case SUBLANG_CHINESE_HONGKONG:
+            return std::wstring(L"zh-HK");
+        case SUBLANG_CHINESE_MACAU:
+            return std::wstring(L"zh-MO");
+        case SUBLANG_CHINESE_SINGAPORE:
+            return std::wstring(L"zh-SG");
+        default:
+            return std::wstring(L"zh");
+    }
+}
+
+// Builds the lower-case language code used to look up an override, for
+// example "zh-TW" or "ja". An empty result means the layout has no known code.
+static std::wstring ResolveLanguageCode(LANGID langId) {
+    if (PRIMARYLANGID(langId) == LANG_CHINESE) {
+        return ChineseLanguageCode(langId);
+    }
+
+    WCHAR code[LOCALE_NAME_MAX_LENGTH] = {};
+    const LCID locale = MAKELCID(langId, SORT_DEFAULT);
+    int length = GetLocaleInfoW(
+        locale, LOCALE_SISO639LANGNAME, code, ARRAYSIZE(code));
+    if (length <= 1) {
+        length = GetLocaleInfoW(
+            locale, LOCALE_SABBREVLANGNAME, code, ARRAYSIZE(code));
+    }
+    if (length <= 1) return std::wstring();
+    return ToLowerCode(TrimWhitespace(std::wstring(code)));
+}
+
+// "zh-TW" becomes "Zh-TW": the language part keeps a capital first letter and
+// the region part is fully upper case.
+static std::wstring BuiltInLabelForCode(const std::wstring& code) {
+    if (code.empty()) return std::wstring();
+
+    std::wstring label = code;
+    bool inRegion = false;
+    bool atSegmentStart = true;
+    for (wchar_t& character : label) {
+        if (character == L'-' || character == L'_') {
+            character = L'-';
+            inRegion = true;
+            atSegmentStart = true;
+            continue;
+        }
+        if (inRegion) {
+            character = static_cast<wchar_t>(towupper(character));
+        } else {
+            character = static_cast<wchar_t>(
+                atSegmentStart ? towupper(character) : towlower(character));
+            atSegmentStart = false;
+        }
+    }
+    return label;
+}
+
+// One "code=label" list entry, for example "fr=Fr" or "zh=中".
+static bool ParseLanguageOverrideEntry(
+    const std::wstring& text, LanguageOverride* parsed) {
+    if (!parsed) return false;
+
+    const size_t separator = text.find(L'=');
+    if (separator == std::wstring::npos) return false;
+
+    std::wstring code = ToLowerCode(TrimWhitespace(text.substr(0, separator)));
+    std::wstring label = TrimWhitespace(text.substr(separator + 1));
+    if (code.empty() || label.empty()) return false;
+
+    parsed->code = std::move(code);
+    parsed->label = std::move(label);
+    return true;
+}
+
+static void ParseLanguageOverrides(std::vector<LanguageOverride>* parsedOverrides) {
+    if (!parsedOverrides) return;
+    parsedOverrides->clear();
+
+    int consecutiveEmptyEntries = 0;
+    for (int index = 0; index < kMaxLanguageOverrideEntries; ++index) {
+        WindhawkUtils::StringSetting setting =
+            WindhawkUtils::StringSetting::make(L"Labels.overrides[%d]", index);
+        const wchar_t* text = setting.get();
+        if (!text || !*text) {
+            if (++consecutiveEmptyEntries >= 2) break;
+            continue;
+        }
+
+        consecutiveEmptyEntries = 0;
+        LanguageOverride entry;
+        if (ParseLanguageOverrideEntry(std::wstring(text), &entry)) {
+            parsedOverrides->push_back(std::move(entry));
+        }
+    }
+}
+
+// Copies the matching label. An exact code wins over the primary language, so
+// "zh-TW=繁" refines a broader "zh=中". Override codes are stored lower case
+// and compared without case, because language codes arrive with an upper-case
+// region such as "zh-TW".
+static bool TryFindLanguageOverride(const std::wstring& code, std::wstring* label) {
+    if (code.empty() || !label) return false;
+
+    for (const LanguageOverride& entry : g_languageOverrides) {
+        if (_wcsicmp(entry.code.c_str(), code.c_str()) == 0) {
+            *label = entry.label;
+            return true;
+        }
+    }
+
+    const size_t separator = code.find(L'-');
+    if (separator == std::wstring::npos) return false;
+
+    const std::wstring primary = code.substr(0, separator);
+    for (const LanguageOverride& entry : g_languageOverrides) {
+        if (_wcsicmp(entry.code.c_str(), primary.c_str()) == 0) {
+            *label = entry.label;
+            return true;
+        }
+    }
+    return false;
+}
+
+////////////////////////////////////////////////////////////////////////////////
 // Settings loading
 ////////////////////////////////////////////////////////////////////////////////
 
@@ -432,7 +614,12 @@ static void LoadSettings() {
     next.chineseLabel = ReadSettingString(L"Labels.chinese", L"Zh");
     next.englishLabel = ReadSettingString(L"Labels.english", L"En");
     next.capsLabel = ReadSettingString(L"Labels.caps_lock", L"CL");
+    next.unknownLabel = ReadSettingString(L"Labels.unknown", L"??");
 
+    std::vector<LanguageOverride> nextOverrides;
+    ParseLanguageOverrides(&nextOverrides);
+
+    g_languageOverrides = std::move(nextOverrides);
     g_settings = next;
     g_renderedScale = 0.0f;
 }
@@ -583,23 +770,23 @@ static bool SameInputState(const InputState& left, const InputState& right) {
 static std::wstring BuildLanguageLabel(const InputState& state) {
     if (!state.hasForeground) return std::wstring();
 
-    const LANGID primary = PRIMARYLANGID(state.langId);
-    if (primary == LANG_CHINESE) {
-        if (state.imeMode == ImeMode::Alphanumeric) return g_settings.englishLabel;
-        return g_settings.chineseLabel;
+    // The native/Latin switch of an IME decides the label before the language
+    // does: a Chinese IME in Latin mode types English and shows "En".
+    if (IsImeToggleLanguage(state.langId)
+        && state.imeMode == ImeMode::Alphanumeric) {
+        return g_settings.englishLabel;
     }
-    if (primary == LANG_ENGLISH) return g_settings.englishLabel;
 
-    WCHAR languageTag[LOCALE_NAME_MAX_LENGTH] = {};
-    const int length = GetLocaleInfoW(
-        MAKELCID(state.langId, SORT_DEFAULT),
-        LOCALE_SISO639LANGNAME,
-        languageTag,
-        ARRAYSIZE(languageTag));
-    if (length <= 1) return std::wstring(L"??");
+    const std::wstring code = ResolveLanguageCode(state.langId);
+    std::wstring overrideLabel;
+    if (!code.empty() && TryFindLanguageOverride(code, &overrideLabel)) {
+        return overrideLabel;
+    }
+    if (code.empty()) return g_settings.unknownLabel;
 
-    languageTag[0] = static_cast<WCHAR>(towupper(languageTag[0]));
-    return std::wstring(languageTag);
+    if (code == L"zh") return g_settings.chineseLabel;
+    if (PRIMARYLANGID(state.langId) == LANG_ENGLISH) return g_settings.englishLabel;
+    return BuiltInLabelForCode(code);
 }
 
 static bool QueryCapsLock() {
