@@ -46,12 +46,16 @@ that switch layout per application.
 
 Microsoft's Chinese, Japanese and Korean input methods keep their native and
 their Latin mode on the same layout, so the layout alone cannot tell those modes
-apart. For these three languages the mod sends `WM_IME_CONTROL` /
-`IMC_GETCONVERSIONMODE` to the IME window and checks `IME_CMODE_NATIVE`, and
-falls back to `ImmGetConversionStatus` when the IME window does not answer. A
-query that fails completely reports the language label, so a hung application
-can never make the badge claim that Latin mode is active. Other input
-frameworks are reported from their layout only, without an IME query.
+apart. For these three languages the mod asks the IME window for its open
+status with `WM_IME_CONTROL` / `IMC_GETOPENSTATUS`. A closed IME types Latin
+input and shows the English label even though Microsoft's Chinese IME keeps
+`IME_CMODE_NATIVE` in its remembered conversion mode. An open IME is then
+classified with `IMC_GETCONVERSIONMODE`: `IME_CMODE_NATIVE` means the native
+language, and its absence means Latin mode. `ImmGetConversionStatus` is the
+fallback when the IME window does not answer. A query that fails completely
+reports the language label, so a hung application can never make the badge
+claim that Latin mode is active. Other input frameworks are reported from
+their layout only, without an IME query.
 
 IME mode is a per-window property, so the mod resolves the focused window of
 the foreground thread with `GetGUIThreadInfo` and asks that window first,
@@ -63,9 +67,9 @@ because all Chinese layouts share the ISO 639 code "zh"; other languages use
 "zh-HK"); every other language uses the bare two-letter code that the override
 list expects. A layout without a resolvable code shows the unknown label.
 
-Caps Lock is read from the documented toggle bit of `GetKeyState(VK_CAPITAL)`,
-which Windows keeps synchronized for the lock keys across processes, so the
-badge agrees with the keyboard indicator light.
+Caps Lock is read from the documented toggle bit of `GetKeyState(VK_CAPITAL)`
+and polled together with the language state, so the badge follows the keyboard
+indicator light.
 
 ## Behavior
 
@@ -664,13 +668,43 @@ static HWND ResolveQueryWindow(HWND foreground) {
     return foreground;
 }
 
-// Returns true when the IME window answered, so a zero conversion mode is not
-// confused with a failed send.
+// The IME open status decides whether the layout types its native language at
+// all. Microsoft's Chinese IME keeps IME_CMODE_NATIVE in its conversion mode
+// after it is closed, so reading the conversion mode first would report "Zh"
+// while the user is typing English. A closed IME is Latin input regardless of
+// the conversion mode that it remembers.
+static ImeMode ImeModeFromStatus(bool isOpen, DWORD conversionMode) {
+    if (!isOpen) return ImeMode::Alphanumeric;
+    return (conversionMode & IME_CMODE_NATIVE) != 0 ? ImeMode::Native
+                                                    : ImeMode::Alphanumeric;
+}
+
+// Returns true when the IME window answered. SendMessageTimeoutW returns a
+// nonzero value when the message was handled even if the IME answered zero,
+// so the result value and the answer stay separate.
 static bool QueryImeWindow(HWND window, ImeMode* mode) {
     if (!window || !mode) return false;
 
     HWND imeWindow = ImmGetDefaultIMEWnd(window);
     if (!imeWindow) return false;
+
+    DWORD_PTR openStatus = 0;
+    const LRESULT openResult = SendMessageTimeoutW(
+        imeWindow,
+        WM_IME_CONTROL,
+        IMC_GETOPENSTATUS,
+        0,
+        kImeMessageTimeoutFlags,
+        kImeQueryTimeoutMs,
+        &openStatus);
+    if (openResult == 0) return false;
+
+    // A closed IME does not need the conversion mode, and the mode it keeps
+    // from the last native session must not override the closed state.
+    if (openStatus == 0) {
+        *mode = ImeMode::Alphanumeric;
+        return true;
+    }
 
     DWORD_PTR conversionMode = 0;
     const LRESULT conversionResult = SendMessageTimeoutW(
@@ -681,29 +715,10 @@ static bool QueryImeWindow(HWND window, ImeMode* mode) {
         kImeMessageTimeoutFlags,
         kImeQueryTimeoutMs,
         &conversionMode);
-    if (conversionResult != 0 && conversionMode != 0) {
-        *mode = (conversionMode & IME_CMODE_NATIVE) != 0
-            ? ImeMode::Native
-            : ImeMode::Alphanumeric;
-        return true;
-    }
+    if (conversionResult == 0) return false;
 
-    // A zero conversion mode is also what a failed send returns, so confirm
-    // that the IME window answers at all before reporting English mode.
-    DWORD_PTR openStatus = 0;
-    const LRESULT openResult = SendMessageTimeoutW(
-        imeWindow,
-        WM_IME_CONTROL,
-        IMC_GETOPENSTATUS,
-        0,
-        kImeMessageTimeoutFlags,
-        kImeQueryTimeoutMs,
-        &openStatus);
-    if (openResult != 0) {
-        *mode = ImeMode::Alphanumeric;
-        return true;
-    }
-    return false;
+    *mode = ImeModeFromStatus(true, static_cast<DWORD>(conversionMode));
+    return true;
 }
 
 // Fallback for windows whose IME context is reachable from this process.
@@ -713,16 +728,16 @@ static bool QueryImeContext(HWND window, ImeMode* mode) {
     HIMC context = ImmGetContext(window);
     if (!context) return false;
 
+    const BOOL isOpen = ImmGetOpenStatus(context);
     DWORD conversionMode = 0;
     DWORD sentenceMode = 0;
-    const BOOL statusOk =
-        ImmGetConversionStatus(context, &conversionMode, &sentenceMode);
+    const BOOL statusOk = isOpen
+        ? ImmGetConversionStatus(context, &conversionMode, &sentenceMode)
+        : TRUE;
     ImmReleaseContext(window, context);
     if (!statusOk) return false;
 
-    *mode = (conversionMode & IME_CMODE_NATIVE) != 0
-        ? ImeMode::Native
-        : ImeMode::Alphanumeric;
+    *mode = ImeModeFromStatus(isOpen != FALSE, conversionMode);
     return true;
 }
 
