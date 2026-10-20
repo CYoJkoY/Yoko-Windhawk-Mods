@@ -4,7 +4,7 @@
 // @name:zh-CN      光标输入法指示器
 // @description     Shows the active input language and Caps Lock state next to the mouse pointer.
 // @description:zh-CN 在鼠标指针旁显示当前输入语言与大写锁定状态。
-// @version         1.1
+// @version         1.2
 // @author          CYoJkoY
 // @github          https://github.com/CYoJkoY
 // @license         MIT
@@ -24,19 +24,24 @@ disappears when it is not needed.
 
 ## What the badge shows
 
-- **Zh** - a Simplified Chinese input method is in its native (Chinese) mode.
-- **Zh-TW**, **Zh-HK**, **Zh-MO**, **Zh-SG** - the corresponding Chinese
-  sub-language is active.
-- **En** - an English keyboard layout is active, or an IME is in its Latin
+- **en** - an English keyboard layout is active, or an IME is in its Latin
   (alphanumeric) mode.
-- **Ja**, **Ko**, **Fr**, **De**, **Es**, **Pt**, **Ru**, **Pl**, **It**, **Tr**
-  and every other layout - the ISO 639 language code with a capital first
-  letter and an upper-case region.
+- **中** - a Simplified Chinese input method is in its native (Chinese) mode,
+  including the Singapore sub-language.
+- **華** - a Traditional Chinese input method (Taiwan, Hong Kong or Macau) is in
+  its native (Chinese) mode.
+- **あ**, **한** - a Japanese or Korean input method is in its native mode.
+- **fr**, **ru**, **pl**, **es**, **pt**, **de**, **TR**, **it** - a French,
+  Russian, Polish, Spanish, Portuguese, German, Turkish or Italian keyboard
+  layout is active.
+- Every other layout - the ISO 639 language code with a capital first letter
+  and an upper-case region.
 - **CL** - Caps Lock is on, drawn as a separate pill next to the language pill.
 
-The Chinese, English and Caps Lock labels are configurable, so the badge can
-show "中", "英" and "大写" instead. Any other language can be relabelled with
-the override list, for example "ja=日" or "zh-TW=繁".
+The Simplified Chinese, Traditional Chinese, English and Caps Lock labels are
+configurable, so the badge can show "汉", "繁", "英" and "大写" instead. Any
+language can be relabelled with the override list, for example "ja=日" or
+"zh-TW=繁".
 
 ## How the language is detected
 
@@ -66,7 +71,9 @@ layouts per window. Chinese codes come from the sub-language of the layout,
 because all Chinese layouts share the ISO 639 code "zh"; other languages use
 `GetLocaleInfoW`. Only Chinese codes therefore carry a region ("zh-TW",
 "zh-HK"); every other language uses the bare two-letter code that the override
-list expects. A layout without a resolvable code shows the unknown label.
+list expects. Built-in labels are chosen from the language, with the Chinese
+sub-language deciding between "中" and "華". A layout without a resolvable code
+shows the unknown label.
 
 Caps Lock is read from the documented toggle bit of `GetKeyState(VK_CAPITAL)`
 and polled together with the language state, so the badge follows the keyboard
@@ -227,12 +234,17 @@ the same time.
   $name:zh-CN: 外观
 
 - Labels:
-    - chinese: "Zh"
-      $name: Chinese label
-      $name:zh-CN: 中文标签
-      $description: Text shown while a Chinese input method is in Chinese mode.
-      $description:zh-CN: 中文输入法处于中文模式时显示的文字。
-    - english: "En"
+    - chinese: "中"
+      $name: Simplified Chinese label
+      $name:zh-CN: 简体中文标签
+      $description: Text shown while a Simplified Chinese input method is in Chinese mode, including the Singapore sub-language.
+      $description:zh-CN: 简体中文输入法处于中文模式时显示的文字，包括新加坡子语言。
+    - traditional_chinese: "華"
+      $name: Traditional Chinese label
+      $name:zh-CN: 繁体中文标签
+      $description: Text shown while a Traditional Chinese input method (Taiwan, Hong Kong or Macau) is in Chinese mode.
+      $description:zh-CN: 繁体中文输入法（台湾、香港或澳门）处于中文模式时显示的文字。
+    - english: "en"
       $name: English label
       $name:zh-CN: 英文标签
       $description: Text shown for English mode or an English keyboard layout.
@@ -311,6 +323,7 @@ struct IndicatorSettings {
     float cornerRadius;
     float gap;
     std::wstring chineseLabel;
+    std::wstring traditionalChineseLabel;
     std::wstring englishLabel;
     std::wstring capsLabel;
     std::wstring unknownLabel;
@@ -320,7 +333,7 @@ IndicatorSettings g_settings = {
     0, 1400, 1, 18, 20, 120,
     0x001B1D23u, 0.88f, 0x00FFFFFFu, 0.20f, 0x00FFFFFFu, 0x00FFC14Du, 0.22f,
     L"Segoe UI", 13.0f, 7.0f, 3.0f, 8.0f, 4.0f,
-    L"Zh", L"En", L"CL", L"??",
+    L"中", L"華", L"en", L"CL", L"??",
 };
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -435,6 +448,20 @@ static std::wstring ReadSettingString(const wchar_t* path, const wchar_t* fallba
     return std::wstring(text);
 }
 
+// Windhawk writes every default into the settings file when the mod is
+// installed, so an update keeps the values that the previous version shipped.
+// Treat the old "Zh" and "En" defaults as unset so existing installations
+// pick up the new built-in labels; any other stored text stays a deliberate
+// customization.
+static std::wstring ReadLabelSetting(
+    const wchar_t* path, const wchar_t* legacyDefault, const wchar_t* fallback) {
+    std::wstring value = ReadSettingString(path, fallback);
+    if (_wcsicmp(value.c_str(), legacyDefault) == 0) {
+        return std::wstring(fallback);
+    }
+    return value;
+}
+
 static uint32_t ReadSettingColor(const wchar_t* path, uint32_t fallback) {
     WindhawkUtils::StringSetting value = WindhawkUtils::StringSetting::make(path);
     uint32_t parsed = 0;
@@ -477,6 +504,17 @@ static std::wstring ChineseLanguageCode(LANGID langId) {
             return std::wstring(L"zh-SG");
         default:
             return std::wstring(L"zh");
+    }
+}
+
+static bool IsTraditionalChinese(LANGID langId) {
+    switch (SUBLANGID(langId)) {
+        case SUBLANG_CHINESE_TRADITIONAL:
+        case SUBLANG_CHINESE_HONGKONG:
+        case SUBLANG_CHINESE_MACAU:
+            return true;
+        default:
+            return false;
     }
 }
 
@@ -523,6 +561,36 @@ static std::wstring BuiltInLabelForCode(const std::wstring& code) {
         }
     }
     return label;
+}
+
+// Labels for the languages with a built-in badge symbol. The primary language
+// covers regional variants such as pt-BR and de-AT; Chinese is handled
+// separately because its script decides between "中" and "華".
+static const wchar_t* BuiltInLabelForLanguage(LANGID langId) {
+    switch (PRIMARYLANGID(langId)) {
+        case LANG_FRENCH:
+            return L"fr";
+        case LANG_JAPANESE:
+            return L"あ";
+        case LANG_KOREAN:
+            return L"한";
+        case LANG_RUSSIAN:
+            return L"ru";
+        case LANG_POLISH:
+            return L"pl";
+        case LANG_SPANISH:
+            return L"es";
+        case LANG_PORTUGUESE:
+            return L"pt";
+        case LANG_GERMAN:
+            return L"de";
+        case LANG_TURKISH:
+            return L"TR";
+        case LANG_ITALIAN:
+            return L"it";
+        default:
+            return nullptr;
+    }
 }
 
 // One "code=label" list entry, for example "fr=Fr" or "zh=中".
@@ -627,8 +695,10 @@ static void LoadSettings() {
         std::clamp(Wh_GetIntSetting(L"Appearance.corner_radius"), 0, 32));
     next.gap = static_cast<float>(std::clamp(Wh_GetIntSetting(L"Appearance.gap"), 0, 40));
 
-    next.chineseLabel = ReadSettingString(L"Labels.chinese", L"Zh");
-    next.englishLabel = ReadSettingString(L"Labels.english", L"En");
+    next.chineseLabel = ReadLabelSetting(L"Labels.chinese", L"Zh", L"中");
+    next.traditionalChineseLabel =
+        ReadSettingString(L"Labels.traditional_chinese", L"華");
+    next.englishLabel = ReadLabelSetting(L"Labels.english", L"En", L"en");
     next.capsLabel = ReadSettingString(L"Labels.caps_lock", L"CL");
     next.unknownLabel = ReadSettingString(L"Labels.unknown", L"??");
 
@@ -682,7 +752,7 @@ static HWND ResolveQueryWindow(HWND foreground) {
 
 // The IME open status decides whether the layout types its native language at
 // all. Microsoft's Chinese IME keeps IME_CMODE_NATIVE in its conversion mode
-// after it is closed, so reading the conversion mode first would report "Zh"
+// after it is closed, so reading the conversion mode first would report "中"
 // while the user is typing English. A closed IME is Latin input regardless of
 // the conversion mode that it remembers.
 static ImeMode ImeModeFromStatus(bool isOpen, DWORD conversionMode) {
@@ -798,7 +868,7 @@ static std::wstring BuildLanguageLabel(const InputState& state) {
     if (!state.hasForeground) return std::wstring();
 
     // The native/Latin switch of an IME decides the label before the language
-    // does: a Chinese IME in Latin mode types English and shows "En".
+    // does: a Chinese IME in Latin mode types English and shows "en".
     if (IsImeToggleLanguage(state.langId)
         && state.imeMode == ImeMode::Alphanumeric) {
         return g_settings.englishLabel;
@@ -811,8 +881,15 @@ static std::wstring BuildLanguageLabel(const InputState& state) {
     }
     if (code.empty()) return g_settings.unknownLabel;
 
-    if (code == L"zh") return g_settings.chineseLabel;
+    if (PRIMARYLANGID(state.langId) == LANG_CHINESE) {
+        return IsTraditionalChinese(state.langId)
+            ? g_settings.traditionalChineseLabel
+            : g_settings.chineseLabel;
+    }
     if (PRIMARYLANGID(state.langId) == LANG_ENGLISH) return g_settings.englishLabel;
+    if (const wchar_t* label = BuiltInLabelForLanguage(state.langId)) {
+        return label;
+    }
     return BuiltInLabelForCode(code);
 }
 
