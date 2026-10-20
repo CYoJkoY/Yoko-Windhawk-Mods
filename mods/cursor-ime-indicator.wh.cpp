@@ -4,7 +4,7 @@
 // @name:zh-CN      光标输入法指示器
 // @description     Shows the active input language and Caps Lock state next to the mouse pointer.
 // @description:zh-CN 在鼠标指针旁显示当前输入语言与大写锁定状态。
-// @version         1.0
+// @version         1.1
 // @author          CYoJkoY
 // @github          https://github.com/CYoJkoY
 // @license         MIT
@@ -19,7 +19,8 @@
 Cursor IME Indicator draws a small pill next to the mouse pointer with the
 input language that the foreground window is using, and a separate "CL" pill
 while Caps Lock is on. The badge follows the pointer, stays out of the way of
-clicks, and disappears when it is not needed.
+clicks, appears only while the pointer is over a text input area, and
+disappears when it is not needed.
 
 ## What the badge shows
 
@@ -73,11 +74,18 @@ indicator light.
 
 ## Behavior
 
-By default the badge appears while there is recent keyboard or mouse input and
-is hidden again after the configured linger time. A change of the foreground
-language, the IME mode, or the Caps Lock state keeps the badge visible for the
-same linger time as well. Setting the visibility mode to "always" keeps it
-visible whenever a foreground layout is available.
+By default the badge appears only while the pointer is over a text area and
+there has been recent keyboard or mouse input, and it is hidden again after the
+configured linger time. Text areas are recognised by the I-beam cursor that
+text controls set over text, so moving the pointer across the desktop, a
+toolbar, or a window background leaves the badge hidden. The same cursor marks
+selectable text that cannot be edited, such as article text in a browser or a
+console buffer, so those surfaces show the badge as well. An application that
+draws its own text cursor instead of the system I-beam is not recognised; the
+"always" visibility mode covers that case. A change of the foreground language,
+the IME mode, or the Caps Lock state keeps the badge visible for the same
+linger time as well. Setting the visibility mode to "always" keeps it visible
+whenever a foreground layout is available.
 
 The badge is a layered, click-through, topmost tool window. It is excluded from
 the taskbar and Alt+Tab, and it never takes focus.
@@ -93,6 +101,10 @@ existing layered surface.
 
 Input method queries are bounded by a short `SendMessageTimeout`, so a busy or
 hung application cannot stall the overlay thread.
+
+The text input check reads the current cursor shape with `GetCursorInfo` and
+compares it with the shared I-beam handle on each wake. Both are single system
+queries that allocate nothing.
 
 ## Privacy
 
@@ -115,8 +127,8 @@ the same time.
     - visibility_mode: 0
       $name: Visibility mode
       $name:zh-CN: 显示方式
-      $description: 0 shows the badge while there is recent input and hides it after the linger time. 1 keeps it visible whenever a foreground input layout is available.
-      $description:zh-CN: 0 表示有近期输入时显示、超过停留时间后隐藏；1 表示只要存在前台输入布局就始终显示。
+      $description: 0 shows the badge while the pointer is over a text input area and there is recent input, and hides it after the linger time. 1 keeps it visible whenever a foreground input layout is available.
+      $description:zh-CN: 0 表示指针位于文本输入区域且有近期输入时显示、超过停留时间后隐藏；1 表示只要存在前台输入布局就始终显示。
     - linger_ms: 1400
       $name: Linger time (ms)
       $name:zh-CN: 停留时间（毫秒）
@@ -838,6 +850,27 @@ static void EnablePerMonitorDpiAwareness() {
     setContext(reinterpret_cast<HANDLE>(kPerMonitorAwareV2));
 }
 
+////////////////////////////////////////////////////////////////////////////////
+// Text input detection
+////////////////////////////////////////////////////////////////////////////////
+
+// Text controls set the shared I-beam cursor only while the pointer is over
+// text, so the cursor shape reports whether the pointer is in an input state.
+// The badge is gated on this instead of any recent input, because
+// GetLastInputInfo also counts plain mouse movement.
+//
+// IDC_IBEAM resolves to the shared system cursor object, and GetCursorInfo
+// reports that same object for a text control in another process, so the
+// comparison works across processes and DPI modes. Loading it on every check
+// keeps the comparison valid if the pointer scheme changes while the mod runs.
+static bool PointerOverTextInput() {
+    CURSORINFO info = {};
+    info.cbSize = sizeof(info);
+    if (!GetCursorInfo(&info)) return false;
+    if ((info.flags & CURSOR_SHOWING) == 0 || info.hCursor == nullptr) return false;
+    return info.hCursor == LoadCursorW(nullptr, IDC_IBEAM);
+}
+
 static float GetScaleForPoint(const POINT& point) {
     HMONITOR monitor = MonitorFromPoint(point, MONITOR_DEFAULTTONEAREST);
     UINT dpiX = 96;
@@ -1204,6 +1237,14 @@ static void ResetBadgeState() {
 
 static void UpdateBadge() {
     if (!g_inputState.hasForeground) {
+        SetBadgeVisible(false);
+        return;
+    }
+
+    // GetLastInputInfo counts plain mouse movement, so recent input alone shows
+    // the badge anywhere on the desktop. The pointer must also be over text,
+    // which the I-beam cursor reports.
+    if (g_settings.visibilityMode != 1 && !PointerOverTextInput()) {
         SetBadgeVisible(false);
         return;
     }
