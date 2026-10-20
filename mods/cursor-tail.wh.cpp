@@ -4,7 +4,7 @@
 // @name:zh-CN      光标拖尾
 // @description     Adds a speed-reactive cursor trail with optional interaction feedback.
 // @description:zh-CN 为鼠标指针添加速度响应式拖尾与可选的交互反馈。
-// @version         3.19
+// @version         3.20
 // @author          CYoJkoY
 // @github          https://github.com/CYoJkoY
 // @license         MIT
@@ -35,7 +35,7 @@ Direct2D overlay, independently of the application under the pointer.
 - **Adaptive color:** Automatically sample the active cursor image and prefer colors with sufficient contrast against the screen background.
 - **Fade-out:** Smoothly fade the trail after the pointer slows down.
 - **Interaction feedback:** Optional expanding rings for left, right, and middle clicks, plus animated scroll arrows. Native horizontal/tilt-wheel input points left or right directly. Hold Shift to map vertical wheel feedback to horizontal arrows: wheel up points left and wheel down points right. These effects can run without a motion trail.
-- **Pendant ornaments:** Hang a preset pendant from the pointer on a simulated rope. Choose Classic, Bouncy, Floaty, or Comet, and optionally supply one image. The rope trails fast movement, swings at direction changes, and stretches while moving without decoding an animated GIF.
+- **Pendant ornaments:** Hang a preset pendant from the pointer on a simulated rope. Choose Classic, Bouncy, Floaty, or Comet, and optionally supply one image. The rope follows the pointer, swings at direction changes, and stretches while moving without decoding an animated GIF.
 - **Per-app rules:** Enable or disable the trail for selected executables.
 - **Fullscreen suppression:** Automatically hide the trail for exclusive or borderless fullscreen applications and restore it after fullscreen ends.
 
@@ -845,6 +845,7 @@ bool g_ornamentPhysicsInitialized = false;
 bool g_ornamentRedrawPending = false;
 LONGLONG g_ornamentLastStepQpc = 0;
 LONGLONG g_ornamentNextRenderQpc = 0;
+D2D1_POINT_2F g_ornamentLastAnchor = {};
 float g_ornamentSmoothedSpeedNorm = 0.0f;
 float g_ornamentSmoothedSpeedPx = 0.0f;
 IWICImagingFactory* g_wicFactory = nullptr;
@@ -2642,6 +2643,7 @@ static void ResetOrnamentPhysics() {
         g_ornamentRopePoints[i] = point;
         g_ornamentRopePrevious[i] = point;
     }
+    g_ornamentLastAnchor = anchor;
     g_ornamentSmoothedSpeedNorm = 0.0f;
     g_ornamentSmoothedSpeedPx = 0.0f;
     g_ornamentPhysicsInitialized = true;
@@ -2776,18 +2778,25 @@ static void ConstrainOrnamentDistance(
     }
 }
 
-static void StepOrnamentPhysics(float dtSeconds) {
+static void StepOrnamentPhysics(
+    float dtSeconds,
+    float anchorStepX,
+    float anchorStepY) {
     const int count = g_ornamentRopePointCount;
     if (count < 2) return;
     const float retain = powf(std::clamp(1.0f - g_ornamentDamping / 100.0f, 0.5f, 1.0f), dtSeconds * kOrnamentSimulationHz);
     const float gravityStep = g_ornamentGravity * g_currentDpiScale * dtSeconds * dtSeconds;
     for (int i = 1; i < count; ++i) {
         D2D1_POINT_2F& point = g_ornamentRopePoints[i];
-        const float vx = point.x - g_ornamentRopePrevious[i].x;
-        const float vy = point.y - g_ornamentRopePrevious[i].y;
+        // Verlet velocity is world-space. Damping must act on the velocity
+        // relative to the moving anchor; otherwise dragging the cursor at a
+        // constant speed looks like wind and tilts the rope by a speed-dependent
+        // angle. Subtract the frame displacement, then add it back to position.
+        const float vx = point.x - g_ornamentRopePrevious[i].x - anchorStepX;
+        const float vy = point.y - g_ornamentRopePrevious[i].y - anchorStepY;
         g_ornamentRopePrevious[i] = point;
-        point.x += vx * retain;
-        point.y += vy * retain + gravityStep;
+        point.x += vx * retain + anchorStepX;
+        point.y += vy * retain + anchorStepY + gravityStep;
     }
 
     D2D1_POINT_2F anchor = OrnamentAnchorPoint();
@@ -2848,6 +2857,10 @@ static void UpdateOrnamentPhysics(float velocity, LONGLONG nowQpc) {
         g_ornamentLastStepQpc = nowQpc;
     }
 
+    const D2D1_POINT_2F anchor = OrnamentAnchorPoint();
+    const float anchorStepX = anchor.x - g_ornamentLastAnchor.x;
+    const float anchorStepY = anchor.y - g_ornamentLastAnchor.y;
+
     float elapsed = 0.0f;
     if (g_ornamentLastStepQpc > 0 && nowQpc > g_ornamentLastStepQpc && g_qpcFrequency > 0) {
         elapsed = static_cast<float>(nowQpc - g_ornamentLastStepQpc)
@@ -2860,7 +2873,10 @@ static void UpdateOrnamentPhysics(float velocity, LONGLONG nowQpc) {
         int steps = std::max(1, static_cast<int>(ceilf(elapsed / fixedStep)));
         steps = std::min(steps, kOrnamentMaxSubSteps);
         const float step = elapsed / static_cast<float>(steps);
-        for (int i = 0; i < steps; ++i) StepOrnamentPhysics(step);
+        const float stepX = anchorStepX / static_cast<float>(steps);
+        const float stepY = anchorStepY / static_cast<float>(steps);
+        for (int i = 0; i < steps; ++i) StepOrnamentPhysics(step, stepX, stepY);
+        g_ornamentLastAnchor = anchor;
     }
 
     if (OrnamentAnimating()) {
