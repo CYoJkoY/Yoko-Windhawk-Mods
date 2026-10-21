@@ -4,7 +4,7 @@
 // @name:zh-CN      光标拖尾
 // @description     Adds a speed-reactive cursor trail with optional interaction feedback.
 // @description:zh-CN 为鼠标指针添加速度响应式拖尾与可选的交互反馈。
-// @version         3.21
+// @version         3.22
 // @author          CYoJkoY
 // @github          https://github.com/CYoJkoY
 // @license         MIT
@@ -563,13 +563,15 @@ struct OrnamentPresetDefinition {
     OrnamentPresetNode nodes[kOrnamentMaxPresetNodes];
 };
 
+// Damping sets the drag lag time constant, dt * 100 / damping, so a low value
+// makes a steady drag trail far behind the pointer instead of just swinging.
 constexpr OrnamentPresetDefinition kOrnamentPresets[] = {
     {
         L"classic",
         10.0f,
         12.0f,
         1400.0f,
-        8.0f,
+        22.0f,
         12,
         0.18f,
         1.0f,
@@ -588,7 +590,7 @@ constexpr OrnamentPresetDefinition kOrnamentPresets[] = {
         12.0f,
         10.0f,
         1800.0f,
-        3.0f,
+        16.0f,
         14,
         0.30f,
         1.0f,
@@ -607,7 +609,7 @@ constexpr OrnamentPresetDefinition kOrnamentPresets[] = {
         8.0f,
         8.0f,
         220.0f,
-        16.0f,
+        26.0f,
         10,
         0.06f,
         0.9f,
@@ -626,7 +628,7 @@ constexpr OrnamentPresetDefinition kOrnamentPresets[] = {
         10.0f,
         12.0f,
         1200.0f,
-        6.0f,
+        20.0f,
         12,
         0.22f,
         1.0f,
