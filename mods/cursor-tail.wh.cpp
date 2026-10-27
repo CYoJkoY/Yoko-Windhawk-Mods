@@ -74,7 +74,7 @@ Pendant ornaments hang a preset from the pointer on a rope. Pick a preset and, o
 
 `Pendant image` accepts one file path. PNG, JPEG, BMP, GIF, and TIFF are supported; an animated GIF is decoded to its first frame. Leave the path empty to draw a circular pendant in the current trail color.
 
-Image metadata is read only when the settings change. Decoded pixels are uploaded once to a device bitmap and then released, and are decoded again on demand if the Direct2D target is recreated, so the pendant does not keep a full decoded copy in memory. The rope is simulated at 125 Hz with at most eight substeps per sample. Rope points, smoothing buffers, and draw geometry are fixed-size, so the draw loop allocates nothing.
+Image metadata is read only when the settings change. Decoded pixels are uploaded once to a device bitmap and then released, and are decoded again on demand if the Direct2D target is recreated, so the pendant does not keep a full decoded copy in memory. The rope is simulated at 125 Hz with at most eight substeps per sample. Rope points, smoothing buffers, and ribbon outlines are fixed-size. A path geometry cannot be repopulated after it is closed, so each drawn trail layer creates one transient Direct2D path geometry per frame; one fill per layer replaces a stroke per trail segment.
 
 ## Performance
 
