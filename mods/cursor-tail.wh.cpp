@@ -4,7 +4,7 @@
 // @name:zh-CN      光标拖尾
 // @description     Adds a speed-reactive cursor trail with optional interaction feedback.
 // @description:zh-CN 为鼠标指针添加速度响应式拖尾与可选的交互反馈。
-// @version         3.22
+// @version         3.23
 // @author          CYoJkoY
 // @github          https://github.com/CYoJkoY
 // @license         MIT
@@ -74,11 +74,11 @@ Pendant ornaments hang a preset from the pointer on a rope. Pick a preset and, o
 
 `Pendant image` accepts one file path. PNG, JPEG, BMP, GIF, and TIFF are supported; an animated GIF is decoded to its first frame. Leave the path empty to draw a circular pendant in the current trail color.
 
-Images are read only when the settings change. The rope is simulated at 125 Hz with at most eight substeps per sample. Rope points, smoothing buffers, and draw geometry are fixed-size, so the draw loop allocates nothing.
+Image metadata is read only when the settings change. Decoded pixels are uploaded once to a device bitmap and then released, and are decoded again on demand if the Direct2D target is recreated, so the pendant does not keep a full decoded copy in memory. The rope is simulated at 125 Hz with at most eight substeps per sample. Rope points, smoothing buffers, and draw geometry are fixed-size, so the draw loop allocates nothing.
 
 ## Performance
 
-Mouse movement and foreground changes wake the worker from an indefinite wait during ordinary idle, avoiding periodic cursor polling. Sampling runs at 125 Hz while an effect is active. If raw input or foreground notifications are unavailable, or a higher-integrity foreground window blocks raw input, fallback polling samples every 10 ms for one second after detected movement, then backs off to 100 ms while idle. Layered-window submission is paced separately at 60 FPS while actively moving and 30 FPS while fading. Raw input reports that fall inside the short wake-throttling window are coalesced and handled by a one-shot timer, and the idle back buffer is released after five seconds. Background luminance sampling enforces a 50 ms minimum interval and also requires cursor travel before taking another screen sample. The back buffer and Direct2D resources are reused between frames and resized only when the required trail bounds grow beyond the current buffer.
+Mouse movement and foreground changes wake the worker from an indefinite wait during ordinary idle, avoiding periodic cursor polling. Sampling runs at 125 Hz while an effect is active. If raw input or foreground notifications are unavailable, or a higher-integrity foreground window blocks raw input, fallback polling samples every 10 ms for one second after detected movement, then backs off to 100 ms while idle. Layered-window submission is paced separately at 60 FPS while actively moving and 30 FPS while fading. Raw input reports that fall inside the short wake-throttling window are coalesced and handled by a one-shot timer, and the idle back buffer is released after five seconds. Background luminance sampling enforces a 50 ms minimum interval and also requires cursor travel before taking another screen sample. The back buffer and Direct2D resources are reused between frames and resized only when the required trail bounds grow beyond the current buffer. Growing the buffer rebinds the existing render target to the new surface, so brushes, layers, and uploaded pendant bitmaps survive the resize.
 
 ## Related mods
 
@@ -854,6 +854,8 @@ struct OrnamentImage {
     UINT height = 0;
     std::vector<uint8_t> pixels;
     ID2D1Bitmap* bitmap = nullptr;
+    bool decodeFailed = false;
+    bool uploadFailed = false;
 };
 
 struct OrnamentNode {
@@ -2078,22 +2080,55 @@ static int GrowBackbufferDimension(int required, int current) {
         : required;
 }
 
+// Growing swaps in a fresh DC and DIB, then rebinds the existing Direct2D
+// target instead of rebuilding every brush, layer, and device bitmap. The new
+// surface is built first, so the old one stays usable if anything fails.
+static bool SwapBackbufferSurface(int newWidth, int newHeight, HDC referenceDc) {
+    HDC newDc = CreateCompatibleDC(referenceDc);
+    if (!newDc) return false;
+    HBITMAP newBitmap = Create32BitDIB(newWidth, newHeight);
+    if (!newBitmap) {
+        DeleteDC(newDc);
+        return false;
+    }
+    const HGDIOBJ newOriginalBitmap = SelectObject(newDc, newBitmap);
+    if (!newOriginalBitmap || newOriginalBitmap == HGDI_ERROR) {
+        DeleteObject(newBitmap);
+        DeleteDC(newDc);
+        return false;
+    }
+
+    if (g_renderTarget) {
+        const RECT bindRect = {0, 0, newWidth, newHeight};
+        if (FAILED(g_renderTarget->BindDC(newDc, &bindRect))) {
+            // A failed rebind leaves the old binding in an unknown state, so
+            // rebuild the target on the next frame and keep the new surface.
+            ReleaseRenderResources();
+        } else {
+            g_dcBound = true;
+        }
+    }
+
+    HDC oldDc = g_backBufferDc;
+    HBITMAP oldBitmap = g_backBufferBitmap;
+    HGDIOBJ oldOriginalBitmap = g_originalBitmap;
+    g_backBufferDc = newDc;
+    g_backBufferBitmap = newBitmap;
+    g_originalBitmap = newOriginalBitmap;
+    if (oldDc) {
+        if (oldOriginalBitmap) SelectObject(oldDc, oldOriginalBitmap);
+        DeleteDC(oldDc);
+    }
+    if (oldBitmap) DeleteObject(oldBitmap);
+    return true;
+}
+
 bool EnsureBackbuffer(int width, int height, HDC referenceDc) {
     if (width <= 0 || height <= 0 || !referenceDc) return false;
     if (g_backBufferDc && g_backBufferBitmap && width <= g_cachedWidth && height <= g_cachedHeight) return true;
-    if (!g_backBufferDc) {
-        g_backBufferDc = CreateCompatibleDC(referenceDc);
-        if (!g_backBufferDc) return false;
-    }
     const int newWidth = GrowBackbufferDimension(width, g_cachedWidth);
     const int newHeight = GrowBackbufferDimension(height, g_cachedHeight);
-    ReleaseRenderResources();
-    HBITMAP bitmap = Create32BitDIB(newWidth, newHeight);
-    if (!bitmap) return false;
-    const HGDIOBJ oldBitmap = SelectObject(g_backBufferDc, bitmap);
-    if (!g_originalBitmap) g_originalBitmap = oldBitmap;
-    else if (oldBitmap && oldBitmap != g_originalBitmap) DeleteObject(oldBitmap);
-    g_backBufferBitmap = bitmap;
+    if (!SwapBackbufferSurface(newWidth, newHeight, referenceDc)) return false;
     g_cachedWidth = newWidth;
     g_cachedHeight = newHeight;
     g_backbufferIdleSince = 0;
@@ -2824,6 +2859,9 @@ static void ReleaseOrnamentBitmaps() {
             image.bitmap->Release();
             image.bitmap = nullptr;
         }
+        // A new target can upload again, so clear the upload latch. A decode
+        // failure stays latched until the assets are rebuilt from settings.
+        image.uploadFailed = false;
     }
 }
 
@@ -2852,19 +2890,23 @@ static int FindOrnamentImageIndexById(const std::wstring& id) {
     return -1;
 }
 
-static bool DecodeOrnamentImage(
+static void ReleaseOrnamentPixels(std::vector<uint8_t>& pixels) {
+    std::vector<uint8_t>().swap(pixels);
+}
+
+// The build step reads only image metadata. Keeping the decoded pixels for
+// every image would hold up to 128 MB of CPU memory while the pendant sits
+// idle, so the pixels are decoded again on demand and freed after the upload.
+static bool ProbeOrnamentImage(
     const OrnamentImageSpec& spec,
-    OrnamentImage& output,
-    uint64_t& decodedBytes) {
+    OrnamentImage& output) {
     output.id = spec.id;
     output.path = spec.path;
     if (!g_wicFactory) return false;
 
     IWICBitmapDecoder* decoder = nullptr;
     IWICBitmapFrameDecode* frame = nullptr;
-    IWICFormatConverter* converter = nullptr;
     const auto releaseInterfaces = [&] {
-        if (converter) { converter->Release(); converter = nullptr; }
         if (frame) { frame->Release(); frame = nullptr; }
         if (decoder) { decoder->Release(); decoder = nullptr; }
     };
@@ -2899,9 +2941,61 @@ static bool DecodeOrnamentImage(
         return false;
     }
     const uint64_t imageBytes = static_cast<uint64_t>(width) * height * 4ull;
-    if (imageBytes > kOrnamentMaxDecodedBytes
-        || decodedBytes + imageBytes > kOrnamentMaxDecodedBytes) {
+    if (imageBytes > kOrnamentMaxDecodedBytes) {
         Wh_Log(L"Ornament image memory limit reached: %s", spec.path.c_str());
+        releaseInterfaces();
+        return false;
+    }
+    output.width = width;
+    output.height = height;
+    releaseInterfaces();
+    return true;
+}
+
+static bool DecodeOrnamentPixels(OrnamentImage& image) {
+    if (!g_wicFactory || image.path.empty()) return false;
+
+    IWICBitmapDecoder* decoder = nullptr;
+    IWICBitmapFrameDecode* frame = nullptr;
+    IWICFormatConverter* converter = nullptr;
+    const auto releaseInterfaces = [&] {
+        if (converter) { converter->Release(); converter = nullptr; }
+        if (frame) { frame->Release(); frame = nullptr; }
+        if (decoder) { decoder->Release(); decoder = nullptr; }
+    };
+
+    HRESULT hr = g_wicFactory->CreateDecoderFromFilename(
+        image.path.c_str(),
+        nullptr,
+        GENERIC_READ,
+        WICDecodeMetadataCacheOnLoad,
+        &decoder);
+    if (FAILED(hr) || !decoder) {
+        Wh_Log(L"Failed to open ornament image: %s", image.path.c_str());
+        releaseInterfaces();
+        return false;
+    }
+    hr = decoder->GetFrame(0, &frame);
+    if (FAILED(hr) || !frame) {
+        Wh_Log(L"Failed to read first frame of ornament image: %s", image.path.c_str());
+        releaseInterfaces();
+        return false;
+    }
+    UINT width = 0;
+    UINT height = 0;
+    hr = frame->GetSize(&width, &height);
+    if (FAILED(hr)
+        || width == 0
+        || height == 0
+        || width > static_cast<UINT>(kOrnamentMaxImageDimension)
+        || height > static_cast<UINT>(kOrnamentMaxImageDimension)) {
+        Wh_Log(L"Unsupported ornament image dimensions: %s", image.path.c_str());
+        releaseInterfaces();
+        return false;
+    }
+    const uint64_t imageBytes = static_cast<uint64_t>(width) * height * 4ull;
+    if (imageBytes > kOrnamentMaxDecodedBytes) {
+        Wh_Log(L"Ornament image memory limit reached: %s", image.path.c_str());
         releaseInterfaces();
         return false;
     }
@@ -2918,23 +3012,22 @@ static bool DecodeOrnamentImage(
         0.0,
         WICBitmapPaletteTypeCustom);
     if (FAILED(hr)) {
-        Wh_Log(L"Failed to convert ornament image pixels: %s", spec.path.c_str());
+        Wh_Log(L"Failed to convert ornament image pixels: %s", image.path.c_str());
         releaseInterfaces();
         return false;
     }
     const UINT stride = width * 4u;
     const UINT bufferSize = stride * height;
-    output.pixels.resize(bufferSize);
-    hr = converter->CopyPixels(nullptr, stride, bufferSize, output.pixels.data());
+    image.pixels.resize(bufferSize);
+    hr = converter->CopyPixels(nullptr, stride, bufferSize, image.pixels.data());
     if (FAILED(hr)) {
-        output.pixels.clear();
-        Wh_Log(L"Failed to copy ornament image pixels: %s", spec.path.c_str());
+        ReleaseOrnamentPixels(image.pixels);
+        Wh_Log(L"Failed to copy ornament image pixels: %s", image.path.c_str());
         releaseInterfaces();
         return false;
     }
-    output.width = width;
-    output.height = height;
-    decodedBytes += imageBytes;
+    image.width = width;
+    image.height = height;
     releaseInterfaces();
     return true;
 }
@@ -2952,10 +3045,9 @@ static void BuildOrnamentImages() {
             Wh_Log(L"Failed to create WIC imaging factory for ornaments");
         }
     }
-    uint64_t decodedBytes = 0;
     for (const OrnamentImageSpec& spec : g_ornamentImageSpecs) {
         OrnamentImage image;
-        DecodeOrnamentImage(spec, image, decodedBytes);
+        if (!ProbeOrnamentImage(spec, image)) image.decodeFailed = true;
         g_ornamentImages.push_back(std::move(image));
     }
 }
@@ -3016,7 +3108,21 @@ static void EnsureOrnamentAssetsLoaded() {
 static void EnsureOrnamentBitmaps() {
     if (!g_renderTarget || !g_ornamentAssetsReady) return;
     for (OrnamentImage& image : g_ornamentImages) {
-        if (image.bitmap || image.width == 0 || image.height == 0 || image.pixels.empty()) continue;
+        if (image.bitmap || image.decodeFailed || image.uploadFailed) continue;
+        // One image at a time, so the peak CPU memory never holds more than a
+        // single decoded image. Metadata is probed once at build time, so an
+        // unreadable file is latched and never reopened on later frames.
+        if (image.width == 0 || image.height == 0) {
+            image.decodeFailed = true;
+            continue;
+        }
+        // Pixels are released after every upload, so an image without a device
+        // bitmap is always decoded again here before it can be drawn.
+        if (!DecodeOrnamentPixels(image)) {
+            image.decodeFailed = true;
+            ReleaseOrnamentPixels(image.pixels);
+            continue;
+        }
         const D2D1_BITMAP_PROPERTIES properties = D2D1::BitmapProperties(
             D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED),
             96.0f,
@@ -3031,8 +3137,14 @@ static void EnsureOrnamentBitmaps() {
             &image.bitmap);
         if (FAILED(hr)) {
             image.bitmap = nullptr;
+            image.uploadFailed = true;
+            ReleaseOrnamentPixels(image.pixels);
             Wh_Log(L"Failed to upload ornament image: %s", image.path.c_str());
+            continue;
         }
+        // The upload copied the pixels into the device bitmap. Holding the CPU
+        // copy would keep the decoded size per image resident for no benefit.
+        ReleaseOrnamentPixels(image.pixels);
     }
 }
 
