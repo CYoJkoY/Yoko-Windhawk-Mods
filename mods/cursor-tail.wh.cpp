@@ -511,6 +511,8 @@ constexpr DWORD kFallbackIdleDelayMs = 1000;
 constexpr uint8_t kCursorAlphaThreshold = 96;
 constexpr uint32_t kFallbackCoreColor = 0x00FFFFFF;
 constexpr uint32_t kFallbackOuterColor = 0x00000000;
+constexpr float kFallbackCoreLuminance = 1.0f;
+static_assert(kFallbackCoreColor == 0x00FFFFFF, "The cached fallback luminance assumes a white core");
 constexpr DWORD kBackbufferIdleReleaseDelayMs = 5000;
 constexpr int kBackbufferGrowthGranularity = 64;
 constexpr int kMaxActiveRipples = 12;
@@ -735,6 +737,9 @@ ID2D1GradientStopCollection* g_gradientStops = nullptr;
 ID2D1StrokeStyle* g_strokeStyle = nullptr;
 uint32_t g_gradientHeadCache = 0xFFFFFFFFu;
 uint32_t g_gradientTailCache = 0xFFFFFFFFu;
+uint32_t g_outerBrushColorCache = 0xFFFFFFFFu;
+uint32_t g_coreBrushColorCache = 0xFFFFFFFFu;
+uint32_t g_glowBrushColorCache = 0xFFFFFFFFu;
 bool g_dcBound = false;
 HDC g_backBufferDc = nullptr;
 HBITMAP g_backBufferBitmap = nullptr;
@@ -773,6 +778,7 @@ uint32_t g_manualOutlineRGB = 0x00000000;
 int g_autoResampleInterval = 0;
 uint32_t g_currentCoreRGB = kFallbackCoreColor;
 uint32_t g_currentOuterRGB = kFallbackOuterColor;
+float g_currentCoreLuminance = kFallbackCoreLuminance;
 DWORD g_lastAutoColorUpdate = 0;
 HCURSOR g_lastAutoColorCursor = nullptr;
 bool g_autoColorInitialized = false;
@@ -1002,12 +1008,28 @@ struct TrailRenderCache {
 };
 TrailRenderCache g_renderCache;
 
+// sRGB channel values converted to linear light once. Luminance is evaluated
+// for sampled screen pixels and every cursor color candidate, so a fixed table
+// replaces a powf call on each of the three channels.
+float g_srgbToLinear[256] = {};
+bool g_srgbLutReady = false;
+
+static void EnsureSrgbLut() {
+    if (g_srgbLutReady) return;
+    for (int i = 0; i < 256; ++i) {
+        const float channel = static_cast<float>(i) / 255.0f;
+        g_srgbToLinear[i] = channel <= 0.03928f
+            ? channel / 12.92f
+            : powf((channel + 0.055f) / 1.055f, 2.4f);
+    }
+    g_srgbLutReady = true;
+}
+
 static inline float RgbLuminance(uint8_t r, uint8_t g, uint8_t b) {
-    const auto linear = [](float channel) {
-        channel /= 255.0f;
-        return channel <= 0.03928f ? channel / 12.92f : powf((channel + 0.055f) / 1.055f, 2.4f);
-    };
-    return 0.2126f * linear(r) + 0.7152f * linear(g) + 0.0722f * linear(b);
+    if (!g_srgbLutReady) EnsureSrgbLut();
+    return 0.2126f * g_srgbToLinear[r]
+        + 0.7152f * g_srgbToLinear[g]
+        + 0.0722f * g_srgbToLinear[b];
 }
 
 static inline float RgbLuminance(uint32_t rgb) {
@@ -1029,6 +1051,17 @@ static inline D2D1_COLOR_F ToColorF(uint32_t rgb, float alpha) {
         ((rgb >> 8) & 0xFF) / 255.0f,
         (rgb & 0xFF) / 255.0f,
         alpha);
+}
+
+// Solid brushes keep the last submitted color, so a recreated brush must also
+// reset its cache entry. The sentinel is outside the 24-bit color space.
+static inline void ApplySolidBrushColor(
+    ID2D1SolidColorBrush* brush,
+    uint32_t rgb,
+    uint32_t& cache) {
+    if (cache == rgb) return;
+    brush->SetColor(ToColorF(rgb, 1.0f));
+    cache = rgb;
 }
 
 static bool ParseHexColor(const wchar_t* str, uint32_t& out) {
@@ -1064,7 +1097,7 @@ static LONGLONG QpcNow() {
     return value.QuadPart;
 }
 
-static uint32_t ResolveOutlineColor(uint32_t core);
+static void SetTrailCoreColor(uint32_t core, float luminance);
 static void ReleaseOrnamentBitmaps();
 
 void ReleaseRenderResources() {
@@ -1082,6 +1115,9 @@ void ReleaseRenderResources() {
     if (g_renderTarget) { g_renderTarget->Release(); g_renderTarget = nullptr; }
     g_gradientHeadCache = 0xFFFFFFFFu;
     g_gradientTailCache = 0xFFFFFFFFu;
+    g_outerBrushColorCache = 0xFFFFFFFFu;
+    g_coreBrushColorCache = 0xFFFFFFFFu;
+    g_glowBrushColorCache = 0xFFFFFFFFu;
     g_dcBound = false;
 }
 
@@ -1480,8 +1516,11 @@ void LoadSettings() {
     g_autoColorInitialized = false;
     g_lastAutoColorCursor = nullptr;
     g_lastAutoColorUpdate = 0;
-    if (g_trailColorMode == 0) g_currentCoreRGB = g_manualColorRGB;
-    g_currentOuterRGB = ResolveOutlineColor(g_currentCoreRGB);
+    if (g_trailColorMode == 0) {
+        SetTrailCoreColor(g_manualColorRGB, RgbLuminance(g_manualColorRGB));
+    } else {
+        SetTrailCoreColor(g_currentCoreRGB, g_currentCoreLuminance);
+    }
     ApplyOverlayCaptureAffinity();
 }
 
@@ -2092,6 +2131,9 @@ bool EnsureD2DResources() {
     if (FAILED(hr)) { ReleaseRenderResources(); return false; }
     hr = g_renderTarget->CreateSolidColorBrush(ToColorF(g_glowRGB, 1.0f), &g_glowBrush);
     if (FAILED(hr)) { ReleaseRenderResources(); return false; }
+    g_outerBrushColorCache = g_currentOuterRGB;
+    g_coreBrushColorCache = g_currentCoreRGB;
+    g_glowBrushColorCache = g_glowRGB;
     hr = g_renderTarget->CreateLayer(nullptr, &g_trailOpacityLayer);
     if (FAILED(hr) || !g_trailOpacityLayer) { ReleaseRenderResources(); return false; }
     hr = g_renderTarget->CreateLayer(nullptr, &g_glowOpacityLayer);
@@ -2485,7 +2527,11 @@ void UpdateTrailState(const POINT& previousPoint, const POINT& point, float velo
     }
 }
 
-struct ColorCandidate { uint32_t rgb; int count; };
+struct ColorCandidate {
+    uint32_t rgb;
+    int count;
+    float luminance;
+};
 
 static HCURSOR g_cachedCursorCandidateHandle = nullptr;
 static std::vector<ColorCandidate> g_cachedCursorColorCandidates;
@@ -2521,7 +2567,9 @@ static bool ExtractCursorColorCandidates(HCURSOR cursorHandle, std::vector<Color
                 for (uint32_t pixel : pixels) if (((pixel >> 24) & 0xFF) >= kCursorAlphaThreshold) ++histogram[pixel & 0x00FFFFFF];
                 if (!histogram.empty()) {
                     out.reserve(histogram.size());
-                    for (const auto& entry : histogram) out.push_back({entry.first, entry.second});
+                    for (const auto& entry : histogram) {
+                        out.push_back({entry.first, entry.second, 0.0f});
+                    }
                     std::sort(out.begin(), out.end(), [](const ColorCandidate& a, const ColorCandidate& b) { return a.count > b.count; });
                     cleanup();
                     return true;
@@ -2554,7 +2602,9 @@ static bool ExtractCursorColorCandidates(HCURSOR cursorHandle, std::vector<Color
                                 }
                             }
                             out.reserve(maskHistogram.size());
-                            for (const auto& entry : maskHistogram) out.push_back({entry.first, entry.second});
+                            for (const auto& entry : maskHistogram) {
+                                out.push_back({entry.first, entry.second, 0.0f});
+                            }
                             std::sort(out.begin(), out.end(), [](const ColorCandidate& a, const ColorCandidate& b) { return a.count > b.count; });
                             cleanup();
                             return !out.empty();
@@ -2666,15 +2716,21 @@ static float SampleBackgroundLuminance(DWORD now, POINT center) {
     return luminance;
 }
 
-static uint32_t ResolveOutlineColor(uint32_t core) {
-    if (g_outlineColorMode == 1) return g_manualOutlineRGB;
-    return RgbLuminance(core) > 0.5f ? kFallbackOuterColor : kFallbackCoreColor;
+static void SetTrailCoreColor(uint32_t core, float luminance) {
+    g_currentCoreRGB = core;
+    g_currentCoreLuminance = luminance;
+    if (g_outlineColorMode == 1) {
+        g_currentOuterRGB = g_manualOutlineRGB;
+        return;
+    }
+    g_currentOuterRGB = luminance > 0.5f ? kFallbackOuterColor : kFallbackCoreColor;
 }
 
-static void UpdateTrailColorIfNeeded(DWORD now) {
+static void UpdateTrailColorIfNeeded(DWORD now, const POINT& point) {
     if (g_trailColorMode == 0) {
-        g_currentCoreRGB = g_manualColorRGB;
-        g_currentOuterRGB = ResolveOutlineColor(g_currentCoreRGB);
+        if (g_currentCoreRGB != g_manualColorRGB) {
+            SetTrailCoreColor(g_manualColorRGB, RgbLuminance(g_manualColorRGB));
+        }
         return;
     }
 
@@ -2686,8 +2742,7 @@ static void UpdateTrailColorIfNeeded(DWORD now) {
         g_cachedCursorCandidateHandle = nullptr;
         g_cachedCursorColorCandidates.clear();
         g_cachedCursorCandidatesReady = false;
-        g_currentCoreRGB = kFallbackCoreColor;
-        g_currentOuterRGB = ResolveOutlineColor(g_currentCoreRGB);
+        SetTrailCoreColor(kFallbackCoreColor, kFallbackCoreLuminance);
         return;
     }
 
@@ -2699,9 +2754,6 @@ static void UpdateTrailColorIfNeeded(DWORD now) {
         || !g_cachedCursorCandidatesReady
         || g_cachedCursorCandidateHandle != cursorHandle;
 
-    POINT point = {};
-    if (!GetCursorPos(&point)) return;
-
     // SampleBackgroundLuminance already throttles screen reads by both time and
     // cursor travel. Use its cached value to adapt contrast without re-reading
     // the cursor bitmap when only the content beneath the pointer changed.
@@ -2712,14 +2764,19 @@ static void UpdateTrailColorIfNeeded(DWORD now) {
         g_cachedCursorCandidatesReady = true;
         g_cachedCursorCandidateHandle = cursorHandle;
         ExtractCursorColorCandidates(cursorHandle, g_cachedCursorColorCandidates);
+        // A cursor bitmap is resampled only when its handle or the configured
+        // interval changes. Fold luminance into that same step so selection
+        // never pays for it per frame.
+        for (ColorCandidate& candidate : g_cachedCursorColorCandidates) {
+            candidate.luminance = RgbLuminance(candidate.rgb);
+        }
         g_lastAutoColorCursor = cursorHandle;
         g_lastAutoColorUpdate = now;
         g_autoColorInitialized = true;
     }
 
     if (g_cachedCursorColorCandidates.empty()) {
-        g_currentCoreRGB = kFallbackCoreColor;
-        g_currentOuterRGB = ResolveOutlineColor(g_currentCoreRGB);
+        SetTrailCoreColor(kFallbackCoreColor, kFallbackCoreLuminance);
         g_autoColorPickLuminanceValid = false;
         return;
     }
@@ -2731,7 +2788,7 @@ static void UpdateTrailColorIfNeeded(DWORD now) {
     // Keep the existing color when it still has acceptable contrast. Using a
     // lower hold threshold than the selection threshold prevents color flapping.
     if (!refreshCandidates
-        && ContrastRatio(RgbLuminance(g_currentCoreRGB), background)
+        && ContrastRatio(g_currentCoreLuminance, background)
             >= kAutoColorHysteresisContrast) {
         g_lastAutoColorPickLuminance = background;
         g_autoColorPickLuminanceValid = true;
@@ -2741,17 +2798,15 @@ static void UpdateTrailColorIfNeeded(DWORD now) {
     // In Auto mode the overlay is excluded from screen capture, so the sample
     // can't pick up the trail's own pixels and the window need not be hidden.
     for (const ColorCandidate& candidate : g_cachedCursorColorCandidates) {
-        if (ContrastRatio(RgbLuminance(candidate.rgb), background) >= kMinColorContrast) {
-            g_currentCoreRGB = candidate.rgb;
-            g_currentOuterRGB = ResolveOutlineColor(candidate.rgb);
+        if (ContrastRatio(candidate.luminance, background) >= kMinColorContrast) {
+            SetTrailCoreColor(candidate.rgb, candidate.luminance);
             g_lastAutoColorPickLuminance = background;
             g_autoColorPickLuminanceValid = true;
             return;
         }
     }
 
-    g_currentCoreRGB = kFallbackCoreColor;
-    g_currentOuterRGB = ResolveOutlineColor(g_currentCoreRGB);
+    SetTrailCoreColor(kFallbackCoreColor, kFallbackCoreLuminance);
     g_lastAutoColorPickLuminance = background;
     g_autoColorPickLuminanceValid = true;
 }
@@ -3594,7 +3649,7 @@ bool RenderOverlay(HWND hwnd, LONGLONG nowQpc) {
                 D2D1::IdentityMatrix(),
                 std::clamp(g_glowAlpha, 0.0f, 1.0f));
             g_renderTarget->PushLayer(&glowLayerParameters, g_glowOpacityLayer);
-            g_glowBrush->SetColor(ToColorF(g_glowRGB, 1.0f));
+            ApplySolidBrushColor(g_glowBrush, g_glowRGB, g_glowBrushColorCache);
             DrawTrailLayer(
                 g_renderTarget,
                 g_glowBrush,
@@ -3602,8 +3657,8 @@ bool RenderOverlay(HWND hwnd, LONGLONG nowQpc) {
             g_renderTarget->PopLayer();
         }
 
-        g_outerBrush->SetColor(ToColorF(g_currentOuterRGB, 1.0f));
-        g_coreBrush->SetColor(ToColorF(g_currentCoreRGB, 1.0f));
+        ApplySolidBrushColor(g_outerBrush, g_currentOuterRGB, g_outerBrushColorCache);
+        ApplySolidBrushColor(g_coreBrush, g_currentCoreRGB, g_coreBrushColorCache);
         DrawTrailLayer(g_renderTarget, g_outerBrush, outerHalf);
 
         ID2D1Brush* coreBrush = g_coreBrush;
@@ -3931,7 +3986,7 @@ bool SmearFrame(HWND hwnd, DWORD now, bool renderFrame) {
     UpdateTrailState(previousPoint, point, velocity);
     UpdateOrnamentPhysics(velocity, sampleQpc);
     MaybeReleaseIdleBackbuffer(now);
-    if (g_isSmearing || g_historyCount >= 2) UpdateTrailColorIfNeeded(now);
+    if (g_isSmearing || g_historyCount >= 2) UpdateTrailColorIfNeeded(now, point);
 
     const bool stateChanged = wasSmearing != g_isSmearing
         || (previousHistoryCount >= 2) != (g_historyCount >= 2);
