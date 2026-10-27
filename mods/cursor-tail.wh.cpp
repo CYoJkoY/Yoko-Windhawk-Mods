@@ -877,6 +877,9 @@ std::vector<OrnamentImageSpec> g_ornamentImageSpecs;
 std::vector<OrnamentNodeSpec> g_ornamentNodeSpecs;
 std::vector<OrnamentImage> g_ornamentImages;
 std::vector<OrnamentNode> g_ornamentNodes;
+// Set once every image in g_ornamentImages holds a device bitmap or has
+// latched a failure, so visible frames skip the whole upload scan.
+bool g_ornamentBitmapsSettled = false;
 D2D1_POINT_2F g_ornamentRopePoints[kOrnamentMaxRopePoints] = {};
 D2D1_POINT_2F g_ornamentRopePrevious[kOrnamentMaxRopePoints] = {};
 D2D1_POINT_2F g_ornamentRopeSmoothA[kOrnamentMaxRopeDrawPoints] = {};
@@ -2854,6 +2857,7 @@ static D2D1_POINT_2F OrnamentAnchorPoint() {
 }
 
 static void ReleaseOrnamentBitmaps() {
+    g_ornamentBitmapsSettled = false;
     for (OrnamentImage& image : g_ornamentImages) {
         if (image.bitmap) {
             image.bitmap->Release();
@@ -3107,6 +3111,7 @@ static void EnsureOrnamentAssetsLoaded() {
 
 static void EnsureOrnamentBitmaps() {
     if (!g_renderTarget || !g_ornamentAssetsReady) return;
+    if (g_ornamentBitmapsSettled) return;
     for (OrnamentImage& image : g_ornamentImages) {
         if (image.bitmap || image.decodeFailed || image.uploadFailed) continue;
         // One image at a time, so the peak CPU memory never holds more than a
@@ -3146,6 +3151,9 @@ static void EnsureOrnamentBitmaps() {
         // copy would keep the decoded size per image resident for no benefit.
         ReleaseOrnamentPixels(image.pixels);
     }
+    // Every branch above ends with a device bitmap or a latched failure, so
+    // one pass settles the list. ReleaseOrnamentBitmaps clears the latch.
+    g_ornamentBitmapsSettled = true;
 }
 
 static void UpdateOrnamentNodeGeometry(OrnamentNode& node) {
