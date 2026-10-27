@@ -470,6 +470,13 @@ constexpr DWORD kFullscreenExitConfirmMs = 500;
 constexpr LONG kFullscreenTolerancePx = 2;
 constexpr int kMaxTailLength = 64;
 constexpr int kHistoryCapacity = kMaxTailLength;
+constexpr int kMaxSmoothIterations = 4;
+// Chaikin doubles the point count per pass, including both duplicated endpoints.
+constexpr int kMaxTrailRenderPoints = kMaxTailLength << kMaxSmoothIterations;
+constexpr int kTaperPowerSettingMin = 5;
+constexpr int kTaperPowerSettingMax = 30;
+constexpr int kTaperPowerCount = kTaperPowerSettingMax - kTaperPowerSettingMin + 1;
+constexpr int kTaperLutSteps = 256;
 constexpr int kRenderPadding = 2;
 constexpr float kFadeCutoff = 0.05f;
 constexpr int kAutoResampleIntervalMaxMs = 10000;
@@ -730,7 +737,7 @@ float g_coreWidthMin = 2.0f;
 float g_coreWidthMax = 9.0f;
 float g_alphaMin = 0.39f;
 float g_alphaMax = 0.77f;
-float g_taperPower = 1.0f;
+int g_taperPowerIndex = 10;
 int g_smoothIterations = 2;
 int g_gradientEnabled = 0;
 uint32_t g_gradientTailRGB = 0x00FF00FF;
@@ -909,44 +916,67 @@ DWORD g_lastFullscreenStrongCheck = 0;
 bool g_fullscreenStrongSignal = false;
 bool g_fullscreenCoversMonitor = false;
 
+// The settings expose exponent values from 0.5 through 3.0 in 0.1 steps.
+// Filling the table once removes powf from every taper rebuild; interpolating
+// between the 257 samples keeps the curve visually identical.
+float g_taperLut[kTaperPowerCount][kTaperLutSteps + 1] = {};
+bool g_taperLutReady = false;
+
+static void EnsureTaperLut() {
+    if (g_taperLutReady) return;
+    for (int powerIndex = 0; powerIndex < kTaperPowerCount; ++powerIndex) {
+        const float power =
+            static_cast<float>(kTaperPowerSettingMin + powerIndex) / 10.0f;
+        float* row = g_taperLut[powerIndex];
+        for (int i = 0; i < kTaperLutSteps; ++i) {
+            const float ratio =
+                static_cast<float>(i) / static_cast<float>(kTaperLutSteps);
+            row[i] = powf(1.0f - ratio, power);
+        }
+        row[kTaperLutSteps] = 0.0f;
+    }
+    g_taperLutReady = true;
+}
+
 struct TrailRenderCache {
-    std::vector<D2D1_POINT_2F> smoothed;
-    std::vector<D2D1_POINT_2F> subdivision;
-    std::vector<float> taper;
-    size_t cachedTaperPointCount = 0;
-    float cachedTaperPower = 0.0f;
+    D2D1_POINT_2F pointsA[kMaxTrailRenderPoints] = {};
+    D2D1_POINT_2F pointsB[kMaxTrailRenderPoints] = {};
+    D2D1_POINT_2F* activePoints = pointsA;
+    int pointCount = 0;
+    float taper[kMaxTrailRenderPoints] = {};
+    int cachedTaperPointCount = -1;
+    int cachedTaperPowerIndex = -1;
     bool taperCacheValid = false;
 
-    void ReserveForTailLength(int tailLength) {
-        const size_t baseCount = static_cast<size_t>(std::max(tailLength, 2));
-        const size_t maxPointCount = baseCount * 16 - 15;
-        smoothed.reserve(maxPointCount);
-        subdivision.reserve(maxPointCount);
-        taper.reserve(maxPointCount);
-    }
-
     void PrepareTaper() {
-        const size_t pointCount = smoothed.size();
+        if (pointCount <= 1) return;
         if (taperCacheValid &&
             cachedTaperPointCount == pointCount &&
-            cachedTaperPower == g_taperPower) {
+            cachedTaperPowerIndex == g_taperPowerIndex) {
             return;
         }
 
-        taper.resize(pointCount);
-        if (pointCount <= 1) {
-            if (!taper.empty()) taper[0] = 0.0f;
-        } else {
-            const float denominator = static_cast<float>(pointCount - 1);
-            for (size_t i = 0; i + 1 < pointCount; ++i) {
-                const float ratio = static_cast<float>(i) / denominator;
-                taper[i] = powf(std::max(0.0f, 1.0f - ratio), g_taperPower);
-            }
-            taper.back() = 0.0f;
+        EnsureTaperLut();
+        const int lutPower = std::clamp(
+            g_taperPowerIndex - kTaperPowerSettingMin,
+            0,
+            kTaperPowerCount - 1);
+        const float* row = g_taperLut[lutPower];
+        const float scale =
+            static_cast<float>(kTaperLutSteps) /
+            static_cast<float>(pointCount - 1);
+        for (int i = 0; i + 1 < pointCount; ++i) {
+            const float position = static_cast<float>(i) * scale;
+            const int lutIndex = static_cast<int>(position);
+            const float fraction = position - static_cast<float>(lutIndex);
+            const float low = row[lutIndex];
+            const float high = row[lutIndex + 1];
+            taper[i] = low + (high - low) * fraction;
         }
+        taper[pointCount - 1] = 0.0f;
 
         cachedTaperPointCount = pointCount;
-        cachedTaperPower = g_taperPower;
+        cachedTaperPowerIndex = g_taperPowerIndex;
         taperCacheValid = true;
     }
 };
@@ -1327,10 +1357,16 @@ void LoadSettings() {
     g_coreWidthMax = static_cast<float>(std::clamp(Wh_GetIntSetting(L"Appearance.core_width_max"), 1, 60));
     g_alphaMin = std::clamp(Wh_GetIntSetting(L"Appearance.alpha_min"), 0, 100) / 100.0f;
     g_alphaMax = std::clamp(Wh_GetIntSetting(L"Appearance.alpha_max"), 0, 100) / 100.0f;
-    g_taperPower = std::clamp(Wh_GetIntSetting(L"Appearance.taper_power"), 5, 30) / 10.0f;
+    g_taperPowerIndex = std::clamp(
+        Wh_GetIntSetting(L"Appearance.taper_power"),
+        kTaperPowerSettingMin,
+        kTaperPowerSettingMax);
     if (g_widthMax < g_widthMin) std::swap(g_widthMin, g_widthMax);
     if (g_coreWidthMax < g_coreWidthMin) std::swap(g_coreWidthMin, g_coreWidthMax);
-    g_smoothIterations = std::clamp(Wh_GetIntSetting(L"Appearance.smooth_iterations"), 0, 4);
+    g_smoothIterations = std::clamp(
+        Wh_GetIntSetting(L"Appearance.smooth_iterations"),
+        0,
+        kMaxSmoothIterations);
     g_gradientEnabled = std::clamp(Wh_GetIntSetting(L"Effects.gradient_enabled"), 0, 1);
     {
         uint32_t parsed = 0;
@@ -1421,7 +1457,6 @@ void LoadSettings() {
     ParseAppRules();
     g_cachedForegroundWindow = nullptr;
     g_cachedAppRule = 0;
-    g_renderCache.ReserveForTailLength(g_tailLength);
     g_autoColorInitialized = false;
     g_lastAutoColorCursor = nullptr;
     g_lastAutoColorUpdate = 0;
@@ -2082,40 +2117,56 @@ bool EnsureGradientBrush() {
 }
 
 void SmoothTrail(int iterations, int renderLength) {
-    auto& current = g_renderCache.smoothed;
-    auto& next = g_renderCache.subdivision;
-    current.clear();
-    next.clear();
+    D2D1_POINT_2F* current = g_renderCache.pointsA;
+    D2D1_POINT_2F* next = g_renderCache.pointsB;
     const int pointCount = std::min(g_historyCount, std::max(renderLength, 2));
+    int currentCount = 0;
+    const float offsetX = static_cast<float>(g_tailOffsetX) * g_currentDpiScale;
+    const float offsetY = static_cast<float>(g_tailOffsetY) * g_currentDpiScale;
     for (int i = 0; i < pointCount; ++i) {
         const POINT& point = HistoryAt(i);
-        current.push_back(D2D1::Point2F(
-            static_cast<float>(point.x) + static_cast<float>(g_tailOffsetX) * g_currentDpiScale,
-            static_cast<float>(point.y) + static_cast<float>(g_tailOffsetY) * g_currentDpiScale));
+        current[currentCount++] = D2D1::Point2F(
+            static_cast<float>(point.x) + offsetX,
+            static_cast<float>(point.y) + offsetY);
     }
-    for (int iteration = 0; iteration < iterations && current.size() >= 3; ++iteration) {
-        next.clear();
-        next.reserve(current.size() * 2);
-        next.push_back(current.front());
-        for (size_t i = 0; i + 1 < current.size(); ++i) {
-            const auto& a = current[i];
-            const auto& b = current[i + 1];
-            next.push_back(D2D1::Point2F(0.75f * a.x + 0.25f * b.x, 0.75f * a.y + 0.25f * b.y));
-            next.push_back(D2D1::Point2F(0.25f * a.x + 0.75f * b.x, 0.25f * a.y + 0.75f * b.y));
+    const int iterationLimit = std::clamp(
+        iterations, 0, kMaxSmoothIterations);
+    for (int iteration = 0; iteration < iterationLimit && currentCount >= 3;
+         ++iteration) {
+        if (currentCount > kMaxTrailRenderPoints / 2) break;
+        int nextCount = 0;
+        next[nextCount++] = current[0];
+        for (int i = 0; i + 1 < currentCount; ++i) {
+            const D2D1_POINT_2F& a = current[i];
+            const D2D1_POINT_2F& b = current[i + 1];
+            next[nextCount++] = D2D1::Point2F(
+                0.75f * a.x + 0.25f * b.x,
+                0.75f * a.y + 0.25f * b.y);
+            next[nextCount++] = D2D1::Point2F(
+                0.25f * a.x + 0.75f * b.x,
+                0.25f * a.y + 0.75f * b.y);
         }
-        next.push_back(current.back());
-        current.swap(next);
+        next[nextCount++] = current[currentCount - 1];
+        currentCount = nextCount;
+        D2D1_POINT_2F* swap = current;
+        current = next;
+        next = swap;
     }
+    g_renderCache.activePoints = current;
+    g_renderCache.pointCount = currentCount;
     g_renderCache.PrepareTaper();
 }
 
 RECT CalculateTrailBounds(float maxHalfWidth) {
-    if (g_renderCache.smoothed.empty()) return {0, 0, 0, 0};
-    float minX = g_renderCache.smoothed.front().x;
-    float minY = g_renderCache.smoothed.front().y;
+    const int pointCount = g_renderCache.pointCount;
+    if (pointCount <= 0) return {0, 0, 0, 0};
+    const D2D1_POINT_2F* points = g_renderCache.activePoints;
+    float minX = points[0].x;
+    float minY = points[0].y;
     float maxX = minX;
     float maxY = minY;
-    for (const auto& point : g_renderCache.smoothed) {
+    for (int i = 1; i < pointCount; ++i) {
+        const D2D1_POINT_2F& point = points[i];
         minX = std::min(minX, point.x);
         minY = std::min(minY, point.y);
         maxX = std::max(maxX, point.x);
@@ -2134,14 +2185,15 @@ RECT CalculateTrailBounds(float maxHalfWidth) {
 }
 
 static void DrawTrailStroke(ID2D1RenderTarget* target, ID2D1Brush* brush, float halfWidth, bool drawHead) {
-    const auto& points = g_renderCache.smoothed;
-    const auto& taper = g_renderCache.taper;
-    if (points.size() < 2 || taper.size() < points.size() || !brush) return;
-    for (size_t i = 0; i + 1 < points.size(); ++i) {
+    const int pointCount = g_renderCache.pointCount;
+    const D2D1_POINT_2F* points = g_renderCache.activePoints;
+    const float* taper = g_renderCache.taper;
+    if (pointCount < 2 || !brush) return;
+    for (int i = 0; i + 1 < pointCount; ++i) {
         const float width = std::max(0.1f, halfWidth * taper[i] * 2.0f);
         target->DrawLine(points[i], points[i + 1], brush, width, g_strokeStyle);
     }
-    if (drawHead) target->FillEllipse(D2D1::Ellipse(points.front(), halfWidth, halfWidth), brush);
+    if (drawHead) target->FillEllipse(D2D1::Ellipse(points[0], halfWidth, halfWidth), brush);
 }
 
 static int GetEffectiveTailLength(float speedNorm) {
@@ -3169,7 +3221,7 @@ bool RenderOverlay(HWND hwnd, LONGLONG nowQpc) {
 
     if (drawTrail) {
         SmoothTrail(g_smoothIterations, renderLength);
-        drawTrail = g_renderCache.smoothed.size() >= 2 && trailAlpha >= 0.02f;
+        drawTrail = g_renderCache.pointCount >= 2 && trailAlpha >= 0.02f;
     }
 
     const int activeRippleCount = UpdateRippleState(nowQpc);
@@ -3331,8 +3383,9 @@ bool RenderOverlay(HWND hwnd, LONGLONG nowQpc) {
 
         ID2D1Brush* coreBrush = g_coreBrush;
         if (g_gradientEnabled && EnsureGradientBrush()) {
-            g_gradientBrush->SetStartPoint(g_renderCache.smoothed.front());
-            g_gradientBrush->SetEndPoint(g_renderCache.smoothed.back());
+            g_gradientBrush->SetStartPoint(g_renderCache.activePoints[0]);
+            g_gradientBrush->SetEndPoint(
+                g_renderCache.activePoints[g_renderCache.pointCount - 1]);
             g_gradientBrush->SetOpacity(1.0f);
             coreBrush = g_gradientBrush;
         }
