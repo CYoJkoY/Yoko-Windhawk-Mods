@@ -4,7 +4,7 @@
 // @name:zh-CN      光标拖尾
 // @description     Adds a speed-reactive cursor trail with optional interaction feedback.
 // @description:zh-CN 为鼠标指针添加速度响应式拖尾与可选的交互反馈。
-// @version         3.22
+// @version         3.23
 // @author          CYoJkoY
 // @github          https://github.com/CYoJkoY
 // @license         MIT
@@ -74,11 +74,11 @@ Pendant ornaments hang a preset from the pointer on a rope. Pick a preset and, o
 
 `Pendant image` accepts one file path. PNG, JPEG, BMP, GIF, and TIFF are supported; an animated GIF is decoded to its first frame. Leave the path empty to draw a circular pendant in the current trail color.
 
-Images are read only when the settings change. The rope is simulated at 125 Hz with at most eight substeps per sample. Rope points, smoothing buffers, and draw geometry are fixed-size, so the draw loop allocates nothing.
+Image metadata is read only when the settings change. Decoded pixels are uploaded once to a device bitmap and then released, and are decoded again on demand if the Direct2D target is recreated, so the pendant does not keep a full decoded copy in memory. The rope is simulated at 125 Hz with at most eight substeps per sample. Rope points, smoothing buffers, and ribbon outlines are fixed-size. A path geometry cannot be repopulated after it is closed, so each drawn trail layer creates one transient Direct2D path geometry per frame; one fill per layer replaces a stroke per trail segment.
 
 ## Performance
 
-Mouse movement and foreground changes wake the worker from an indefinite wait during ordinary idle, avoiding periodic cursor polling. Sampling runs at 125 Hz while an effect is active. If raw input or foreground notifications are unavailable, or a higher-integrity foreground window blocks raw input, fallback polling samples every 10 ms for one second after detected movement, then backs off to 100 ms while idle. Layered-window submission is paced separately at 60 FPS while actively moving and 30 FPS while fading. Raw input reports that fall inside the short wake-throttling window are coalesced and handled by a one-shot timer, and the idle back buffer is released after five seconds. Background luminance sampling enforces a 50 ms minimum interval and also requires cursor travel before taking another screen sample. The back buffer and Direct2D resources are reused between frames and resized only when the required trail bounds grow beyond the current buffer.
+Mouse movement and foreground changes wake the worker from an indefinite wait during ordinary idle, avoiding periodic cursor polling. Sampling runs at 125 Hz while an effect is active. If raw input or foreground notifications are unavailable, or a higher-integrity foreground window blocks raw input, fallback polling samples every 10 ms for one second after detected movement, then backs off to 100 ms while idle. Layered-window submission is paced separately at 60 FPS while actively moving and 30 FPS while fading. Raw input reports that fall inside the short wake-throttling window are coalesced and handled by a one-shot timer, and the idle back buffer is released after five seconds. Background luminance sampling enforces a 50 ms minimum interval and also requires cursor travel before taking another screen sample. The back buffer and Direct2D resources are reused between frames and resized only when the required trail bounds grow beyond the current buffer. Growing the buffer rebinds the existing render target to the new surface, so brushes, layers, and uploaded pendant bitmaps survive the resize.
 
 ## Related mods
 
@@ -470,6 +470,32 @@ constexpr DWORD kFullscreenExitConfirmMs = 500;
 constexpr LONG kFullscreenTolerancePx = 2;
 constexpr int kMaxTailLength = 64;
 constexpr int kHistoryCapacity = kMaxTailLength;
+constexpr int kMaxSmoothIterations = 4;
+// Chaikin doubles the point count per pass, including both duplicated endpoints.
+constexpr int kMaxTrailRenderPoints = kMaxTailLength << kMaxSmoothIterations;
+constexpr int kTaperPowerSettingMin = 5;
+constexpr int kTaperPowerSettingMax = 30;
+constexpr int kTaperPowerCount = kTaperPowerSettingMax - kTaperPowerSettingMin + 1;
+constexpr int kTaperLutSteps = 256;
+// One filled ribbon replaces a stroke per trail segment. The center point
+// budget bounds tessellation work for long trails, and the spacing rejects
+// duplicate samples whose direction would be undefined.
+constexpr int kTrailRibbonMaxCenterPoints = 192;
+constexpr int kTrailRibbonCapSegments = 6;
+constexpr int kTrailRibbonMaxOutlinePoints =
+    kTrailRibbonMaxCenterPoints * 2 + kTrailRibbonCapSegments * 2;
+constexpr float kTrailRibbonMinSpacingPx = 0.35f;
+constexpr float kTrailRibbonMinHalfWidth = 0.05f;
+// Unit-circle samples for the intermediate tail cap vertices. The cap spans
+// half a circle in kTrailRibbonCapSegments equal steps; the two endpoints are
+// already present as the last left and right side vertices.
+constexpr float kTrailRibbonCapCos[kTrailRibbonCapSegments - 1] = {
+    0.86602540f, 0.5f, 0.0f, -0.5f, -0.86602540f};
+constexpr float kTrailRibbonCapSin[kTrailRibbonCapSegments - 1] = {
+    0.5f, 0.86602540f, 1.0f, 0.86602540f, 0.5f};
+static_assert(
+    kTrailRibbonCapSegments == 6,
+    "The cap sample tables encode a six-segment half circle");
 constexpr int kRenderPadding = 2;
 constexpr float kFadeCutoff = 0.05f;
 constexpr int kAutoResampleIntervalMaxMs = 10000;
@@ -485,6 +511,8 @@ constexpr DWORD kFallbackIdleDelayMs = 1000;
 constexpr uint8_t kCursorAlphaThreshold = 96;
 constexpr uint32_t kFallbackCoreColor = 0x00FFFFFF;
 constexpr uint32_t kFallbackOuterColor = 0x00000000;
+constexpr float kFallbackCoreLuminance = 1.0f;
+static_assert(kFallbackCoreColor == 0x00FFFFFF, "The cached fallback luminance assumes a white core");
 constexpr DWORD kBackbufferIdleReleaseDelayMs = 5000;
 constexpr int kBackbufferGrowthGranularity = 64;
 constexpr int kMaxActiveRipples = 12;
@@ -496,6 +524,7 @@ constexpr DWORD kMotionResumeGapMs = 120;
 constexpr DWORD kAccelerationMeasurementWindowMs = 40;
 constexpr DWORD kAccelerationAccentCooldownMs = 180;
 constexpr DWORD kTurnAccentCooldownMs = 220;
+constexpr float kDegreesToRadians = 3.14159265358979323846f / 180.0f;
 constexpr int kOrnamentMaxPresetNodes = 3;
 constexpr int kOrnamentMaxRopeSegments = 12;
 constexpr int kOrnamentMaxRopePoints = kOrnamentMaxRopeSegments + 1;
@@ -709,6 +738,9 @@ ID2D1GradientStopCollection* g_gradientStops = nullptr;
 ID2D1StrokeStyle* g_strokeStyle = nullptr;
 uint32_t g_gradientHeadCache = 0xFFFFFFFFu;
 uint32_t g_gradientTailCache = 0xFFFFFFFFu;
+uint32_t g_outerBrushColorCache = 0xFFFFFFFFu;
+uint32_t g_coreBrushColorCache = 0xFFFFFFFFu;
+uint32_t g_glowBrushColorCache = 0xFFFFFFFFu;
 bool g_dcBound = false;
 HDC g_backBufferDc = nullptr;
 HBITMAP g_backBufferBitmap = nullptr;
@@ -730,7 +762,7 @@ float g_coreWidthMin = 2.0f;
 float g_coreWidthMax = 9.0f;
 float g_alphaMin = 0.39f;
 float g_alphaMax = 0.77f;
-float g_taperPower = 1.0f;
+int g_taperPowerIndex = 10;
 int g_smoothIterations = 2;
 int g_gradientEnabled = 0;
 uint32_t g_gradientTailRGB = 0x00FF00FF;
@@ -747,6 +779,7 @@ uint32_t g_manualOutlineRGB = 0x00000000;
 int g_autoResampleInterval = 0;
 uint32_t g_currentCoreRGB = kFallbackCoreColor;
 uint32_t g_currentOuterRGB = kFallbackOuterColor;
+float g_currentCoreLuminance = kFallbackCoreLuminance;
 DWORD g_lastAutoColorUpdate = 0;
 HCURSOR g_lastAutoColorCursor = nullptr;
 bool g_autoColorInitialized = false;
@@ -775,6 +808,7 @@ int g_turnAccentEnabled = 0;
 int g_fastMoveInterpolationEnabled = 1;
 int g_accelerationThreshold = 30000;
 int g_turnAngleDegrees = 65;
+float g_turnAccentCosThreshold = 0.42261826f;  // cos(65 degrees)
 int g_motionAccentDurationMs = 300;
 float g_motionAccentSize = 22.0f;
 float g_motionAccentOpacity = 0.90f;
@@ -820,6 +854,8 @@ struct OrnamentImage {
     UINT height = 0;
     std::vector<uint8_t> pixels;
     ID2D1Bitmap* bitmap = nullptr;
+    bool decodeFailed = false;
+    bool uploadFailed = false;
 };
 
 struct OrnamentNode {
@@ -841,6 +877,9 @@ std::vector<OrnamentImageSpec> g_ornamentImageSpecs;
 std::vector<OrnamentNodeSpec> g_ornamentNodeSpecs;
 std::vector<OrnamentImage> g_ornamentImages;
 std::vector<OrnamentNode> g_ornamentNodes;
+// Set once every image in g_ornamentImages holds a device bitmap or has
+// latched a failure, so visible frames skip the whole upload scan.
+bool g_ornamentBitmapsSettled = false;
 D2D1_POINT_2F g_ornamentRopePoints[kOrnamentMaxRopePoints] = {};
 D2D1_POINT_2F g_ornamentRopePrevious[kOrnamentMaxRopePoints] = {};
 D2D1_POINT_2F g_ornamentRopeSmoothA[kOrnamentMaxRopeDrawPoints] = {};
@@ -909,55 +948,95 @@ DWORD g_lastFullscreenStrongCheck = 0;
 bool g_fullscreenStrongSignal = false;
 bool g_fullscreenCoversMonitor = false;
 
+// The settings expose exponent values from 0.5 through 3.0 in 0.1 steps.
+// Filling the table once removes powf from every taper rebuild; interpolating
+// between the 257 samples keeps the curve visually identical.
+float g_taperLut[kTaperPowerCount][kTaperLutSteps + 1] = {};
+bool g_taperLutReady = false;
+
+static void EnsureTaperLut() {
+    if (g_taperLutReady) return;
+    for (int powerIndex = 0; powerIndex < kTaperPowerCount; ++powerIndex) {
+        const float power =
+            static_cast<float>(kTaperPowerSettingMin + powerIndex) / 10.0f;
+        float* row = g_taperLut[powerIndex];
+        for (int i = 0; i < kTaperLutSteps; ++i) {
+            const float ratio =
+                static_cast<float>(i) / static_cast<float>(kTaperLutSteps);
+            row[i] = powf(1.0f - ratio, power);
+        }
+        row[kTaperLutSteps] = 0.0f;
+    }
+    g_taperLutReady = true;
+}
+
 struct TrailRenderCache {
-    std::vector<D2D1_POINT_2F> smoothed;
-    std::vector<D2D1_POINT_2F> subdivision;
-    std::vector<float> taper;
-    size_t cachedTaperPointCount = 0;
-    float cachedTaperPower = 0.0f;
+    D2D1_POINT_2F pointsA[kMaxTrailRenderPoints] = {};
+    D2D1_POINT_2F pointsB[kMaxTrailRenderPoints] = {};
+    D2D1_POINT_2F* activePoints = pointsA;
+    int pointCount = 0;
+    int generation = 0;
+    float taper[kMaxTrailRenderPoints] = {};
+    int cachedTaperPointCount = -1;
+    int cachedTaperPowerIndex = -1;
     bool taperCacheValid = false;
 
-    void ReserveForTailLength(int tailLength) {
-        const size_t baseCount = static_cast<size_t>(std::max(tailLength, 2));
-        const size_t maxPointCount = baseCount * 16 - 15;
-        smoothed.reserve(maxPointCount);
-        subdivision.reserve(maxPointCount);
-        taper.reserve(maxPointCount);
-    }
-
     void PrepareTaper() {
-        const size_t pointCount = smoothed.size();
+        if (pointCount <= 1) return;
         if (taperCacheValid &&
             cachedTaperPointCount == pointCount &&
-            cachedTaperPower == g_taperPower) {
+            cachedTaperPowerIndex == g_taperPowerIndex) {
             return;
         }
 
-        taper.resize(pointCount);
-        if (pointCount <= 1) {
-            if (!taper.empty()) taper[0] = 0.0f;
-        } else {
-            const float denominator = static_cast<float>(pointCount - 1);
-            for (size_t i = 0; i + 1 < pointCount; ++i) {
-                const float ratio = static_cast<float>(i) / denominator;
-                taper[i] = powf(std::max(0.0f, 1.0f - ratio), g_taperPower);
-            }
-            taper.back() = 0.0f;
+        EnsureTaperLut();
+        const int lutPower = std::clamp(
+            g_taperPowerIndex - kTaperPowerSettingMin,
+            0,
+            kTaperPowerCount - 1);
+        const float* row = g_taperLut[lutPower];
+        const float scale =
+            static_cast<float>(kTaperLutSteps) /
+            static_cast<float>(pointCount - 1);
+        for (int i = 0; i + 1 < pointCount; ++i) {
+            const float position = static_cast<float>(i) * scale;
+            const int lutIndex = static_cast<int>(position);
+            const float fraction = position - static_cast<float>(lutIndex);
+            const float low = row[lutIndex];
+            const float high = row[lutIndex + 1];
+            taper[i] = low + (high - low) * fraction;
         }
+        taper[pointCount - 1] = 0.0f;
 
         cachedTaperPointCount = pointCount;
-        cachedTaperPower = g_taperPower;
+        cachedTaperPowerIndex = g_taperPowerIndex;
         taperCacheValid = true;
     }
 };
 TrailRenderCache g_renderCache;
 
+// sRGB channel values converted to linear light once. Luminance is evaluated
+// for sampled screen pixels and every cursor color candidate, so a fixed table
+// replaces a powf call on each of the three channels.
+float g_srgbToLinear[256] = {};
+bool g_srgbLutReady = false;
+
+static void EnsureSrgbLut() {
+    if (g_srgbLutReady) return;
+    for (int i = 0; i < 256; ++i) {
+        const float channel = static_cast<float>(i) / 255.0f;
+        g_srgbToLinear[i] = channel <= 0.03928f
+            ? channel / 12.92f
+            : powf((channel + 0.055f) / 1.055f, 2.4f);
+    }
+    g_srgbLutReady = true;
+}
+
 static inline float RgbLuminance(uint8_t r, uint8_t g, uint8_t b) {
-    const auto linear = [](float channel) {
-        channel /= 255.0f;
-        return channel <= 0.03928f ? channel / 12.92f : powf((channel + 0.055f) / 1.055f, 2.4f);
-    };
-    return 0.2126f * linear(r) + 0.7152f * linear(g) + 0.0722f * linear(b);
+    if (!g_srgbLutReady) EnsureSrgbLut();
+    return 0.2126f * g_srgbToLinear[r]
+        + 0.7152f * g_srgbToLinear[g]
+        + 0.0722f * g_srgbToLinear[b];
 }
 
 static inline float RgbLuminance(uint32_t rgb) {
@@ -979,6 +1058,17 @@ static inline D2D1_COLOR_F ToColorF(uint32_t rgb, float alpha) {
         ((rgb >> 8) & 0xFF) / 255.0f,
         (rgb & 0xFF) / 255.0f,
         alpha);
+}
+
+// Solid brushes keep the last submitted color, so a recreated brush must also
+// reset its cache entry. The sentinel is outside the 24-bit color space.
+static inline void ApplySolidBrushColor(
+    ID2D1SolidColorBrush* brush,
+    uint32_t rgb,
+    uint32_t& cache) {
+    if (cache == rgb) return;
+    brush->SetColor(ToColorF(rgb, 1.0f));
+    cache = rgb;
 }
 
 static bool ParseHexColor(const wchar_t* str, uint32_t& out) {
@@ -1014,7 +1104,7 @@ static LONGLONG QpcNow() {
     return value.QuadPart;
 }
 
-static uint32_t ResolveOutlineColor(uint32_t core);
+static void SetTrailCoreColor(uint32_t core, float luminance);
 static void ReleaseOrnamentBitmaps();
 
 void ReleaseRenderResources() {
@@ -1032,6 +1122,9 @@ void ReleaseRenderResources() {
     if (g_renderTarget) { g_renderTarget->Release(); g_renderTarget = nullptr; }
     g_gradientHeadCache = 0xFFFFFFFFu;
     g_gradientTailCache = 0xFFFFFFFFu;
+    g_outerBrushColorCache = 0xFFFFFFFFu;
+    g_coreBrushColorCache = 0xFFFFFFFFu;
+    g_glowBrushColorCache = 0xFFFFFFFFu;
     g_dcBound = false;
 }
 
@@ -1327,10 +1420,16 @@ void LoadSettings() {
     g_coreWidthMax = static_cast<float>(std::clamp(Wh_GetIntSetting(L"Appearance.core_width_max"), 1, 60));
     g_alphaMin = std::clamp(Wh_GetIntSetting(L"Appearance.alpha_min"), 0, 100) / 100.0f;
     g_alphaMax = std::clamp(Wh_GetIntSetting(L"Appearance.alpha_max"), 0, 100) / 100.0f;
-    g_taperPower = std::clamp(Wh_GetIntSetting(L"Appearance.taper_power"), 5, 30) / 10.0f;
+    g_taperPowerIndex = std::clamp(
+        Wh_GetIntSetting(L"Appearance.taper_power"),
+        kTaperPowerSettingMin,
+        kTaperPowerSettingMax);
     if (g_widthMax < g_widthMin) std::swap(g_widthMin, g_widthMax);
     if (g_coreWidthMax < g_coreWidthMin) std::swap(g_coreWidthMin, g_coreWidthMax);
-    g_smoothIterations = std::clamp(Wh_GetIntSetting(L"Appearance.smooth_iterations"), 0, 4);
+    g_smoothIterations = std::clamp(
+        Wh_GetIntSetting(L"Appearance.smooth_iterations"),
+        0,
+        kMaxSmoothIterations);
     g_gradientEnabled = std::clamp(Wh_GetIntSetting(L"Effects.gradient_enabled"), 0, 1);
     {
         uint32_t parsed = 0;
@@ -1397,6 +1496,8 @@ void LoadSettings() {
     g_accelerationThreshold = std::clamp(Wh_GetIntSetting(L"Motion.acceleration_threshold"), 3000, 100000);
     g_motionAccentOpacity = std::clamp(Wh_GetIntSetting(L"Motion.motion_accent_opacity"), 10, 100) / 100.0f;
     g_turnAngleDegrees = std::clamp(Wh_GetIntSetting(L"Motion.turn_angle_degrees"), 45, 150);
+    g_turnAccentCosThreshold = cosf(
+        static_cast<float>(g_turnAngleDegrees) * kDegreesToRadians);
     g_motionAccentDurationMs = std::clamp(Wh_GetIntSetting(L"Motion.motion_accent_duration_ms"), 80, 1000);
     g_motionAccentSize = static_cast<float>(std::clamp(Wh_GetIntSetting(L"Motion.motion_accent_size"), 4, 40));
     g_maxInterpolationSteps = std::clamp(Wh_GetIntSetting(L"Motion.max_interpolation_steps"), 1, 6);
@@ -1421,12 +1522,14 @@ void LoadSettings() {
     ParseAppRules();
     g_cachedForegroundWindow = nullptr;
     g_cachedAppRule = 0;
-    g_renderCache.ReserveForTailLength(g_tailLength);
     g_autoColorInitialized = false;
     g_lastAutoColorCursor = nullptr;
     g_lastAutoColorUpdate = 0;
-    if (g_trailColorMode == 0) g_currentCoreRGB = g_manualColorRGB;
-    g_currentOuterRGB = ResolveOutlineColor(g_currentCoreRGB);
+    if (g_trailColorMode == 0) {
+        SetTrailCoreColor(g_manualColorRGB, RgbLuminance(g_manualColorRGB));
+    } else {
+        SetTrailCoreColor(g_currentCoreRGB, g_currentCoreLuminance);
+    }
     ApplyOverlayCaptureAffinity();
 }
 
@@ -1587,9 +1690,7 @@ static void UpdateMotionCueTracking(const POINT& point, LONGLONG nowQpc) {
                 g_lastMotionDirectionX * directionX + g_lastMotionDirectionY * directionY,
                 -1.0f,
                 1.0f);
-            const float angleThreshold = cosf(
-                static_cast<float>(g_turnAngleDegrees) * 3.14159265358979323846f / 180.0f);
-            if (dot <= angleThreshold) {
+            if (dot <= g_turnAccentCosThreshold) {
                 AddMotionAccent(
                     point,
                     directionX,
@@ -1848,8 +1949,7 @@ static void RefreshForegroundInputState() {
 
 static void ResetAutoColorSamplingCache();
 
-static bool UpdateCursorMonitorDpi(const POINT& cursorPoint) {
-    const HMONITOR monitor = MonitorFromPoint(cursorPoint, MONITOR_DEFAULTTONEAREST);
+static bool UpdateCursorMonitorDpi(HMONITOR monitor) {
     if (!monitor || monitor == g_cursorMonitor) return false;
 
     UINT dpiX = 96;
@@ -1880,12 +1980,11 @@ static bool IsDesktopShellWindow(HWND hwnd) {
         || _wcsicmp(className, L"WorkerW") == 0;
 }
 
-static bool CoversMonitor(HWND hwnd, HMONITOR cursorMonitor) {
+static bool CoversMonitor(HWND hwnd, HMONITOR cursorMonitor, HMONITOR windowMonitor) {
     const LONG_PTR style = GetWindowLongPtrW(hwnd, GWL_STYLE);
     if ((style & WS_CAPTION) != 0) return false;
     RECT windowRect = {};
     if (!GetWindowRect(hwnd, &windowRect)) return false;
-    const HMONITOR windowMonitor = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
     if (!cursorMonitor || windowMonitor != cursorMonitor) return false;
     MONITORINFO monitorInfo = {sizeof(monitorInfo)};
     if (!GetMonitorInfoW(windowMonitor, &monitorInfo)) return false;
@@ -1901,14 +2000,15 @@ static bool CheckStrongFullscreenSignal() {
     return SUCCEEDED(SHQueryUserNotificationState(&state)) && state == QUNS_RUNNING_D3D_FULL_SCREEN;
 }
 
-static bool IsFullscreenCandidate(DWORD now, HWND hwnd, POINT cursorPoint) {
-    if (!hwnd || hwnd == GetDesktopWindow() || hwnd == GetShellWindow()
-        || IsDesktopShellWindow(hwnd) || IsIconic(hwnd) || !IsWindowVisible(hwnd)) {
-        return false;
-    }
+static bool IsFullscreenCandidate(
+    DWORD now,
+    HWND hwnd,
+    HMONITOR cursorMonitor,
+    HMONITOR windowMonitor) {
+    // The caller already rejected the desktop shell and null handles. Avoid
+    // repeating those user32 queries on every input sample.
+    if (IsIconic(hwnd) || !IsWindowVisible(hwnd)) return false;
 
-    const HMONITOR cursorMonitor = MonitorFromPoint(cursorPoint, MONITOR_DEFAULTTONEAREST);
-    const HMONITOR windowMonitor = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
     if (!cursorMonitor || windowMonitor != cursorMonitor) return false;
 
     if (hwnd != g_fullscreenForegroundWindow) {
@@ -1924,13 +2024,12 @@ static bool IsFullscreenCandidate(DWORD now, HWND hwnd, POINT cursorPoint) {
     if (now - g_lastFullscreenStrongCheck >= kFullscreenStrongCheckIntervalMs) {
         g_lastFullscreenStrongCheck = now;
         g_fullscreenStrongSignal = CheckStrongFullscreenSignal();
-        g_fullscreenCoversMonitor = CoversMonitor(hwnd, cursorMonitor);
+        g_fullscreenCoversMonitor = CoversMonitor(hwnd, cursorMonitor, windowMonitor);
     }
     return g_fullscreenStrongSignal || g_fullscreenCoversMonitor;
 }
 
-static bool UpdateFullscreenState(DWORD now, HWND foreground, POINT cursorPoint) {
-    const HMONITOR cursorMonitor = MonitorFromPoint(cursorPoint, MONITOR_DEFAULTTONEAREST);
+static bool UpdateFullscreenState(DWORD now, HWND foreground, HMONITOR cursorMonitor) {
     const HMONITOR foregroundMonitor = foreground
         ? MonitorFromWindow(foreground, MONITOR_DEFAULTTONEAREST)
         : nullptr;
@@ -1951,7 +2050,8 @@ static bool UpdateFullscreenState(DWORD now, HWND foreground, POINT cursorPoint)
         return false;
     }
 
-    const bool candidate = IsFullscreenCandidate(now, foreground, cursorPoint);
+    const bool candidate = IsFullscreenCandidate(
+        now, foreground, cursorMonitor, foregroundMonitor);
     if (candidate) {
         g_fullscreenFalseSince = 0;
         g_fullscreenSuppressed = true;
@@ -1983,30 +2083,63 @@ static int GrowBackbufferDimension(int required, int current) {
         : required;
 }
 
+// Growing swaps in a fresh DC and DIB, then rebinds the existing Direct2D
+// target instead of rebuilding every brush, layer, and device bitmap. The new
+// surface is built first, so the old one stays usable if anything fails.
+static bool SwapBackbufferSurface(int newWidth, int newHeight, HDC referenceDc) {
+    HDC newDc = CreateCompatibleDC(referenceDc);
+    if (!newDc) return false;
+    HBITMAP newBitmap = Create32BitDIB(newWidth, newHeight);
+    if (!newBitmap) {
+        DeleteDC(newDc);
+        return false;
+    }
+    const HGDIOBJ newOriginalBitmap = SelectObject(newDc, newBitmap);
+    if (!newOriginalBitmap || newOriginalBitmap == HGDI_ERROR) {
+        DeleteObject(newBitmap);
+        DeleteDC(newDc);
+        return false;
+    }
+
+    if (g_renderTarget) {
+        const RECT bindRect = {0, 0, newWidth, newHeight};
+        if (FAILED(g_renderTarget->BindDC(newDc, &bindRect))) {
+            // A failed rebind leaves the old binding in an unknown state, so
+            // rebuild the target on the next frame and keep the new surface.
+            ReleaseRenderResources();
+        } else {
+            g_dcBound = true;
+        }
+    }
+
+    HDC oldDc = g_backBufferDc;
+    HBITMAP oldBitmap = g_backBufferBitmap;
+    HGDIOBJ oldOriginalBitmap = g_originalBitmap;
+    g_backBufferDc = newDc;
+    g_backBufferBitmap = newBitmap;
+    g_originalBitmap = newOriginalBitmap;
+    if (oldDc) {
+        if (oldOriginalBitmap) SelectObject(oldDc, oldOriginalBitmap);
+        DeleteDC(oldDc);
+    }
+    if (oldBitmap) DeleteObject(oldBitmap);
+    return true;
+}
+
 bool EnsureBackbuffer(int width, int height, HDC referenceDc) {
     if (width <= 0 || height <= 0 || !referenceDc) return false;
     if (g_backBufferDc && g_backBufferBitmap && width <= g_cachedWidth && height <= g_cachedHeight) return true;
-    if (!g_backBufferDc) {
-        g_backBufferDc = CreateCompatibleDC(referenceDc);
-        if (!g_backBufferDc) return false;
-    }
     const int newWidth = GrowBackbufferDimension(width, g_cachedWidth);
     const int newHeight = GrowBackbufferDimension(height, g_cachedHeight);
-    ReleaseRenderResources();
-    HBITMAP bitmap = Create32BitDIB(newWidth, newHeight);
-    if (!bitmap) return false;
-    const HGDIOBJ oldBitmap = SelectObject(g_backBufferDc, bitmap);
-    if (!g_originalBitmap) g_originalBitmap = oldBitmap;
-    else if (oldBitmap && oldBitmap != g_originalBitmap) DeleteObject(oldBitmap);
-    g_backBufferBitmap = bitmap;
+    if (!SwapBackbufferSurface(newWidth, newHeight, referenceDc)) return false;
     g_cachedWidth = newWidth;
     g_cachedHeight = newHeight;
     g_backbufferIdleSince = 0;
     return true;
 }
 
-static void MaybeReleaseIdleBackbuffer(DWORD now) {
-    if (g_isSmearing || g_historyCount > 0 || HasActiveRipples(QpcNow()) || OrnamentActive()) {
+static void MaybeReleaseIdleBackbuffer(DWORD now, LONGLONG nowQpc) {
+    if (g_isSmearing || g_historyCount > 0 || HasActiveRipples(nowQpc) || OrnamentActive()) {
         g_backbufferIdleSince = 0;
         return;
     }
@@ -2037,6 +2170,9 @@ bool EnsureD2DResources() {
     if (FAILED(hr)) { ReleaseRenderResources(); return false; }
     hr = g_renderTarget->CreateSolidColorBrush(ToColorF(g_glowRGB, 1.0f), &g_glowBrush);
     if (FAILED(hr)) { ReleaseRenderResources(); return false; }
+    g_outerBrushColorCache = g_currentOuterRGB;
+    g_coreBrushColorCache = g_currentCoreRGB;
+    g_glowBrushColorCache = g_glowRGB;
     hr = g_renderTarget->CreateLayer(nullptr, &g_trailOpacityLayer);
     if (FAILED(hr) || !g_trailOpacityLayer) { ReleaseRenderResources(); return false; }
     hr = g_renderTarget->CreateLayer(nullptr, &g_glowOpacityLayer);
@@ -2082,40 +2218,57 @@ bool EnsureGradientBrush() {
 }
 
 void SmoothTrail(int iterations, int renderLength) {
-    auto& current = g_renderCache.smoothed;
-    auto& next = g_renderCache.subdivision;
-    current.clear();
-    next.clear();
+    D2D1_POINT_2F* current = g_renderCache.pointsA;
+    D2D1_POINT_2F* next = g_renderCache.pointsB;
     const int pointCount = std::min(g_historyCount, std::max(renderLength, 2));
+    int currentCount = 0;
+    const float offsetX = static_cast<float>(g_tailOffsetX) * g_currentDpiScale;
+    const float offsetY = static_cast<float>(g_tailOffsetY) * g_currentDpiScale;
     for (int i = 0; i < pointCount; ++i) {
         const POINT& point = HistoryAt(i);
-        current.push_back(D2D1::Point2F(
-            static_cast<float>(point.x) + static_cast<float>(g_tailOffsetX) * g_currentDpiScale,
-            static_cast<float>(point.y) + static_cast<float>(g_tailOffsetY) * g_currentDpiScale));
+        current[currentCount++] = D2D1::Point2F(
+            static_cast<float>(point.x) + offsetX,
+            static_cast<float>(point.y) + offsetY);
     }
-    for (int iteration = 0; iteration < iterations && current.size() >= 3; ++iteration) {
-        next.clear();
-        next.reserve(current.size() * 2);
-        next.push_back(current.front());
-        for (size_t i = 0; i + 1 < current.size(); ++i) {
-            const auto& a = current[i];
-            const auto& b = current[i + 1];
-            next.push_back(D2D1::Point2F(0.75f * a.x + 0.25f * b.x, 0.75f * a.y + 0.25f * b.y));
-            next.push_back(D2D1::Point2F(0.25f * a.x + 0.75f * b.x, 0.25f * a.y + 0.75f * b.y));
+    const int iterationLimit = std::clamp(
+        iterations, 0, kMaxSmoothIterations);
+    for (int iteration = 0; iteration < iterationLimit && currentCount >= 3;
+         ++iteration) {
+        if (currentCount > kMaxTrailRenderPoints / 2) break;
+        int nextCount = 0;
+        next[nextCount++] = current[0];
+        for (int i = 0; i + 1 < currentCount; ++i) {
+            const D2D1_POINT_2F& a = current[i];
+            const D2D1_POINT_2F& b = current[i + 1];
+            next[nextCount++] = D2D1::Point2F(
+                0.75f * a.x + 0.25f * b.x,
+                0.75f * a.y + 0.25f * b.y);
+            next[nextCount++] = D2D1::Point2F(
+                0.25f * a.x + 0.75f * b.x,
+                0.25f * a.y + 0.75f * b.y);
         }
-        next.push_back(current.back());
-        current.swap(next);
+        next[nextCount++] = current[currentCount - 1];
+        currentCount = nextCount;
+        D2D1_POINT_2F* swap = current;
+        current = next;
+        next = swap;
     }
+    g_renderCache.activePoints = current;
+    g_renderCache.pointCount = currentCount;
+    ++g_renderCache.generation;
     g_renderCache.PrepareTaper();
 }
 
 RECT CalculateTrailBounds(float maxHalfWidth) {
-    if (g_renderCache.smoothed.empty()) return {0, 0, 0, 0};
-    float minX = g_renderCache.smoothed.front().x;
-    float minY = g_renderCache.smoothed.front().y;
+    const int pointCount = g_renderCache.pointCount;
+    if (pointCount <= 0) return {0, 0, 0, 0};
+    const D2D1_POINT_2F* points = g_renderCache.activePoints;
+    float minX = points[0].x;
+    float minY = points[0].y;
     float maxX = minX;
     float maxY = minY;
-    for (const auto& point : g_renderCache.smoothed) {
+    for (int i = 1; i < pointCount; ++i) {
+        const D2D1_POINT_2F& point = points[i];
         minX = std::min(minX, point.x);
         minY = std::min(minY, point.y);
         maxX = std::max(maxX, point.x);
@@ -2134,14 +2287,246 @@ RECT CalculateTrailBounds(float maxHalfWidth) {
 }
 
 static void DrawTrailStroke(ID2D1RenderTarget* target, ID2D1Brush* brush, float halfWidth, bool drawHead) {
-    const auto& points = g_renderCache.smoothed;
-    const auto& taper = g_renderCache.taper;
-    if (points.size() < 2 || taper.size() < points.size() || !brush) return;
-    for (size_t i = 0; i + 1 < points.size(); ++i) {
+    const int pointCount = g_renderCache.pointCount;
+    const D2D1_POINT_2F* points = g_renderCache.activePoints;
+    const float* taper = g_renderCache.taper;
+    if (pointCount < 2 || !brush) return;
+    for (int i = 0; i + 1 < pointCount; ++i) {
         const float width = std::max(0.1f, halfWidth * taper[i] * 2.0f);
         target->DrawLine(points[i], points[i + 1], brush, width, g_strokeStyle);
     }
-    if (drawHead) target->FillEllipse(D2D1::Ellipse(points.front(), halfWidth, halfWidth), brush);
+    if (drawHead) target->FillEllipse(D2D1::Ellipse(points[0], halfWidth, halfWidth), brush);
+}
+
+// The ribbon submits one closed outline per layer: side one, a round tail cap,
+// then side two. The head stays a separate ellipse, which keeps the original
+// rounded head exactly. A single fill replaces a stroke per trail segment, and
+// the winding fill mode keeps self-crossing trails filled as one shape.
+// A reversing turn folds the outline instead of reaching the round tip of the
+// stroke join it replaced, so those interior centers get a disk of at most the
+// local half width after the fill.
+//
+// Center decimation, taper sampling, and normals depend only on the smoothed
+// trail, so they are computed once per generation and shared by all layers.
+// Only the half width scaling and the outline points vary per layer.
+struct TrailRibbonCache {
+    D2D1_POINT_2F centers[kTrailRibbonMaxCenterPoints] = {};
+    float normalX[kTrailRibbonMaxCenterPoints] = {};
+    float normalY[kTrailRibbonMaxCenterPoints] = {};
+    float taper[kTrailRibbonMaxCenterPoints] = {};
+    bool roundJoin[kTrailRibbonMaxCenterPoints] = {};
+    int centerCount = 0;
+    int generation = 0;
+    bool valid = false;
+};
+
+TrailRibbonCache g_ribbonCache;
+D2D1_POINT_2F g_ribbonOutline[kTrailRibbonMaxOutlinePoints] = {};
+
+static int EnsureTrailRibbon() {
+    if (g_ribbonCache.valid &&
+        g_ribbonCache.generation == g_renderCache.generation) {
+        return g_ribbonCache.centerCount;
+    }
+    g_ribbonCache.valid = true;
+    g_ribbonCache.generation = g_renderCache.generation;
+    g_ribbonCache.centerCount = 0;
+    const int total = g_renderCache.pointCount;
+    if (total < 2) return 0;
+
+    const D2D1_POINT_2F* points = g_renderCache.activePoints;
+    const float* taper = g_renderCache.taper;
+    const int last = total - 1;
+    const float minSpacingSq =
+        kTrailRibbonMinSpacingPx * kTrailRibbonMinSpacingPx;
+    const auto taperAt = [taper, last](int index) {
+        if (index <= 0) return taper[0];
+        if (index >= last) return taper[last - 1];
+        return (taper[index - 1] + taper[index]) * 0.5f;
+    };
+    const auto store = [](int index, D2D1_POINT_2F point, float width) {
+        g_ribbonCache.centers[index] = point;
+        g_ribbonCache.taper[index] = width;
+    };
+
+    int count = 0;
+    store(count++, points[0], taper[0]);
+    int step = (last + kTrailRibbonMaxCenterPoints - 2) /
+               (kTrailRibbonMaxCenterPoints - 1);
+    if (step < 1) step = 1;
+    for (int index = step;
+         index < last && count < kTrailRibbonMaxCenterPoints - 1;
+         index += step) {
+        const D2D1_POINT_2F& previous = g_ribbonCache.centers[count - 1];
+        const float dx = points[index].x - previous.x;
+        const float dy = points[index].y - previous.y;
+        if (dx * dx + dy * dy < minSpacingSq) continue;
+        store(count++, points[index], taperAt(index));
+    }
+
+    // The tail must stay exact so the visible taper ends at the last sample.
+    // A near-duplicate tail replaces the previous center instead of adding a
+    // zero-length segment whose direction would be undefined.
+    const D2D1_POINT_2F& previous = g_ribbonCache.centers[count - 1];
+    const float tailDx = points[last].x - previous.x;
+    const float tailDy = points[last].y - previous.y;
+    if (count == 1 || tailDx * tailDx + tailDy * tailDy >= minSpacingSq) {
+        store(count++, points[last], taperAt(last));
+    } else {
+        store(count - 1, points[last], taperAt(last));
+    }
+
+    float lastDirX = 1.0f;
+    float lastDirY = 0.0f;
+    bool directionKnown = false;
+    for (int i = 0; i < count; ++i) {
+        float previousX = 0.0f;
+        float previousY = 0.0f;
+        float nextX = 0.0f;
+        float nextY = 0.0f;
+        if (i > 0) {
+            previousX = g_ribbonCache.centers[i].x - g_ribbonCache.centers[i - 1].x;
+            previousY = g_ribbonCache.centers[i].y - g_ribbonCache.centers[i - 1].y;
+        }
+        if (i + 1 < count) {
+            nextX = g_ribbonCache.centers[i + 1].x - g_ribbonCache.centers[i].x;
+            nextY = g_ribbonCache.centers[i + 1].y - g_ribbonCache.centers[i].y;
+        }
+        const float dirX = previousX + nextX;
+        const float dirY = previousY + nextY;
+        const float lengthSq = dirX * dirX + dirY * dirY;
+        if (lengthSq > 1.0e-8f) {
+            const float inverseLength = 1.0f / sqrtf(lengthSq);
+            lastDirX = dirX * inverseLength;
+            lastDirY = dirY * inverseLength;
+            directionKnown = true;
+        } else if (!directionKnown) {
+            // A stationary prefix repeats one point. Look ahead once for the
+            // first real segment so the whole prefix shares its normal.
+            for (int next = i + 1; next < count; ++next) {
+                const float forwardX =
+                    g_ribbonCache.centers[next].x - g_ribbonCache.centers[i].x;
+                const float forwardY =
+                    g_ribbonCache.centers[next].y - g_ribbonCache.centers[i].y;
+                const float forwardLengthSq = forwardX * forwardX + forwardY * forwardY;
+                if (forwardLengthSq <= 1.0e-8f) continue;
+                const float inverseLength = 1.0f / sqrtf(forwardLengthSq);
+                lastDirX = forwardX * inverseLength;
+                lastDirY = forwardY * inverseLength;
+                directionKnown = true;
+                break;
+            }
+        }
+        // The averaged unit direction keeps every offset at or below the half
+        // width, so the trail bounds never need to grow for a miter spike.
+        g_ribbonCache.normalX[i] = -lastDirY;
+        g_ribbonCache.normalY[i] = lastDirX;
+        // Zero-length sides only occur at the endpoints, which the head ellipse
+        // and the tail cap already round, so this marks interior reversals only.
+        g_ribbonCache.roundJoin[i] =
+            previousX * previousX + previousY * previousY > 1.0e-8f &&
+            nextX * nextX + nextY * nextY > 1.0e-8f &&
+            previousX * nextX + previousY * nextY < 0.0f;
+    }
+
+    g_ribbonCache.centerCount = count;
+    return count;
+}
+
+static int BuildTrailRibbonOutline(float halfWidth) {
+    const int count = EnsureTrailRibbon();
+    if (count < 2) return 0;
+    const D2D1_POINT_2F* centers = g_ribbonCache.centers;
+    D2D1_POINT_2F* outline = g_ribbonOutline;
+    int outCount = 0;
+    for (int i = 0; i < count; ++i) {
+        const float scaled = halfWidth * g_ribbonCache.taper[i];
+        const float width =
+            scaled > kTrailRibbonMinHalfWidth ? scaled : kTrailRibbonMinHalfWidth;
+        outline[outCount++] = D2D1::Point2F(
+            centers[i].x + g_ribbonCache.normalX[i] * width,
+            centers[i].y + g_ribbonCache.normalY[i] * width);
+    }
+    const int tail = count - 1;
+    const float tailWidth = halfWidth * g_ribbonCache.taper[tail];
+    const float tailRadius =
+        tailWidth > kTrailRibbonMinHalfWidth ? tailWidth : kTrailRibbonMinHalfWidth;
+    const float normalX = g_ribbonCache.normalX[tail];
+    const float normalY = g_ribbonCache.normalY[tail];
+    // The stored normal is the left offset, so the travel direction is the
+    // normal rotated to the right. The cap bulges along that direction.
+    const float capX = normalY;
+    const float capY = -normalX;
+    for (int step = 0; step < kTrailRibbonCapSegments - 1; ++step) {
+        const float cosine = kTrailRibbonCapCos[step] * tailRadius;
+        const float sine = kTrailRibbonCapSin[step] * tailRadius;
+        outline[outCount++] = D2D1::Point2F(
+            centers[tail].x + normalX * cosine + capX * sine,
+            centers[tail].y + normalY * cosine + capY * sine);
+    }
+    for (int i = tail; i >= 0; --i) {
+        const float scaled = halfWidth * g_ribbonCache.taper[i];
+        const float width =
+            scaled > kTrailRibbonMinHalfWidth ? scaled : kTrailRibbonMinHalfWidth;
+        outline[outCount++] = D2D1::Point2F(
+            centers[i].x - g_ribbonCache.normalX[i] * width,
+            centers[i].y - g_ribbonCache.normalY[i] * width);
+    }
+    return outCount;
+}
+
+static bool FillTrailRibbon(
+    ID2D1RenderTarget* target,
+    ID2D1Brush* brush,
+    float halfWidth) {
+    if (!target || !brush) return false;
+    const int outlineCount = BuildTrailRibbonOutline(halfWidth);
+    if (outlineCount < 3) return false;
+    ID2D1PathGeometry* geometry = nullptr;
+    if (FAILED(g_d2dFactory->CreatePathGeometry(&geometry)) || !geometry) {
+        return false;
+    }
+    ID2D1GeometrySink* sink = nullptr;
+    if (FAILED(geometry->Open(&sink)) || !sink) {
+        geometry->Release();
+        return false;
+    }
+    sink->SetFillMode(D2D1_FILL_MODE_WINDING);
+    sink->BeginFigure(g_ribbonOutline[0], D2D1_FIGURE_BEGIN_FILLED);
+    for (int i = 1; i < outlineCount; ++i) sink->AddLine(g_ribbonOutline[i]);
+    sink->EndFigure(D2D1_FIGURE_END_CLOSED);
+    const HRESULT hr = sink->Close();
+    sink->Release();
+    if (FAILED(hr)) {
+        geometry->Release();
+        return false;
+    }
+    target->FillGeometry(geometry, brush);
+    geometry->Release();
+    const int centerCount = g_ribbonCache.centerCount;
+    for (int i = 1; i + 1 < centerCount; ++i) {
+        if (!g_ribbonCache.roundJoin[i]) continue;
+        float radius = halfWidth * g_ribbonCache.taper[i];
+        if (radius < kTrailRibbonMinHalfWidth) radius = kTrailRibbonMinHalfWidth;
+        if (radius > halfWidth) radius = halfWidth;
+        if (radius <= 0.0f) continue;
+        target->FillEllipse(
+            D2D1::Ellipse(g_ribbonCache.centers[i], radius, radius), brush);
+    }
+    return true;
+}
+
+static void DrawTrailLayer(
+    ID2D1RenderTarget* target,
+    ID2D1Brush* brush,
+    float halfWidth) {
+    if (FillTrailRibbon(target, brush, halfWidth)) {
+        const D2D1_POINT_2F& head = g_ribbonCache.centers[0];
+        target->FillEllipse(
+            D2D1::Ellipse(head, halfWidth, halfWidth), brush);
+        return;
+    }
+    DrawTrailStroke(target, brush, halfWidth, true);
 }
 
 static int GetEffectiveTailLength(float speedNorm) {
@@ -2207,7 +2592,11 @@ void UpdateTrailState(const POINT& previousPoint, const POINT& point, float velo
     }
 }
 
-struct ColorCandidate { uint32_t rgb; int count; };
+struct ColorCandidate {
+    uint32_t rgb;
+    int count;
+    float luminance;
+};
 
 static HCURSOR g_cachedCursorCandidateHandle = nullptr;
 static std::vector<ColorCandidate> g_cachedCursorColorCandidates;
@@ -2243,7 +2632,9 @@ static bool ExtractCursorColorCandidates(HCURSOR cursorHandle, std::vector<Color
                 for (uint32_t pixel : pixels) if (((pixel >> 24) & 0xFF) >= kCursorAlphaThreshold) ++histogram[pixel & 0x00FFFFFF];
                 if (!histogram.empty()) {
                     out.reserve(histogram.size());
-                    for (const auto& entry : histogram) out.push_back({entry.first, entry.second});
+                    for (const auto& entry : histogram) {
+                        out.push_back({entry.first, entry.second, 0.0f});
+                    }
                     std::sort(out.begin(), out.end(), [](const ColorCandidate& a, const ColorCandidate& b) { return a.count > b.count; });
                     cleanup();
                     return true;
@@ -2276,7 +2667,9 @@ static bool ExtractCursorColorCandidates(HCURSOR cursorHandle, std::vector<Color
                                 }
                             }
                             out.reserve(maskHistogram.size());
-                            for (const auto& entry : maskHistogram) out.push_back({entry.first, entry.second});
+                            for (const auto& entry : maskHistogram) {
+                                out.push_back({entry.first, entry.second, 0.0f});
+                            }
                             std::sort(out.begin(), out.end(), [](const ColorCandidate& a, const ColorCandidate& b) { return a.count > b.count; });
                             cleanup();
                             return !out.empty();
@@ -2388,15 +2781,21 @@ static float SampleBackgroundLuminance(DWORD now, POINT center) {
     return luminance;
 }
 
-static uint32_t ResolveOutlineColor(uint32_t core) {
-    if (g_outlineColorMode == 1) return g_manualOutlineRGB;
-    return RgbLuminance(core) > 0.5f ? kFallbackOuterColor : kFallbackCoreColor;
+static void SetTrailCoreColor(uint32_t core, float luminance) {
+    g_currentCoreRGB = core;
+    g_currentCoreLuminance = luminance;
+    if (g_outlineColorMode == 1) {
+        g_currentOuterRGB = g_manualOutlineRGB;
+        return;
+    }
+    g_currentOuterRGB = luminance > 0.5f ? kFallbackOuterColor : kFallbackCoreColor;
 }
 
-static void UpdateTrailColorIfNeeded(DWORD now) {
+static void UpdateTrailColorIfNeeded(DWORD now, const POINT& point) {
     if (g_trailColorMode == 0) {
-        g_currentCoreRGB = g_manualColorRGB;
-        g_currentOuterRGB = ResolveOutlineColor(g_currentCoreRGB);
+        if (g_currentCoreRGB != g_manualColorRGB) {
+            SetTrailCoreColor(g_manualColorRGB, RgbLuminance(g_manualColorRGB));
+        }
         return;
     }
 
@@ -2408,8 +2807,7 @@ static void UpdateTrailColorIfNeeded(DWORD now) {
         g_cachedCursorCandidateHandle = nullptr;
         g_cachedCursorColorCandidates.clear();
         g_cachedCursorCandidatesReady = false;
-        g_currentCoreRGB = kFallbackCoreColor;
-        g_currentOuterRGB = ResolveOutlineColor(g_currentCoreRGB);
+        SetTrailCoreColor(kFallbackCoreColor, kFallbackCoreLuminance);
         return;
     }
 
@@ -2421,9 +2819,6 @@ static void UpdateTrailColorIfNeeded(DWORD now) {
         || !g_cachedCursorCandidatesReady
         || g_cachedCursorCandidateHandle != cursorHandle;
 
-    POINT point = {};
-    if (!GetCursorPos(&point)) return;
-
     // SampleBackgroundLuminance already throttles screen reads by both time and
     // cursor travel. Use its cached value to adapt contrast without re-reading
     // the cursor bitmap when only the content beneath the pointer changed.
@@ -2434,14 +2829,19 @@ static void UpdateTrailColorIfNeeded(DWORD now) {
         g_cachedCursorCandidatesReady = true;
         g_cachedCursorCandidateHandle = cursorHandle;
         ExtractCursorColorCandidates(cursorHandle, g_cachedCursorColorCandidates);
+        // A cursor bitmap is resampled only when its handle or the configured
+        // interval changes. Fold luminance into that same step so selection
+        // never pays for it per frame.
+        for (ColorCandidate& candidate : g_cachedCursorColorCandidates) {
+            candidate.luminance = RgbLuminance(candidate.rgb);
+        }
         g_lastAutoColorCursor = cursorHandle;
         g_lastAutoColorUpdate = now;
         g_autoColorInitialized = true;
     }
 
     if (g_cachedCursorColorCandidates.empty()) {
-        g_currentCoreRGB = kFallbackCoreColor;
-        g_currentOuterRGB = ResolveOutlineColor(g_currentCoreRGB);
+        SetTrailCoreColor(kFallbackCoreColor, kFallbackCoreLuminance);
         g_autoColorPickLuminanceValid = false;
         return;
     }
@@ -2453,7 +2853,7 @@ static void UpdateTrailColorIfNeeded(DWORD now) {
     // Keep the existing color when it still has acceptable contrast. Using a
     // lower hold threshold than the selection threshold prevents color flapping.
     if (!refreshCandidates
-        && ContrastRatio(RgbLuminance(g_currentCoreRGB), background)
+        && ContrastRatio(g_currentCoreLuminance, background)
             >= kAutoColorHysteresisContrast) {
         g_lastAutoColorPickLuminance = background;
         g_autoColorPickLuminanceValid = true;
@@ -2463,17 +2863,15 @@ static void UpdateTrailColorIfNeeded(DWORD now) {
     // In Auto mode the overlay is excluded from screen capture, so the sample
     // can't pick up the trail's own pixels and the window need not be hidden.
     for (const ColorCandidate& candidate : g_cachedCursorColorCandidates) {
-        if (ContrastRatio(RgbLuminance(candidate.rgb), background) >= kMinColorContrast) {
-            g_currentCoreRGB = candidate.rgb;
-            g_currentOuterRGB = ResolveOutlineColor(candidate.rgb);
+        if (ContrastRatio(candidate.luminance, background) >= kMinColorContrast) {
+            SetTrailCoreColor(candidate.rgb, candidate.luminance);
             g_lastAutoColorPickLuminance = background;
             g_autoColorPickLuminanceValid = true;
             return;
         }
     }
 
-    g_currentCoreRGB = kFallbackCoreColor;
-    g_currentOuterRGB = ResolveOutlineColor(g_currentCoreRGB);
+    SetTrailCoreColor(kFallbackCoreColor, kFallbackCoreLuminance);
     g_lastAutoColorPickLuminance = background;
     g_autoColorPickLuminanceValid = true;
 }
@@ -2485,11 +2883,15 @@ static D2D1_POINT_2F OrnamentAnchorPoint() {
 }
 
 static void ReleaseOrnamentBitmaps() {
+    g_ornamentBitmapsSettled = false;
     for (OrnamentImage& image : g_ornamentImages) {
         if (image.bitmap) {
             image.bitmap->Release();
             image.bitmap = nullptr;
         }
+        // A new target can upload again, so clear the upload latch. A decode
+        // failure stays latched until the assets are rebuilt from settings.
+        image.uploadFailed = false;
     }
 }
 
@@ -2518,19 +2920,23 @@ static int FindOrnamentImageIndexById(const std::wstring& id) {
     return -1;
 }
 
-static bool DecodeOrnamentImage(
+static void ReleaseOrnamentPixels(std::vector<uint8_t>& pixels) {
+    std::vector<uint8_t>().swap(pixels);
+}
+
+// The build step reads only image metadata. Keeping the decoded pixels for
+// every image would hold up to 128 MB of CPU memory while the pendant sits
+// idle, so the pixels are decoded again on demand and freed after the upload.
+static bool ProbeOrnamentImage(
     const OrnamentImageSpec& spec,
-    OrnamentImage& output,
-    uint64_t& decodedBytes) {
+    OrnamentImage& output) {
     output.id = spec.id;
     output.path = spec.path;
     if (!g_wicFactory) return false;
 
     IWICBitmapDecoder* decoder = nullptr;
     IWICBitmapFrameDecode* frame = nullptr;
-    IWICFormatConverter* converter = nullptr;
     const auto releaseInterfaces = [&] {
-        if (converter) { converter->Release(); converter = nullptr; }
         if (frame) { frame->Release(); frame = nullptr; }
         if (decoder) { decoder->Release(); decoder = nullptr; }
     };
@@ -2565,9 +2971,61 @@ static bool DecodeOrnamentImage(
         return false;
     }
     const uint64_t imageBytes = static_cast<uint64_t>(width) * height * 4ull;
-    if (imageBytes > kOrnamentMaxDecodedBytes
-        || decodedBytes + imageBytes > kOrnamentMaxDecodedBytes) {
+    if (imageBytes > kOrnamentMaxDecodedBytes) {
         Wh_Log(L"Ornament image memory limit reached: %s", spec.path.c_str());
+        releaseInterfaces();
+        return false;
+    }
+    output.width = width;
+    output.height = height;
+    releaseInterfaces();
+    return true;
+}
+
+static bool DecodeOrnamentPixels(OrnamentImage& image) {
+    if (!g_wicFactory || image.path.empty()) return false;
+
+    IWICBitmapDecoder* decoder = nullptr;
+    IWICBitmapFrameDecode* frame = nullptr;
+    IWICFormatConverter* converter = nullptr;
+    const auto releaseInterfaces = [&] {
+        if (converter) { converter->Release(); converter = nullptr; }
+        if (frame) { frame->Release(); frame = nullptr; }
+        if (decoder) { decoder->Release(); decoder = nullptr; }
+    };
+
+    HRESULT hr = g_wicFactory->CreateDecoderFromFilename(
+        image.path.c_str(),
+        nullptr,
+        GENERIC_READ,
+        WICDecodeMetadataCacheOnLoad,
+        &decoder);
+    if (FAILED(hr) || !decoder) {
+        Wh_Log(L"Failed to open ornament image: %s", image.path.c_str());
+        releaseInterfaces();
+        return false;
+    }
+    hr = decoder->GetFrame(0, &frame);
+    if (FAILED(hr) || !frame) {
+        Wh_Log(L"Failed to read first frame of ornament image: %s", image.path.c_str());
+        releaseInterfaces();
+        return false;
+    }
+    UINT width = 0;
+    UINT height = 0;
+    hr = frame->GetSize(&width, &height);
+    if (FAILED(hr)
+        || width == 0
+        || height == 0
+        || width > static_cast<UINT>(kOrnamentMaxImageDimension)
+        || height > static_cast<UINT>(kOrnamentMaxImageDimension)) {
+        Wh_Log(L"Unsupported ornament image dimensions: %s", image.path.c_str());
+        releaseInterfaces();
+        return false;
+    }
+    const uint64_t imageBytes = static_cast<uint64_t>(width) * height * 4ull;
+    if (imageBytes > kOrnamentMaxDecodedBytes) {
+        Wh_Log(L"Ornament image memory limit reached: %s", image.path.c_str());
         releaseInterfaces();
         return false;
     }
@@ -2584,23 +3042,22 @@ static bool DecodeOrnamentImage(
         0.0,
         WICBitmapPaletteTypeCustom);
     if (FAILED(hr)) {
-        Wh_Log(L"Failed to convert ornament image pixels: %s", spec.path.c_str());
+        Wh_Log(L"Failed to convert ornament image pixels: %s", image.path.c_str());
         releaseInterfaces();
         return false;
     }
     const UINT stride = width * 4u;
     const UINT bufferSize = stride * height;
-    output.pixels.resize(bufferSize);
-    hr = converter->CopyPixels(nullptr, stride, bufferSize, output.pixels.data());
+    image.pixels.resize(bufferSize);
+    hr = converter->CopyPixels(nullptr, stride, bufferSize, image.pixels.data());
     if (FAILED(hr)) {
-        output.pixels.clear();
-        Wh_Log(L"Failed to copy ornament image pixels: %s", spec.path.c_str());
+        ReleaseOrnamentPixels(image.pixels);
+        Wh_Log(L"Failed to copy ornament image pixels: %s", image.path.c_str());
         releaseInterfaces();
         return false;
     }
-    output.width = width;
-    output.height = height;
-    decodedBytes += imageBytes;
+    image.width = width;
+    image.height = height;
     releaseInterfaces();
     return true;
 }
@@ -2618,10 +3075,9 @@ static void BuildOrnamentImages() {
             Wh_Log(L"Failed to create WIC imaging factory for ornaments");
         }
     }
-    uint64_t decodedBytes = 0;
     for (const OrnamentImageSpec& spec : g_ornamentImageSpecs) {
         OrnamentImage image;
-        DecodeOrnamentImage(spec, image, decodedBytes);
+        if (!ProbeOrnamentImage(spec, image)) image.decodeFailed = true;
         g_ornamentImages.push_back(std::move(image));
     }
 }
@@ -2681,8 +3137,23 @@ static void EnsureOrnamentAssetsLoaded() {
 
 static void EnsureOrnamentBitmaps() {
     if (!g_renderTarget || !g_ornamentAssetsReady) return;
+    if (g_ornamentBitmapsSettled) return;
     for (OrnamentImage& image : g_ornamentImages) {
-        if (image.bitmap || image.width == 0 || image.height == 0 || image.pixels.empty()) continue;
+        if (image.bitmap || image.decodeFailed || image.uploadFailed) continue;
+        // One image at a time, so the peak CPU memory never holds more than a
+        // single decoded image. Metadata is probed once at build time, so an
+        // unreadable file is latched and never reopened on later frames.
+        if (image.width == 0 || image.height == 0) {
+            image.decodeFailed = true;
+            continue;
+        }
+        // Pixels are released after every upload, so an image without a device
+        // bitmap is always decoded again here before it can be drawn.
+        if (!DecodeOrnamentPixels(image)) {
+            image.decodeFailed = true;
+            ReleaseOrnamentPixels(image.pixels);
+            continue;
+        }
         const D2D1_BITMAP_PROPERTIES properties = D2D1::BitmapProperties(
             D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED),
             96.0f,
@@ -2697,9 +3168,18 @@ static void EnsureOrnamentBitmaps() {
             &image.bitmap);
         if (FAILED(hr)) {
             image.bitmap = nullptr;
+            image.uploadFailed = true;
+            ReleaseOrnamentPixels(image.pixels);
             Wh_Log(L"Failed to upload ornament image: %s", image.path.c_str());
+            continue;
         }
+        // The upload copied the pixels into the device bitmap. Holding the CPU
+        // copy would keep the decoded size per image resident for no benefit.
+        ReleaseOrnamentPixels(image.pixels);
     }
+    // Every branch above ends with a device bitmap or a latched failure, so
+    // one pass settles the list. ReleaseOrnamentBitmaps clears the latch.
+    g_ornamentBitmapsSettled = true;
 }
 
 static void UpdateOrnamentNodeGeometry(OrnamentNode& node) {
@@ -2794,11 +3274,11 @@ static void ConstrainOrnamentDistance(
 
 static void StepOrnamentPhysics(
     float dtSeconds,
+    float retain,
     float anchorStepX,
     float anchorStepY) {
     const int count = g_ornamentRopePointCount;
     if (count < 2) return;
-    const float retain = powf(std::clamp(1.0f - g_ornamentDamping / 100.0f, 0.5f, 1.0f), dtSeconds * kOrnamentSimulationHz);
     const float gravityStep = g_ornamentGravity * g_currentDpiScale * dtSeconds * dtSeconds;
     for (int i = 1; i < count; ++i) {
         D2D1_POINT_2F& point = g_ornamentRopePoints[i];
@@ -2889,7 +3369,14 @@ static void UpdateOrnamentPhysics(float velocity, LONGLONG nowQpc) {
         const float step = elapsed / static_cast<float>(steps);
         const float stepX = anchorStepX / static_cast<float>(steps);
         const float stepY = anchorStepY / static_cast<float>(steps);
-        for (int i = 0; i < steps; ++i) StepOrnamentPhysics(step, stepX, stepY);
+        // Damping is the same for every substep, so the exponential is
+        // evaluated once per frame instead of once per substep.
+        const float retain = powf(
+            std::clamp(1.0f - g_ornamentDamping / 100.0f, 0.5f, 1.0f),
+            step * kOrnamentSimulationHz);
+        for (int i = 0; i < steps; ++i) {
+            StepOrnamentPhysics(step, retain, stepX, stepY);
+        }
         g_ornamentLastAnchor = anchor;
     }
 
@@ -3157,7 +3644,9 @@ static void DrawOrnament(const RECT& renderBounds) {
 }
 
 bool RenderOverlay(HWND hwnd, LONGLONG nowQpc) {
-    UpdateOrnamentDrawStates();
+    // Node transforms feed only the ornament draw path, so skip them entirely
+    // while the ornament is disabled.
+    if (g_ornamentEnabled) UpdateOrnamentDrawStates();
     const bool ornamentVisible = OrnamentVisible();
     bool drawTrail = g_historyCount >= 2;
     const float speed = g_speedScaling ? (g_isSmearing ? g_smoothedSpeedNorm : g_frozenSpeedNorm) : 1.0f;
@@ -3169,7 +3658,7 @@ bool RenderOverlay(HWND hwnd, LONGLONG nowQpc) {
 
     if (drawTrail) {
         SmoothTrail(g_smoothIterations, renderLength);
-        drawTrail = g_renderCache.smoothed.size() >= 2 && trailAlpha >= 0.02f;
+        drawTrail = g_renderCache.pointCount >= 2 && trailAlpha >= 0.02f;
     }
 
     const int activeRippleCount = UpdateRippleState(nowQpc);
@@ -3316,27 +3805,27 @@ bool RenderOverlay(HWND hwnd, LONGLONG nowQpc) {
                 D2D1::IdentityMatrix(),
                 std::clamp(g_glowAlpha, 0.0f, 1.0f));
             g_renderTarget->PushLayer(&glowLayerParameters, g_glowOpacityLayer);
-            g_glowBrush->SetColor(ToColorF(g_glowRGB, 1.0f));
-            DrawTrailStroke(
+            ApplySolidBrushColor(g_glowBrush, g_glowRGB, g_glowBrushColorCache);
+            DrawTrailLayer(
                 g_renderTarget,
                 g_glowBrush,
-                outerHalf * std::max(1.0f, g_glowWidthFactor),
-                true);
+                outerHalf * std::max(1.0f, g_glowWidthFactor));
             g_renderTarget->PopLayer();
         }
 
-        g_outerBrush->SetColor(ToColorF(g_currentOuterRGB, 1.0f));
-        g_coreBrush->SetColor(ToColorF(g_currentCoreRGB, 1.0f));
-        DrawTrailStroke(g_renderTarget, g_outerBrush, outerHalf, true);
+        ApplySolidBrushColor(g_outerBrush, g_currentOuterRGB, g_outerBrushColorCache);
+        ApplySolidBrushColor(g_coreBrush, g_currentCoreRGB, g_coreBrushColorCache);
+        DrawTrailLayer(g_renderTarget, g_outerBrush, outerHalf);
 
         ID2D1Brush* coreBrush = g_coreBrush;
         if (g_gradientEnabled && EnsureGradientBrush()) {
-            g_gradientBrush->SetStartPoint(g_renderCache.smoothed.front());
-            g_gradientBrush->SetEndPoint(g_renderCache.smoothed.back());
+            g_gradientBrush->SetStartPoint(g_renderCache.activePoints[0]);
+            g_gradientBrush->SetEndPoint(
+                g_renderCache.activePoints[g_renderCache.pointCount - 1]);
             g_gradientBrush->SetOpacity(1.0f);
             coreBrush = g_gradientBrush;
         }
-        DrawTrailStroke(g_renderTarget, coreBrush, coreHalf, true);
+        DrawTrailLayer(g_renderTarget, coreBrush, coreHalf);
         g_renderTarget->PopLayer();
     }
 
@@ -3592,7 +4081,8 @@ bool SmearFrame(HWND hwnd, DWORD now, bool renderFrame) {
     POINT point = {};
     if (!GetCursorPos(&point)) return false;
     const LONGLONG sampleQpc = QpcNow();
-    if (UpdateCursorMonitorDpi(point)) {
+    const HMONITOR cursorMonitor = MonitorFromPoint(point, MONITOR_DEFAULTTONEAREST);
+    if (UpdateCursorMonitorDpi(cursorMonitor)) {
         ResetTrailState();
         ResetMotionCueTracking();
         g_ornamentPhysicsInitialized = false;
@@ -3616,11 +4106,11 @@ bool SmearFrame(HWND hwnd, DWORD now, bool renderFrame) {
         SuppressOrnament(sampleQpc);
         parkSample();
         HideOverlay();
-        MaybeReleaseIdleBackbuffer(now);
+        MaybeReleaseIdleBackbuffer(now, sampleQpc);
         return false;
     }
 
-    const bool fullscreenActive = UpdateFullscreenState(now, foreground, point);
+    const bool fullscreenActive = UpdateFullscreenState(now, foreground, cursorMonitor);
     if (fullscreenActive && appRule == 0) {
         ResetTrailState();
         ResetMotionCueTracking();
@@ -3628,7 +4118,7 @@ bool SmearFrame(HWND hwnd, DWORD now, bool renderFrame) {
         SuppressOrnament(sampleQpc);
         parkSample();
         HideOverlay();
-        MaybeReleaseIdleBackbuffer(now);
+        MaybeReleaseIdleBackbuffer(now, sampleQpc);
         return false;
     }
 
@@ -3652,8 +4142,8 @@ bool SmearFrame(HWND hwnd, DWORD now, bool renderFrame) {
     UpdateMotionCueTracking(point, sampleQpc);
     UpdateTrailState(previousPoint, point, velocity);
     UpdateOrnamentPhysics(velocity, sampleQpc);
-    MaybeReleaseIdleBackbuffer(now);
-    if (g_isSmearing || g_historyCount >= 2) UpdateTrailColorIfNeeded(now);
+    MaybeReleaseIdleBackbuffer(now, sampleQpc);
+    if (g_isSmearing || g_historyCount >= 2) UpdateTrailColorIfNeeded(now, point);
 
     const bool stateChanged = wasSmearing != g_isSmearing
         || (previousHistoryCount >= 2) != (g_historyCount >= 2);
@@ -3877,7 +4367,8 @@ DWORD WINAPI OverlayThreadProc(LPVOID) {
     HideOverlay();
     POINT initialCursorPosition = {};
     if (GetCursorPos(&initialCursorPosition)) {
-        UpdateCursorMonitorDpi(initialCursorPosition);
+        UpdateCursorMonitorDpi(
+            MonitorFromPoint(initialCursorPosition, MONITOR_DEFAULTTONEAREST));
         g_lastPos = initialCursorPosition;
     }
     g_lastSampleQpc = QpcNow();
@@ -3964,7 +4455,7 @@ DWORD WINAPI OverlayThreadProc(LPVOID) {
             }
             timerDeadline = g_nextSampleDeadline;
         } else if (g_backBufferDc && g_backBufferBitmap) {
-            MaybeReleaseIdleBackbuffer(GetTickCount());
+            MaybeReleaseIdleBackbuffer(GetTickCount(), currentQpc);
             if (g_backBufferDc && g_backBufferBitmap) {
                 const DWORD nowTicks = GetTickCount();
                 const DWORD elapsed = nowTicks - g_backbufferIdleSince;
@@ -4129,7 +4620,7 @@ DWORD WINAPI OverlayThreadProc(LPVOID) {
                     g_nextSampleDeadline = 0;
                 }
             } else if (trimTimerNeeded) {
-                MaybeReleaseIdleBackbuffer(GetTickCount());
+                MaybeReleaseIdleBackbuffer(GetTickCount(), QpcNow());
                 g_nextSampleDeadline = 0;
             }
             continue;
