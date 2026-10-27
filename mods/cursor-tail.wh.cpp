@@ -2302,6 +2302,9 @@ static void DrawTrailStroke(ID2D1RenderTarget* target, ID2D1Brush* brush, float 
 // then side two. The head stays a separate ellipse, which keeps the original
 // rounded head exactly. A single fill replaces a stroke per trail segment, and
 // the winding fill mode keeps self-crossing trails filled as one shape.
+// A reversing turn folds the outline instead of reaching the round tip of the
+// stroke join it replaced, so those interior centers get a disk of at most the
+// local half width after the fill.
 //
 // Center decimation, taper sampling, and normals depend only on the smoothed
 // trail, so they are computed once per generation and shared by all layers.
@@ -2311,6 +2314,7 @@ struct TrailRibbonCache {
     float normalX[kTrailRibbonMaxCenterPoints] = {};
     float normalY[kTrailRibbonMaxCenterPoints] = {};
     float taper[kTrailRibbonMaxCenterPoints] = {};
+    bool roundJoin[kTrailRibbonMaxCenterPoints] = {};
     int centerCount = 0;
     int generation = 0;
     bool valid = false;
@@ -2376,16 +2380,20 @@ static int EnsureTrailRibbon() {
     float lastDirY = 0.0f;
     bool directionKnown = false;
     for (int i = 0; i < count; ++i) {
-        float dirX = 0.0f;
-        float dirY = 0.0f;
+        float previousX = 0.0f;
+        float previousY = 0.0f;
+        float nextX = 0.0f;
+        float nextY = 0.0f;
         if (i > 0) {
-            dirX += g_ribbonCache.centers[i].x - g_ribbonCache.centers[i - 1].x;
-            dirY += g_ribbonCache.centers[i].y - g_ribbonCache.centers[i - 1].y;
+            previousX = g_ribbonCache.centers[i].x - g_ribbonCache.centers[i - 1].x;
+            previousY = g_ribbonCache.centers[i].y - g_ribbonCache.centers[i - 1].y;
         }
         if (i + 1 < count) {
-            dirX += g_ribbonCache.centers[i + 1].x - g_ribbonCache.centers[i].x;
-            dirY += g_ribbonCache.centers[i + 1].y - g_ribbonCache.centers[i].y;
+            nextX = g_ribbonCache.centers[i + 1].x - g_ribbonCache.centers[i].x;
+            nextY = g_ribbonCache.centers[i + 1].y - g_ribbonCache.centers[i].y;
         }
+        const float dirX = previousX + nextX;
+        const float dirY = previousY + nextY;
         const float lengthSq = dirX * dirX + dirY * dirY;
         if (lengthSq > 1.0e-8f) {
             const float inverseLength = 1.0f / sqrtf(lengthSq);
@@ -2413,6 +2421,12 @@ static int EnsureTrailRibbon() {
         // width, so the trail bounds never need to grow for a miter spike.
         g_ribbonCache.normalX[i] = -lastDirY;
         g_ribbonCache.normalY[i] = lastDirX;
+        // Zero-length sides only occur at the endpoints, which the head ellipse
+        // and the tail cap already round, so this marks interior reversals only.
+        g_ribbonCache.roundJoin[i] =
+            previousX * previousX + previousY * previousY > 1.0e-8f &&
+            nextX * nextX + nextY * nextY > 1.0e-8f &&
+            previousX * nextX + previousY * nextY < 0.0f;
     }
 
     g_ribbonCache.centerCount = count;
@@ -2483,11 +2497,23 @@ static bool FillTrailRibbon(
     sink->EndFigure(D2D1_FIGURE_END_CLOSED);
     const HRESULT hr = sink->Close();
     sink->Release();
-    if (SUCCEEDED(hr)) {
-        target->FillGeometry(geometry, brush);
+    if (FAILED(hr)) {
+        geometry->Release();
+        return false;
     }
+    target->FillGeometry(geometry, brush);
     geometry->Release();
-    return SUCCEEDED(hr);
+    const int centerCount = g_ribbonCache.centerCount;
+    for (int i = 1; i + 1 < centerCount; ++i) {
+        if (!g_ribbonCache.roundJoin[i]) continue;
+        float radius = halfWidth * g_ribbonCache.taper[i];
+        if (radius < kTrailRibbonMinHalfWidth) radius = kTrailRibbonMinHalfWidth;
+        if (radius > halfWidth) radius = halfWidth;
+        if (radius <= 0.0f) continue;
+        target->FillEllipse(
+            D2D1::Ellipse(g_ribbonCache.centers[i], radius, radius), brush);
+    }
+    return true;
 }
 
 static void DrawTrailLayer(
