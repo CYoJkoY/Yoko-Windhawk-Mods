@@ -477,6 +477,25 @@ constexpr int kTaperPowerSettingMin = 5;
 constexpr int kTaperPowerSettingMax = 30;
 constexpr int kTaperPowerCount = kTaperPowerSettingMax - kTaperPowerSettingMin + 1;
 constexpr int kTaperLutSteps = 256;
+// One filled ribbon replaces a stroke per trail segment. The center point
+// budget bounds tessellation work for long trails, and the spacing rejects
+// duplicate samples whose direction would be undefined.
+constexpr int kTrailRibbonMaxCenterPoints = 192;
+constexpr int kTrailRibbonCapSegments = 6;
+constexpr int kTrailRibbonMaxOutlinePoints =
+    kTrailRibbonMaxCenterPoints * 2 + kTrailRibbonCapSegments * 2;
+constexpr float kTrailRibbonMinSpacingPx = 0.35f;
+constexpr float kTrailRibbonMinHalfWidth = 0.05f;
+// Unit-circle samples for the intermediate tail cap vertices. The cap spans
+// half a circle in kTrailRibbonCapSegments equal steps; the two endpoints are
+// already present as the last left and right side vertices.
+constexpr float kTrailRibbonCapCos[kTrailRibbonCapSegments - 1] = {
+    0.86602540f, 0.5f, 0.0f, -0.5f, -0.86602540f};
+constexpr float kTrailRibbonCapSin[kTrailRibbonCapSegments - 1] = {
+    0.5f, 0.86602540f, 1.0f, 0.86602540f, 0.5f};
+static_assert(
+    kTrailRibbonCapSegments == 6,
+    "The cap sample tables encode a six-segment half circle");
 constexpr int kRenderPadding = 2;
 constexpr float kFadeCutoff = 0.05f;
 constexpr int kAutoResampleIntervalMaxMs = 10000;
@@ -943,6 +962,7 @@ struct TrailRenderCache {
     D2D1_POINT_2F pointsB[kMaxTrailRenderPoints] = {};
     D2D1_POINT_2F* activePoints = pointsA;
     int pointCount = 0;
+    int generation = 0;
     float taper[kMaxTrailRenderPoints] = {};
     int cachedTaperPointCount = -1;
     int cachedTaperPowerIndex = -1;
@@ -2154,6 +2174,7 @@ void SmoothTrail(int iterations, int renderLength) {
     }
     g_renderCache.activePoints = current;
     g_renderCache.pointCount = currentCount;
+    ++g_renderCache.generation;
     g_renderCache.PrepareTaper();
 }
 
@@ -2194,6 +2215,211 @@ static void DrawTrailStroke(ID2D1RenderTarget* target, ID2D1Brush* brush, float 
         target->DrawLine(points[i], points[i + 1], brush, width, g_strokeStyle);
     }
     if (drawHead) target->FillEllipse(D2D1::Ellipse(points[0], halfWidth, halfWidth), brush);
+}
+
+// The ribbon submits one closed outline per layer: side one, a round tail cap,
+// then side two. The head stays a separate ellipse, which keeps the original
+// rounded head exactly. A single fill replaces a stroke per trail segment, and
+// the winding fill mode keeps self-crossing trails filled as one shape.
+//
+// Center decimation, taper sampling, and normals depend only on the smoothed
+// trail, so they are computed once per generation and shared by all layers.
+// Only the half width scaling and the outline points vary per layer.
+struct TrailRibbonCache {
+    D2D1_POINT_2F centers[kTrailRibbonMaxCenterPoints] = {};
+    float normalX[kTrailRibbonMaxCenterPoints] = {};
+    float normalY[kTrailRibbonMaxCenterPoints] = {};
+    float taper[kTrailRibbonMaxCenterPoints] = {};
+    int centerCount = 0;
+    int generation = 0;
+    bool valid = false;
+};
+
+TrailRibbonCache g_ribbonCache;
+D2D1_POINT_2F g_ribbonOutline[kTrailRibbonMaxOutlinePoints] = {};
+
+static int EnsureTrailRibbon() {
+    if (g_ribbonCache.valid &&
+        g_ribbonCache.generation == g_renderCache.generation) {
+        return g_ribbonCache.centerCount;
+    }
+    g_ribbonCache.valid = true;
+    g_ribbonCache.generation = g_renderCache.generation;
+    g_ribbonCache.centerCount = 0;
+    const int total = g_renderCache.pointCount;
+    if (total < 2) return 0;
+
+    const D2D1_POINT_2F* points = g_renderCache.activePoints;
+    const float* taper = g_renderCache.taper;
+    const int last = total - 1;
+    const float minSpacingSq =
+        kTrailRibbonMinSpacingPx * kTrailRibbonMinSpacingPx;
+    const auto taperAt = [taper, last](int index) {
+        if (index <= 0) return taper[0];
+        if (index >= last) return taper[last - 1];
+        return (taper[index - 1] + taper[index]) * 0.5f;
+    };
+    const auto store = [](int index, D2D1_POINT_2F point, float width) {
+        g_ribbonCache.centers[index] = point;
+        g_ribbonCache.taper[index] = width;
+    };
+
+    int count = 0;
+    store(count++, points[0], taper[0]);
+    int step = (last + kTrailRibbonMaxCenterPoints - 2) /
+               (kTrailRibbonMaxCenterPoints - 1);
+    if (step < 1) step = 1;
+    for (int index = step;
+         index < last && count < kTrailRibbonMaxCenterPoints - 1;
+         index += step) {
+        const D2D1_POINT_2F& previous = g_ribbonCache.centers[count - 1];
+        const float dx = points[index].x - previous.x;
+        const float dy = points[index].y - previous.y;
+        if (dx * dx + dy * dy < minSpacingSq) continue;
+        store(count++, points[index], taperAt(index));
+    }
+
+    // The tail must stay exact so the visible taper ends at the last sample.
+    // A near-duplicate tail replaces the previous center instead of adding a
+    // zero-length segment whose direction would be undefined.
+    const D2D1_POINT_2F& previous = g_ribbonCache.centers[count - 1];
+    const float tailDx = points[last].x - previous.x;
+    const float tailDy = points[last].y - previous.y;
+    if (count == 1 || tailDx * tailDx + tailDy * tailDy >= minSpacingSq) {
+        store(count++, points[last], taperAt(last));
+    } else {
+        store(count - 1, points[last], taperAt(last));
+    }
+
+    float lastDirX = 1.0f;
+    float lastDirY = 0.0f;
+    bool directionKnown = false;
+    for (int i = 0; i < count; ++i) {
+        float dirX = 0.0f;
+        float dirY = 0.0f;
+        if (i > 0) {
+            dirX += g_ribbonCache.centers[i].x - g_ribbonCache.centers[i - 1].x;
+            dirY += g_ribbonCache.centers[i].y - g_ribbonCache.centers[i - 1].y;
+        }
+        if (i + 1 < count) {
+            dirX += g_ribbonCache.centers[i + 1].x - g_ribbonCache.centers[i].x;
+            dirY += g_ribbonCache.centers[i + 1].y - g_ribbonCache.centers[i].y;
+        }
+        const float lengthSq = dirX * dirX + dirY * dirY;
+        if (lengthSq > 1.0e-8f) {
+            const float inverseLength = 1.0f / sqrtf(lengthSq);
+            lastDirX = dirX * inverseLength;
+            lastDirY = dirY * inverseLength;
+            directionKnown = true;
+        } else if (!directionKnown) {
+            // A stationary prefix repeats one point. Look ahead once for the
+            // first real segment so the whole prefix shares its normal.
+            for (int next = i + 1; next < count; ++next) {
+                const float forwardX =
+                    g_ribbonCache.centers[next].x - g_ribbonCache.centers[i].x;
+                const float forwardY =
+                    g_ribbonCache.centers[next].y - g_ribbonCache.centers[i].y;
+                const float forwardLengthSq = forwardX * forwardX + forwardY * forwardY;
+                if (forwardLengthSq <= 1.0e-8f) continue;
+                const float inverseLength = 1.0f / sqrtf(forwardLengthSq);
+                lastDirX = forwardX * inverseLength;
+                lastDirY = forwardY * inverseLength;
+                directionKnown = true;
+                break;
+            }
+        }
+        // The averaged unit direction keeps every offset at or below the half
+        // width, so the trail bounds never need to grow for a miter spike.
+        g_ribbonCache.normalX[i] = -lastDirY;
+        g_ribbonCache.normalY[i] = lastDirX;
+    }
+
+    g_ribbonCache.centerCount = count;
+    return count;
+}
+
+static int BuildTrailRibbonOutline(float halfWidth) {
+    const int count = EnsureTrailRibbon();
+    if (count < 2) return 0;
+    const D2D1_POINT_2F* centers = g_ribbonCache.centers;
+    D2D1_POINT_2F* outline = g_ribbonOutline;
+    int outCount = 0;
+    for (int i = 0; i < count; ++i) {
+        const float scaled = halfWidth * g_ribbonCache.taper[i];
+        const float width =
+            scaled > kTrailRibbonMinHalfWidth ? scaled : kTrailRibbonMinHalfWidth;
+        outline[outCount++] = D2D1::Point2F(
+            centers[i].x + g_ribbonCache.normalX[i] * width,
+            centers[i].y + g_ribbonCache.normalY[i] * width);
+    }
+    const int tail = count - 1;
+    const float tailWidth = halfWidth * g_ribbonCache.taper[tail];
+    const float tailRadius =
+        tailWidth > kTrailRibbonMinHalfWidth ? tailWidth : kTrailRibbonMinHalfWidth;
+    const float normalX = g_ribbonCache.normalX[tail];
+    const float normalY = g_ribbonCache.normalY[tail];
+    // The stored normal is the left offset, so the travel direction is the
+    // normal rotated to the right. The cap bulges along that direction.
+    const float capX = normalY;
+    const float capY = -normalX;
+    for (int step = 0; step < kTrailRibbonCapSegments - 1; ++step) {
+        const float cosine = kTrailRibbonCapCos[step] * tailRadius;
+        const float sine = kTrailRibbonCapSin[step] * tailRadius;
+        outline[outCount++] = D2D1::Point2F(
+            centers[tail].x + normalX * cosine + capX * sine,
+            centers[tail].y + normalY * cosine + capY * sine);
+    }
+    for (int i = tail; i >= 0; --i) {
+        const float scaled = halfWidth * g_ribbonCache.taper[i];
+        const float width =
+            scaled > kTrailRibbonMinHalfWidth ? scaled : kTrailRibbonMinHalfWidth;
+        outline[outCount++] = D2D1::Point2F(
+            centers[i].x - g_ribbonCache.normalX[i] * width,
+            centers[i].y - g_ribbonCache.normalY[i] * width);
+    }
+    return outCount;
+}
+
+static bool FillTrailRibbon(
+    ID2D1RenderTarget* target,
+    ID2D1Brush* brush,
+    float halfWidth) {
+    if (!target || !brush) return false;
+    const int outlineCount = BuildTrailRibbonOutline(halfWidth);
+    if (outlineCount < 3) return false;
+    ID2D1PathGeometry* geometry = nullptr;
+    if (FAILED(g_d2dFactory->CreatePathGeometry(&geometry)) || !geometry) {
+        return false;
+    }
+    ID2D1GeometrySink* sink = nullptr;
+    if (FAILED(geometry->Open(&sink)) || !sink) {
+        geometry->Release();
+        return false;
+    }
+    sink->SetFillMode(D2D1_FILL_MODE_WINDING);
+    sink->BeginFigure(g_ribbonOutline[0], D2D1_FIGURE_BEGIN_FILLED);
+    for (int i = 1; i < outlineCount; ++i) sink->AddLine(g_ribbonOutline[i]);
+    sink->EndFigure(D2D1_FIGURE_END_CLOSED);
+    const HRESULT hr = sink->Close();
+    sink->Release();
+    if (SUCCEEDED(hr)) {
+        target->FillGeometry(geometry, brush);
+    }
+    geometry->Release();
+    return SUCCEEDED(hr);
+}
+
+static void DrawTrailLayer(
+    ID2D1RenderTarget* target,
+    ID2D1Brush* brush,
+    float halfWidth) {
+    if (FillTrailRibbon(target, brush, halfWidth)) {
+        const D2D1_POINT_2F& head = g_ribbonCache.centers[0];
+        target->FillEllipse(
+            D2D1::Ellipse(head, halfWidth, halfWidth), brush);
+        return;
+    }
+    DrawTrailStroke(target, brush, halfWidth, true);
 }
 
 static int GetEffectiveTailLength(float speedNorm) {
@@ -3369,17 +3595,16 @@ bool RenderOverlay(HWND hwnd, LONGLONG nowQpc) {
                 std::clamp(g_glowAlpha, 0.0f, 1.0f));
             g_renderTarget->PushLayer(&glowLayerParameters, g_glowOpacityLayer);
             g_glowBrush->SetColor(ToColorF(g_glowRGB, 1.0f));
-            DrawTrailStroke(
+            DrawTrailLayer(
                 g_renderTarget,
                 g_glowBrush,
-                outerHalf * std::max(1.0f, g_glowWidthFactor),
-                true);
+                outerHalf * std::max(1.0f, g_glowWidthFactor));
             g_renderTarget->PopLayer();
         }
 
         g_outerBrush->SetColor(ToColorF(g_currentOuterRGB, 1.0f));
         g_coreBrush->SetColor(ToColorF(g_currentCoreRGB, 1.0f));
-        DrawTrailStroke(g_renderTarget, g_outerBrush, outerHalf, true);
+        DrawTrailLayer(g_renderTarget, g_outerBrush, outerHalf);
 
         ID2D1Brush* coreBrush = g_coreBrush;
         if (g_gradientEnabled && EnsureGradientBrush()) {
@@ -3389,7 +3614,7 @@ bool RenderOverlay(HWND hwnd, LONGLONG nowQpc) {
             g_gradientBrush->SetOpacity(1.0f);
             coreBrush = g_gradientBrush;
         }
-        DrawTrailStroke(g_renderTarget, coreBrush, coreHalf, true);
+        DrawTrailLayer(g_renderTarget, coreBrush, coreHalf);
         g_renderTarget->PopLayer();
     }
 
