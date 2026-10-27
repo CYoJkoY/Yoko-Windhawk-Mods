@@ -524,6 +524,7 @@ constexpr DWORD kMotionResumeGapMs = 120;
 constexpr DWORD kAccelerationMeasurementWindowMs = 40;
 constexpr DWORD kAccelerationAccentCooldownMs = 180;
 constexpr DWORD kTurnAccentCooldownMs = 220;
+constexpr float kDegreesToRadians = 3.14159265358979323846f / 180.0f;
 constexpr int kOrnamentMaxPresetNodes = 3;
 constexpr int kOrnamentMaxRopeSegments = 12;
 constexpr int kOrnamentMaxRopePoints = kOrnamentMaxRopeSegments + 1;
@@ -807,6 +808,7 @@ int g_turnAccentEnabled = 0;
 int g_fastMoveInterpolationEnabled = 1;
 int g_accelerationThreshold = 30000;
 int g_turnAngleDegrees = 65;
+float g_turnAccentCosThreshold = 0.42261826f;  // cos(65 degrees)
 int g_motionAccentDurationMs = 300;
 float g_motionAccentSize = 22.0f;
 float g_motionAccentOpacity = 0.90f;
@@ -1489,6 +1491,8 @@ void LoadSettings() {
     g_accelerationThreshold = std::clamp(Wh_GetIntSetting(L"Motion.acceleration_threshold"), 3000, 100000);
     g_motionAccentOpacity = std::clamp(Wh_GetIntSetting(L"Motion.motion_accent_opacity"), 10, 100) / 100.0f;
     g_turnAngleDegrees = std::clamp(Wh_GetIntSetting(L"Motion.turn_angle_degrees"), 45, 150);
+    g_turnAccentCosThreshold = cosf(
+        static_cast<float>(g_turnAngleDegrees) * kDegreesToRadians);
     g_motionAccentDurationMs = std::clamp(Wh_GetIntSetting(L"Motion.motion_accent_duration_ms"), 80, 1000);
     g_motionAccentSize = static_cast<float>(std::clamp(Wh_GetIntSetting(L"Motion.motion_accent_size"), 4, 40));
     g_maxInterpolationSteps = std::clamp(Wh_GetIntSetting(L"Motion.max_interpolation_steps"), 1, 6);
@@ -1681,9 +1685,7 @@ static void UpdateMotionCueTracking(const POINT& point, LONGLONG nowQpc) {
                 g_lastMotionDirectionX * directionX + g_lastMotionDirectionY * directionY,
                 -1.0f,
                 1.0f);
-            const float angleThreshold = cosf(
-                static_cast<float>(g_turnAngleDegrees) * 3.14159265358979323846f / 180.0f);
-            if (dot <= angleThreshold) {
+            if (dot <= g_turnAccentCosThreshold) {
                 AddMotionAccent(
                     point,
                     directionX,
@@ -1942,8 +1944,7 @@ static void RefreshForegroundInputState() {
 
 static void ResetAutoColorSamplingCache();
 
-static bool UpdateCursorMonitorDpi(const POINT& cursorPoint) {
-    const HMONITOR monitor = MonitorFromPoint(cursorPoint, MONITOR_DEFAULTTONEAREST);
+static bool UpdateCursorMonitorDpi(HMONITOR monitor) {
     if (!monitor || monitor == g_cursorMonitor) return false;
 
     UINT dpiX = 96;
@@ -1974,12 +1975,11 @@ static bool IsDesktopShellWindow(HWND hwnd) {
         || _wcsicmp(className, L"WorkerW") == 0;
 }
 
-static bool CoversMonitor(HWND hwnd, HMONITOR cursorMonitor) {
+static bool CoversMonitor(HWND hwnd, HMONITOR cursorMonitor, HMONITOR windowMonitor) {
     const LONG_PTR style = GetWindowLongPtrW(hwnd, GWL_STYLE);
     if ((style & WS_CAPTION) != 0) return false;
     RECT windowRect = {};
     if (!GetWindowRect(hwnd, &windowRect)) return false;
-    const HMONITOR windowMonitor = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
     if (!cursorMonitor || windowMonitor != cursorMonitor) return false;
     MONITORINFO monitorInfo = {sizeof(monitorInfo)};
     if (!GetMonitorInfoW(windowMonitor, &monitorInfo)) return false;
@@ -1995,14 +1995,15 @@ static bool CheckStrongFullscreenSignal() {
     return SUCCEEDED(SHQueryUserNotificationState(&state)) && state == QUNS_RUNNING_D3D_FULL_SCREEN;
 }
 
-static bool IsFullscreenCandidate(DWORD now, HWND hwnd, POINT cursorPoint) {
-    if (!hwnd || hwnd == GetDesktopWindow() || hwnd == GetShellWindow()
-        || IsDesktopShellWindow(hwnd) || IsIconic(hwnd) || !IsWindowVisible(hwnd)) {
-        return false;
-    }
+static bool IsFullscreenCandidate(
+    DWORD now,
+    HWND hwnd,
+    HMONITOR cursorMonitor,
+    HMONITOR windowMonitor) {
+    // The caller already rejected the desktop shell and null handles. Avoid
+    // repeating those user32 queries on every input sample.
+    if (IsIconic(hwnd) || !IsWindowVisible(hwnd)) return false;
 
-    const HMONITOR cursorMonitor = MonitorFromPoint(cursorPoint, MONITOR_DEFAULTTONEAREST);
-    const HMONITOR windowMonitor = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
     if (!cursorMonitor || windowMonitor != cursorMonitor) return false;
 
     if (hwnd != g_fullscreenForegroundWindow) {
@@ -2018,13 +2019,12 @@ static bool IsFullscreenCandidate(DWORD now, HWND hwnd, POINT cursorPoint) {
     if (now - g_lastFullscreenStrongCheck >= kFullscreenStrongCheckIntervalMs) {
         g_lastFullscreenStrongCheck = now;
         g_fullscreenStrongSignal = CheckStrongFullscreenSignal();
-        g_fullscreenCoversMonitor = CoversMonitor(hwnd, cursorMonitor);
+        g_fullscreenCoversMonitor = CoversMonitor(hwnd, cursorMonitor, windowMonitor);
     }
     return g_fullscreenStrongSignal || g_fullscreenCoversMonitor;
 }
 
-static bool UpdateFullscreenState(DWORD now, HWND foreground, POINT cursorPoint) {
-    const HMONITOR cursorMonitor = MonitorFromPoint(cursorPoint, MONITOR_DEFAULTTONEAREST);
+static bool UpdateFullscreenState(DWORD now, HWND foreground, HMONITOR cursorMonitor) {
     const HMONITOR foregroundMonitor = foreground
         ? MonitorFromWindow(foreground, MONITOR_DEFAULTTONEAREST)
         : nullptr;
@@ -2045,7 +2045,8 @@ static bool UpdateFullscreenState(DWORD now, HWND foreground, POINT cursorPoint)
         return false;
     }
 
-    const bool candidate = IsFullscreenCandidate(now, foreground, cursorPoint);
+    const bool candidate = IsFullscreenCandidate(
+        now, foreground, cursorMonitor, foregroundMonitor);
     if (candidate) {
         g_fullscreenFalseSince = 0;
         g_fullscreenSuppressed = true;
@@ -2099,8 +2100,8 @@ bool EnsureBackbuffer(int width, int height, HDC referenceDc) {
     return true;
 }
 
-static void MaybeReleaseIdleBackbuffer(DWORD now) {
-    if (g_isSmearing || g_historyCount > 0 || HasActiveRipples(QpcNow()) || OrnamentActive()) {
+static void MaybeReleaseIdleBackbuffer(DWORD now, LONGLONG nowQpc) {
+    if (g_isSmearing || g_historyCount > 0 || HasActiveRipples(nowQpc) || OrnamentActive()) {
         g_backbufferIdleSince = 0;
         return;
     }
@@ -3127,11 +3128,11 @@ static void ConstrainOrnamentDistance(
 
 static void StepOrnamentPhysics(
     float dtSeconds,
+    float retain,
     float anchorStepX,
     float anchorStepY) {
     const int count = g_ornamentRopePointCount;
     if (count < 2) return;
-    const float retain = powf(std::clamp(1.0f - g_ornamentDamping / 100.0f, 0.5f, 1.0f), dtSeconds * kOrnamentSimulationHz);
     const float gravityStep = g_ornamentGravity * g_currentDpiScale * dtSeconds * dtSeconds;
     for (int i = 1; i < count; ++i) {
         D2D1_POINT_2F& point = g_ornamentRopePoints[i];
@@ -3222,7 +3223,14 @@ static void UpdateOrnamentPhysics(float velocity, LONGLONG nowQpc) {
         const float step = elapsed / static_cast<float>(steps);
         const float stepX = anchorStepX / static_cast<float>(steps);
         const float stepY = anchorStepY / static_cast<float>(steps);
-        for (int i = 0; i < steps; ++i) StepOrnamentPhysics(step, stepX, stepY);
+        // Damping is the same for every substep, so the exponential is
+        // evaluated once per frame instead of once per substep.
+        const float retain = powf(
+            std::clamp(1.0f - g_ornamentDamping / 100.0f, 0.5f, 1.0f),
+            step * kOrnamentSimulationHz);
+        for (int i = 0; i < steps; ++i) {
+            StepOrnamentPhysics(step, retain, stepX, stepY);
+        }
         g_ornamentLastAnchor = anchor;
     }
 
@@ -3490,7 +3498,9 @@ static void DrawOrnament(const RECT& renderBounds) {
 }
 
 bool RenderOverlay(HWND hwnd, LONGLONG nowQpc) {
-    UpdateOrnamentDrawStates();
+    // Node transforms feed only the ornament draw path, so skip them entirely
+    // while the ornament is disabled.
+    if (g_ornamentEnabled) UpdateOrnamentDrawStates();
     const bool ornamentVisible = OrnamentVisible();
     bool drawTrail = g_historyCount >= 2;
     const float speed = g_speedScaling ? (g_isSmearing ? g_smoothedSpeedNorm : g_frozenSpeedNorm) : 1.0f;
@@ -3925,7 +3935,8 @@ bool SmearFrame(HWND hwnd, DWORD now, bool renderFrame) {
     POINT point = {};
     if (!GetCursorPos(&point)) return false;
     const LONGLONG sampleQpc = QpcNow();
-    if (UpdateCursorMonitorDpi(point)) {
+    const HMONITOR cursorMonitor = MonitorFromPoint(point, MONITOR_DEFAULTTONEAREST);
+    if (UpdateCursorMonitorDpi(cursorMonitor)) {
         ResetTrailState();
         ResetMotionCueTracking();
         g_ornamentPhysicsInitialized = false;
@@ -3949,11 +3960,11 @@ bool SmearFrame(HWND hwnd, DWORD now, bool renderFrame) {
         SuppressOrnament(sampleQpc);
         parkSample();
         HideOverlay();
-        MaybeReleaseIdleBackbuffer(now);
+        MaybeReleaseIdleBackbuffer(now, sampleQpc);
         return false;
     }
 
-    const bool fullscreenActive = UpdateFullscreenState(now, foreground, point);
+    const bool fullscreenActive = UpdateFullscreenState(now, foreground, cursorMonitor);
     if (fullscreenActive && appRule == 0) {
         ResetTrailState();
         ResetMotionCueTracking();
@@ -3961,7 +3972,7 @@ bool SmearFrame(HWND hwnd, DWORD now, bool renderFrame) {
         SuppressOrnament(sampleQpc);
         parkSample();
         HideOverlay();
-        MaybeReleaseIdleBackbuffer(now);
+        MaybeReleaseIdleBackbuffer(now, sampleQpc);
         return false;
     }
 
@@ -3985,7 +3996,7 @@ bool SmearFrame(HWND hwnd, DWORD now, bool renderFrame) {
     UpdateMotionCueTracking(point, sampleQpc);
     UpdateTrailState(previousPoint, point, velocity);
     UpdateOrnamentPhysics(velocity, sampleQpc);
-    MaybeReleaseIdleBackbuffer(now);
+    MaybeReleaseIdleBackbuffer(now, sampleQpc);
     if (g_isSmearing || g_historyCount >= 2) UpdateTrailColorIfNeeded(now, point);
 
     const bool stateChanged = wasSmearing != g_isSmearing
@@ -4210,7 +4221,8 @@ DWORD WINAPI OverlayThreadProc(LPVOID) {
     HideOverlay();
     POINT initialCursorPosition = {};
     if (GetCursorPos(&initialCursorPosition)) {
-        UpdateCursorMonitorDpi(initialCursorPosition);
+        UpdateCursorMonitorDpi(
+            MonitorFromPoint(initialCursorPosition, MONITOR_DEFAULTTONEAREST));
         g_lastPos = initialCursorPosition;
     }
     g_lastSampleQpc = QpcNow();
@@ -4297,7 +4309,7 @@ DWORD WINAPI OverlayThreadProc(LPVOID) {
             }
             timerDeadline = g_nextSampleDeadline;
         } else if (g_backBufferDc && g_backBufferBitmap) {
-            MaybeReleaseIdleBackbuffer(GetTickCount());
+            MaybeReleaseIdleBackbuffer(GetTickCount(), currentQpc);
             if (g_backBufferDc && g_backBufferBitmap) {
                 const DWORD nowTicks = GetTickCount();
                 const DWORD elapsed = nowTicks - g_backbufferIdleSince;
@@ -4462,7 +4474,7 @@ DWORD WINAPI OverlayThreadProc(LPVOID) {
                     g_nextSampleDeadline = 0;
                 }
             } else if (trimTimerNeeded) {
-                MaybeReleaseIdleBackbuffer(GetTickCount());
+                MaybeReleaseIdleBackbuffer(GetTickCount(), QpcNow());
                 g_nextSampleDeadline = 0;
             }
             continue;
