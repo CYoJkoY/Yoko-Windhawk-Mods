@@ -1,0 +1,195 @@
+name: Sync dist bundles
+description: >-
+  Mirror dist/*.wh.cpp from this repository into the mods directory of the
+  target repository, committing only when the file contents differ.
+
+inputs:
+  source-root:
+    description: Absolute path of the source checkout
+    required: true
+  target-root:
+    description: Absolute path of the target checkout
+    required: true
+  target-branch:
+    description: Branch of the target repository to push to
+    required: true
+  file-glob:
+    description: Glob of bundle files to mirror
+    required: false
+    default: '*.wh.cpp'
+  prune:
+    description: Delete target bundles that no longer exist in dist
+    required: false
+    default: 'false'
+  dry-run:
+    description: Report pending files without committing or pushing
+    required: false
+    default: 'false'
+
+outputs:
+  changed:
+    description: '"true" when the target needed updates'
+    value: ${{ steps.diff.outputs.changed }}
+  pushed:
+    description: '"true" when a commit was pushed to the target'
+    value: ${{ steps.mirror.outputs.pushed }}
+
+runs:
+  using: composite
+  steps:
+    - name: Detect target differences
+      id: diff
+      shell: bash
+      env:
+        SOURCE_ROOT: ${{ inputs.source-root }}
+        TARGET_ROOT: ${{ inputs.target-root }}
+        FILE_GLOB: ${{ inputs.file-glob }}
+        PRUNE: ${{ inputs.prune }}
+      run: |
+        set -euo pipefail
+
+        SRC_MODS="$SOURCE_ROOT/dist"
+        DST_MODS="$TARGET_ROOT/mods"
+        GLOB="$FILE_GLOB"
+
+        if [ ! -d "$SRC_MODS" ]; then
+          echo "::error::source/dist not found, nothing to sync"
+          exit 1
+        fi
+
+        changed=0
+        pending=()
+
+        while IFS= read -r -d '' f; do
+          rel="${f#"$SRC_MODS"/}"
+          if [ ! -f "$DST_MODS/$rel" ] || ! cmp -s "$f" "$DST_MODS/$rel"; then
+            pending+=("$rel")
+            changed=1
+          fi
+        done < <(find "$SRC_MODS" -type f -name "$GLOB" -print0)
+
+        if [ "${PRUNE:-false}" = "true" ] && [ -d "$DST_MODS" ]; then
+          while IFS= read -r -d '' f; do
+            rel="${f#"$DST_MODS"/}"
+            if [ ! -f "$SRC_MODS/$rel" ]; then
+              pending+=("$rel")
+              changed=1
+            fi
+          done < <(find "$DST_MODS" -type f -name "$GLOB" -print0)
+        fi
+
+        if [ "$changed" -eq 0 ]; then
+          {
+            echo "### Sync gate"
+            echo ""
+            echo "- No differences between \`source/dist\` and \`target/mods\`."
+            echo "- Sync skipped; the target is already current."
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "changed=false" >> "$GITHUB_OUTPUT"
+          exit 0
+        fi
+
+        {
+          echo "### Sync gate"
+          echo ""
+          echo "- Pending files: ${#pending[@]}"
+          for x in "${pending[@]}"; do echo "- pending: $x"; done
+        } >> "$GITHUB_STEP_SUMMARY"
+        echo "changed=true" >> "$GITHUB_OUTPUT"
+
+    - name: Mirror dist to target mods
+      id: mirror
+      if: steps.diff.outputs.changed == 'true'
+      shell: bash
+      env:
+        SOURCE_ROOT: ${{ inputs.source-root }}
+        TARGET_ROOT: ${{ inputs.target-root }}
+        TARGET_BRANCH: ${{ inputs.target-branch }}
+        FILE_GLOB: ${{ inputs.file-glob }}
+        PRUNE: ${{ inputs.prune }}
+        DRY_RUN: ${{ inputs.dry-run }}
+      run: |
+        set -euo pipefail
+
+        SRC_MODS="$SOURCE_ROOT/dist"
+        DST_MODS="$TARGET_ROOT/mods"
+        GLOB="$FILE_GLOB"
+
+        if [ ! -d "$SRC_MODS" ]; then
+          echo "::error::source/dist not found, nothing to sync"
+          exit 1
+        fi
+        mkdir -p "$DST_MODS"
+
+        added=(); updated=(); removed=()
+
+        # 1) Copy new and changed bundles.
+        while IFS= read -r -d '' f; do
+          rel="${f#"$SRC_MODS"/}"
+          dst="$DST_MODS/$rel"
+          mkdir -p "$(dirname "$dst")"
+          if [ ! -f "$dst" ]; then
+            cp "$f" "$dst"; added+=("$rel")
+          elif ! cmp -s "$f" "$dst"; then
+            cp "$f" "$dst"; updated+=("$rel")
+          fi
+        done < <(find "$SRC_MODS" -type f -name "$GLOB" -print0)
+
+        # 2) Optionally remove files that no longer exist here.
+        if [ "${PRUNE:-false}" = "true" ]; then
+          while IFS= read -r -d '' f; do
+            rel="${f#"$DST_MODS"/}"
+            [ -f "$SRC_MODS/$rel" ] || { rm -f "$f"; removed+=("$rel"); }
+          done < <(find "$DST_MODS" -type f -name "$GLOB" -print0)
+        fi
+
+        # 3) Commit message derives from the latest source commit.
+        SRC_SHA="$(git -C "$SOURCE_ROOT" rev-parse --short HEAD)"
+        SRC_MSG="$(git -C "$SOURCE_ROOT" log -1 --pretty=%s)"
+        MSG="sync(mods): $SRC_MSG (Yoko@$SRC_SHA)"
+
+        {
+          echo "### Sync summary"
+          echo ""
+          echo "- target branch: \`$TARGET_BRANCH\`"
+          echo "- source commit: \`$SRC_SHA\` $SRC_MSG"
+          echo "- added: ${#added[@]} / updated: ${#updated[@]} / removed: ${#removed[@]}"
+          echo ""
+          for x in "${added[@]}"; do echo "- \`+\` $x"; done
+          for x in "${updated[@]}"; do echo "- \`~\` $x"; done
+          for x in "${removed[@]}"; do echo "- \`-\` $x"; done
+        } >> "$GITHUB_STEP_SUMMARY"
+
+        if [ "${DRY_RUN:-false}" = "true" ]; then
+          echo "dry_run=true, skip commit and push"
+          echo "pushed=false" >> "$GITHUB_OUTPUT"
+          exit 0
+        fi
+
+        cd "$TARGET_ROOT"
+
+        # Only mods/ is staged; every other file stays untouched.
+        git add -A mods
+
+        if git diff --cached --quiet; then
+          echo "No mods changes, nothing to push."
+          echo "pushed=false" >> "$GITHUB_OUTPUT"
+          exit 0
+        fi
+
+        git config user.name "github-actions[bot]"
+        git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+        git commit -m "$MSG"
+
+        for attempt in 1 2 3 4 5; do
+          if git pull --rebase --autostash origin "$TARGET_BRANCH" \
+             && git push origin "HEAD:$TARGET_BRANCH"; then
+            echo "pushed=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "attempt $attempt failed, retrying..."
+          sleep $((attempt * 5))
+        done
+
+        echo "::error::push failed after 5 attempts"
+        exit 1
