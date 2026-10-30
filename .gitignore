@@ -1,1 +1,6 @@
 desktop.ini
+__pycache__/
+*.pyc
+.scratch/
+.tmp_issue.md
+.tmp_pr.md
