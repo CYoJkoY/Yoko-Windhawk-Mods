@@ -38,18 +38,23 @@ stale.
 
 ## Validation
 
-`.github/workflows/validate-mods.yml` verifies the generated bundles are
-current, runs the bundler tests, checks strict metadata, and compiles every
-bundle with Windhawk 1.7.3 and 2.0.0-alpha.8. It uploads the bundled sources
-as the `mod-bundles` artifact and the compiled x86, x64, and ARM64 DLLs as
-the `windhawk-<version>-dlls` artifacts.
+`.github/workflows/validate-mods.yml` runs the bundler tests, checks strict
+metadata, and compiles every bundle with Windhawk 1.7.3 and 2.0.0-alpha.8. It
+uploads the bundled sources as the `mod-bundles` artifact and the compiled x86,
+x64, and ARM64 DLLs as the `windhawk-<version>-dlls` artifacts.
 
-`.github/workflows/sync-mods.yml` runs after a successful `Validate mods`
-push run on `main`. It compares `dist/*.wh.cpp` against `mods/` in
-[CYoJkoY/windhawk-mods](https://github.com/CYoJkoY/windhawk-mods) and only
-commits and pushes when those files differ. Scheduled runs require a successful
-validation of the current `main` commit, and manual runs do the same unless
-`dry_run` is set. An up-to-date target is left untouched in every case.
+On a push to `main`, the `bundle` job regenerates `dist/` first. When the
+regenerated files match the committed ones, no commit is published and the
+sync job is skipped. When they differ, the `compile` job builds the regenerated
+artifact, the `publish` job commits only `dist/`, and the `sync` job mirrors
+that published commit into `mods/` of
+[CYoJkoY/windhawk-mods](https://github.com/CYoJkoY/windhawk-mods). Pull requests
+and manual runs keep the strict `python tools/bundle.py --check` gate.
+
+`.github/workflows/sync-mods.yml` is the scheduled and manual fallback. It
+requires a successful `Validate mods` push run that covers the checked-out
+commit and leaves an up-to-date target untouched. Set `dry_run` to inspect the
+target diff without pushing.
 
 ## Adding a mod
 
