@@ -39,6 +39,13 @@ jobs:
         run: python tools/bundle.py --check
       - name: Report bundle statistics
         run: python tools/bundle.py --json
+      - name: Upload bundled mods
+        uses: actions/upload-artifact@v7.0.2
+        with:
+          name: mod-bundles
+          path: dist/*.wh.cpp
+          if-no-files-found: error
+          retention-days: 14
 
   compile:
     name: Compile with Windhawk ${{ matrix.version }}
@@ -150,3 +157,44 @@ jobs:
               fi
             fi
           done < <(find dist -type f -name '*.wh.cpp' -print | sort)
+      - name: Collect compiled DLLs
+        run: |
+          set -euo pipefail
+          wh_root="${{ runner.temp }}/windhawk"
+          out_dir="${{ runner.temp }}/dlls"
+          mkdir -p "$out_dir"
+
+          while IFS= read -r file; do
+            name="$(basename "$file" .wh.cpp)"
+            for arch in 32 64 arm64; do
+              if [[ "$WINHAWK_VERSION" == 1.* ]]; then
+                src="${{ runner.temp }}/${name}_${arch}.dll"
+              else
+                mod_dir="$wh_root/AppData/Engine/Mods/$arch"
+                candidates=()
+                while IFS= read -r candidate; do
+                  candidates+=("$candidate")
+                done < <(find "$mod_dir" -maxdepth 1 -type f -name "local@${name}_*.dll" -print 2>/dev/null || true)
+                if [[ "${#candidates[@]}" -ne 1 ]]; then
+                  echo "::error::expected one $arch build for $name, found ${#candidates[@]}"
+                  find "$mod_dir" -maxdepth 1 -type f -print 2>/dev/null || true
+                  exit 1
+                fi
+                src="${candidates[0]}"
+              fi
+              if [[ ! -f "$src" ]]; then
+                echo "::error::missing $arch build for $name at $src"
+                exit 1
+              fi
+              cp "$src" "$out_dir/${name}_${arch}.dll"
+            done
+          done < <(find dist -type f -name '*.wh.cpp' -print | sort)
+
+          find "$out_dir" -type f -print | sort
+      - name: Upload compiled DLLs
+        uses: actions/upload-artifact@v7.0.2
+        with:
+          name: windhawk-${{ matrix.version }}-dlls
+          path: ${{ runner.temp }}/dlls/*.dll
+          if-no-files-found: error
+          retention-days: 14

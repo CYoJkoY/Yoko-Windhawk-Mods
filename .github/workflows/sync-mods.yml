@@ -4,10 +4,13 @@ name: Sync mods -> CYoJkoY/windhawk-mods
 # CYoJkoY/windhawk-mods. Only this repository's workflow needs configuration.
 
 on:
-  push:
+  # Run only after "Validate mods" finishes, so a broken bundle never reaches
+  # the target repository. The job condition below accepts successful push
+  # runs on main only; pull request runs are ignored.
+  workflow_run:
+    workflows: ["Validate mods"]
+    types: [completed]
     branches: [main]
-    paths:
-      - "dist/**"
   schedule:
     # Safety net in case a push event is missed. Runs at 03:17 UTC daily.
     - cron: "17 3 * * *"
@@ -24,6 +27,7 @@ on:
 
 permissions:
   contents: read
+  actions: read
 
 concurrency:
   group: sync-mods-to-windhawk-mods
@@ -31,6 +35,12 @@ concurrency:
 
 jobs:
   sync:
+    if: >-
+      github.event_name == 'schedule' ||
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'workflow_run' &&
+       github.event.workflow_run.event == 'push' &&
+       github.event.workflow_run.conclusion == 'success')
     runs-on: ubuntu-latest
     timeout-minutes: 15
     env:
@@ -45,6 +55,7 @@ jobs:
         uses: actions/checkout@v7.0.1
         with:
           path: source
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
           fetch-depth: 2
 
       - name: Setup Python
@@ -72,7 +83,89 @@ jobs:
           cd source
           python tools/bundle.py --check
 
+      - name: Require successful validation
+        id: gate
+        if: >-
+          github.event_name == 'schedule' ||
+          (github.event_name == 'workflow_dispatch' &&
+           github.event.inputs.dry_run != 'true')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          sha="$(git -C "$GITHUB_WORKSPACE/source" rev-parse HEAD)"
+          conclusion="$(gh api \
+            "repos/${{ github.repository }}/actions/workflows/validate-mods.yml/runs?branch=main&head_sha=$sha&per_page=1" \
+            --jq '.workflow_runs[0].conclusion // ""')"
+          if [ "$conclusion" != "success" ]; then
+            {
+              echo "### Sync gate"
+              echo ""
+              echo "- No successful \`Validate mods\` run for \`$sha\`."
+              echo "- Latest conclusion: \`${conclusion:-none}\`. Sync skipped."
+            } >> "$GITHUB_STEP_SUMMARY"
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "ready=true" >> "$GITHUB_OUTPUT"
+
+      - name: Detect target differences
+        id: diff
+        if: steps.gate.outputs.ready != 'false'
+        run: |
+          set -euo pipefail
+
+          SRC_MODS="$GITHUB_WORKSPACE/source/dist"
+          DST_MODS="$GITHUB_WORKSPACE/target/mods"
+          GLOB="$FILE_GLOB"
+
+          if [ ! -d "$SRC_MODS" ]; then
+            echo "::error::source/dist not found, nothing to sync"
+            exit 1
+          fi
+
+          changed=0
+          pending=()
+
+          while IFS= read -r -d '' f; do
+            rel="${f#"$SRC_MODS"/}"
+            if [ ! -f "$DST_MODS/$rel" ] || ! cmp -s "$f" "$DST_MODS/$rel"; then
+              pending+=("$rel")
+              changed=1
+            fi
+          done < <(find "$SRC_MODS" -type f -name "$GLOB" -print0)
+
+          if [ "${PRUNE:-false}" = "true" ] && [ -d "$DST_MODS" ]; then
+            while IFS= read -r -d '' f; do
+              rel="${f#"$DST_MODS"/}"
+              if [ ! -f "$SRC_MODS/$rel" ]; then
+                pending+=("$rel")
+                changed=1
+              fi
+            done < <(find "$DST_MODS" -type f -name "$GLOB" -print0)
+          fi
+
+          if [ "$changed" -eq 0 ]; then
+            {
+              echo "### Sync gate"
+              echo ""
+              echo "- No differences between \`source/dist\` and \`target/mods\`."
+              echo "- Sync skipped; the target is already current."
+            } >> "$GITHUB_STEP_SUMMARY"
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          {
+            echo "### Sync gate"
+            echo ""
+            echo "- Pending files: ${#pending[@]}"
+            for x in "${pending[@]}"; do echo "- pending: $x"; done
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "changed=true" >> "$GITHUB_OUTPUT"
+
       - name: Mirror dist to target mods
+        if: steps.diff.outputs.changed == 'true'
         id: mirror
         run: |
           set -euo pipefail

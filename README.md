@@ -40,9 +40,16 @@ stale.
 
 `.github/workflows/validate-mods.yml` verifies the generated bundles are
 current, runs the bundler tests, checks strict metadata, and compiles every
-bundle with Windhawk 1.7.3 and 2.0.0-alpha.8. `.github/workflows/sync-mods.yml`
-mirrors `dist/*.wh.cpp` into the `mods/` directory of
-[CYoJkoY/windhawk-mods](https://github.com/CYoJkoY/windhawk-mods).
+bundle with Windhawk 1.7.3 and 2.0.0-alpha.8. It uploads the bundled sources
+as the `mod-bundles` artifact and the compiled x86, x64, and ARM64 DLLs as
+the `windhawk-<version>-dlls` artifacts.
+
+`.github/workflows/sync-mods.yml` runs after a successful `Validate mods`
+push run on `main`. It compares `dist/*.wh.cpp` against `mods/` in
+[CYoJkoY/windhawk-mods](https://github.com/CYoJkoY/windhawk-mods) and only
+commits and pushes when those files differ. Scheduled runs require a successful
+validation of the current `main` commit, and manual runs do the same unless
+`dry_run` is set. An up-to-date target is left untouched in every case.
 
 ## Adding a mod
 
