@@ -1,0 +1,152 @@
+name: Validate mods
+
+defaults:
+  run:
+    shell: bash
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: validate-mods-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  PYTHONUTF8: '1'
+
+jobs:
+  bundle:
+    name: Bundle and test
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7.0.1
+      - name: Setup Python
+        uses: actions/setup-python@v7.1.0
+        with:
+          python-version: '3.12'
+      - name: Run bundler tests
+        run: python -m unittest discover -s tools/tests -t . -v
+      - name: Verify dist is current
+        run: python tools/bundle.py --check
+      - name: Report bundle statistics
+        run: python tools/bundle.py --json
+
+  compile:
+    name: Compile with Windhawk ${{ matrix.version }}
+    runs-on: windows-latest
+    needs: bundle
+    timeout-minutes: 45
+    env:
+      WINHAWK_VERSION: ${{ matrix.version }}
+    strategy:
+      fail-fast: false
+      matrix:
+        version:
+          - '1.7.3'
+          - '2.0.0-alpha.8'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7.0.1
+      - name: Setup Python
+        uses: actions/setup-python@v7.1.0
+        with:
+          python-version: '3.12'
+      - name: Verify dist is current
+        run: python tools/bundle.py --check
+      - name: Extract Windhawk
+        run: |
+          set -euo pipefail
+          if [[ "$WINHAWK_VERSION" == 1.* ]]; then
+            release_tag="v${{ matrix.version }}"
+            installer_args=''
+          else
+            # Starting with 2.0.0-alpha.1 the release tag has no "v" prefix,
+            # and /DEVTOOLS pulls the compiler into the portable install.
+            release_tag="${{ matrix.version }}"
+            installer_args='/DEVTOOLS'
+          fi
+
+          installer_url="https://github.com/ramensoftware/windhawk/releases/download/$release_tag/windhawk_setup.exe"
+          installer_path="${{ runner.temp }}/windhawk_setup.exe"
+          echo "Downloading $installer_url"
+          curl --fail --location --retry 3 --retry-delay 1 "$installer_url" -o "$installer_path"
+
+          extract_win="${{ runner.temp }}\\windhawk"
+          extract_posix="${{ runner.temp }}/windhawk"
+          echo "Extracting to $extract_win"
+          MSYS_NO_PATHCONV=1 "$installer_path" /S /PORTABLE $installer_args "/D=$extract_win"
+
+          # The portable installer returns before the tree is fully unpacked.
+          ready=0
+          for _ in $(seq 1 150); do
+            if [[ -f "$extract_posix/windhawk.exe" ]] &&
+               [[ -f "$extract_posix/windhawk.ini" ]] &&
+               [[ -f "$extract_posix/Compiler/bin/clang++.exe" ]] &&
+               [[ -n "$(find "$extract_posix/Engine" -name windhawk.lib -print -quit 2>/dev/null || true)" ]]; then
+              ready=1
+              break
+            fi
+            sleep 2
+          done
+          if [[ "$ready" -ne 1 ]]; then
+            echo "::error::Windhawk portable extraction did not complete"
+            find "$extract_posix" -maxdepth 3 -print 2>/dev/null || true
+            exit 1
+          fi
+          echo "Windhawk portable tree is ready"
+      - name: Check metadata
+        if: matrix.version == '2.0.0-alpha.8'
+        run: |
+          set -euo pipefail
+          windhawk_path="${{ runner.temp }}\\windhawk"
+          cli="$windhawk_path\\windhawk-cli.exe"
+          while IFS= read -r file; do
+            echo "Checking metadata of $file"
+            MSYS_NO_PATHCONV=1 "$cli" --app-root "$windhawk_path" source meta --strict "$file" --json
+          done < <(find dist -type f -name '*.wh.cpp' -print | sort)
+      - name: Compile bundles
+        run: |
+          set -euo pipefail
+          windhawk_path="${{ runner.temp }}\\windhawk"
+          if [[ "$WINHAWK_VERSION" == 1.* ]]; then
+            # Pin the upstream helper revision so the 1.x build stays
+            # reproducible without vendoring the whole script.
+            compiler_script="${{ runner.temp }}/compile_mod.py"
+            compiler_script_url="https://raw.githubusercontent.com/ramensoftware/windhawk-mods/c121075aeb9dcc8e133423192cc9fdfb9e606ff5/scripts/compile_mod.py"
+            curl --fail --location --retry 3 --retry-delay 1 "$compiler_script_url" -o "$compiler_script"
+          else
+            cli="$windhawk_path\\windhawk-cli.exe"
+          fi
+
+          while IFS= read -r file; do
+            name="$(basename "$file" .wh.cpp)"
+            echo "Compiling $file"
+            if [[ "$WINHAWK_VERSION" == 1.* ]]; then
+              python -u "$compiler_script" -w "$windhawk_path" \
+                -f "$file" \
+                -o32 "${{ runner.temp }}/${name}_32.dll" \
+                -o64 "${{ runner.temp }}/${name}_64.dll" \
+                -oarm64 "${{ runner.temp }}/${name}_arm64.dll"
+            else
+              result="${{ runner.temp }}/${name}_compile.json"
+              if ! MSYS_NO_PATHCONV=1 "$cli" --app-root "$windhawk_path" --json \
+                mod install --disabled --arch all --file "$file" > "$result"; then
+                jq -r '"::error::\(.error.code): \(.error.message)"' "$result" || cat "$result"
+                exit 1
+              fi
+              if jq -e '(.data.warnings // []) | length > 0' "$result" > /dev/null; then
+                cat "$result"
+                echo "::error::$file compiled with warnings"
+                exit 1
+              fi
+            fi
+          done < <(find dist -type f -name '*.wh.cpp' -print | sort)
