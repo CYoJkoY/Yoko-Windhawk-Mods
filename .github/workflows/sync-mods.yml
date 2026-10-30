@@ -1,24 +1,24 @@
 name: Sync mods -> CYoJkoY/windhawk-mods
 
-# 单向镜像：本仓库 mods/*.wh.cpp  ->  CYoJkoY/windhawk-mods 的 mods/
-# 只改本仓库的 Actions，目标仓库无需任何配置。
+# One-way mirror: dist/*.wh.cpp in this repository is copied to mods/ in
+# CYoJkoY/windhawk-mods. Only this repository's workflow needs configuration.
 
 on:
   push:
     branches: [main]
     paths:
-      - "mods/**"
+      - "dist/**"
   schedule:
-    # 兜底：每天 UTC 03:17 跑一次，防止漏掉某次推送
+    # Safety net in case a push event is missed. Runs at 03:17 UTC daily.
     - cron: "17 3 * * *"
   workflow_dispatch:
     inputs:
       prune:
-        description: "删除目标仓库里有、但本仓库已删除的 mod 文件"
+        description: "Delete mod files that exist in the target but not here"
         type: boolean
         default: false
       dry_run:
-        description: "只打印差异，不推送"
+        description: "Print the file diff without pushing"
         type: boolean
         default: false
 
@@ -32,6 +32,7 @@ concurrency:
 jobs:
   sync:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     env:
       TARGET_REPO: CYoJkoY/windhawk-mods
       TARGET_BRANCH: main
@@ -41,42 +42,54 @@ jobs:
 
     steps:
       - name: Checkout source (Yoko-Windhawk-Mods)
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7.0.1
         with:
           path: source
           fetch-depth: 2
 
+      - name: Setup Python
+        uses: actions/setup-python@v7.1.0
+        with:
+          python-version: '3.12'
+
       - name: Checkout target (CYoJkoY/windhawk-mods)
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7.0.1
         with:
           repository: CYoJkoY/windhawk-mods
           ref: main
           path: target
           fetch-depth: 1
-          # 只展开 mods/，避免把上游几千个文件也 checkout 出来
+          # Only mods/ is needed, so the thousands of upstream files stay out
+          # of the checkout.
           sparse-checkout: |
             mods
           sparse-checkout-cone-mode: false
           token: ${{ secrets.SYNC_PAT }}
 
-      - name: Mirror mods directory
+      - name: Verify bundles are current
+        run: |
+          set -euo pipefail
+          cd source
+          python tools/bundle.py --check
+
+      - name: Mirror dist to target mods
         id: mirror
         run: |
           set -euo pipefail
 
-          SRC_MODS="$GITHUB_WORKSPACE/source/mods"
+          SRC_MODS="$GITHUB_WORKSPACE/source/dist"
           DST_MODS="$GITHUB_WORKSPACE/target/mods"
           GLOB="$FILE_GLOB"
 
           if [ ! -d "$SRC_MODS" ]; then
-            echo "::error::source/mods not found, nothing to sync"
+            echo "::error::source/dist not found, nothing to sync"
             exit 1
           fi
           mkdir -p "$DST_MODS"
 
           added=(); changed=(); removed=()
 
-          # 1) 新增 / 修改
+          # 1) Copy new and changed bundles.
           while IFS= read -r -d '' f; do
             rel="${f#"$SRC_MODS"/}"
             dst="$DST_MODS/$rel"
@@ -88,7 +101,7 @@ jobs:
             fi
           done < <(find "$SRC_MODS" -type f -name "$GLOB" -print0)
 
-          # 2) 删除（可选，默认关闭）
+          # 2) Optionally remove files that no longer exist here.
           if [ "${PRUNE:-false}" = "true" ]; then
             while IFS= read -r -d '' f; do
               rel="${f#"$DST_MODS"/}"
@@ -96,7 +109,7 @@ jobs:
             done < <(find "$DST_MODS" -type f -name "$GLOB" -print0)
           fi
 
-          # 3) 提交信息取自源仓库最新提交
+          # 3) Commit message derives from the latest source commit.
           SRC_SHA="$(git -C "$GITHUB_WORKSPACE/source" rev-parse --short HEAD)"
           SRC_MSG="$(git -C "$GITHUB_WORKSPACE/source" log -1 --pretty=%s)"
           MSG="sync(mods): $SRC_MSG (Yoko@$SRC_SHA)"
@@ -127,7 +140,7 @@ jobs:
 
           cd "$GITHUB_WORKSPACE/target"
 
-          # 只提交 mods/ 下的改动，其它文件一律不动
+          # Only mods/ is staged; every other file stays untouched.
           git add -A mods
 
           if git diff --cached --quiet; then

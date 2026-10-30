@@ -1,0 +1,9 @@
+{
+  "id": "cursor-tail",
+  "name": "Cursor Tail",
+  "version": "3.23",
+  "description": "Adds a speed-reactive cursor trail with optional interaction feedback.",
+  "author": "CYoJkoY",
+  "license": "MIT",
+  "preview": "https://i.imgur.com/mbiW6QU.gif"
+}
