@@ -1,6 +1,6 @@
-name: Sync dist bundles
+name: Sync release bundles
 description: >-
-  Mirror *.wh.cpp from this repository into the mods directory of the
+  Mirror *.wh.cpp from a release snapshot into the mods directory of the
   target repository, committing only when the file contents differ.
 
 inputs:
@@ -18,7 +18,7 @@ inputs:
     required: false
     default: '*.wh.cpp'
   prune:
-    description: Delete target bundles that no longer exist in dist
+    description: Delete target bundles that no longer exist in the snapshot
     required: false
     default: 'false'
   dry-run:
@@ -48,7 +48,7 @@ runs:
       run: |
         set -euo pipefail
 
-        # 优先检测 source-root/dist，不存在则回退至 source-root 根目录
+        # Release checkouts keep bundles at the root; local dist/ is also read.
         if [ -d "$SOURCE_ROOT/dist" ]; then
           SRC_MODS="$SOURCE_ROOT/dist"
         elif [ -d "$SOURCE_ROOT" ]; then
@@ -115,7 +115,7 @@ runs:
       run: |
         set -euo pipefail
 
-        # 优先检测 source-root/dist，不存在则回退至 source-root 根目录
+        # Release checkouts keep bundles at the root; local dist/ is also read.
         if [ -d "$SOURCE_ROOT/dist" ]; then
           SRC_MODS="$SOURCE_ROOT/dist"
         elif [ -d "$SOURCE_ROOT" ]; then
@@ -131,7 +131,7 @@ runs:
 
         added=(); updated=(); removed=()
 
-        # 1) 拷贝新增与变动文件
+        # 1) Copy new and changed files.
         while IFS= read -r -d '' f; do
           rel="${f#"$SRC_MODS"/}"
           dst="$DST_MODS/$rel"
@@ -143,7 +143,7 @@ runs:
           fi
         done < <(find "$SRC_MODS" -maxdepth 1 -type f -name "$GLOB" -print0)
 
-        # 2) 按需删除目标中已废弃的文件
+        # 2) Remove retired files when pruning is enabled.
         if [ "${PRUNE:-false}" = "true" ] && [ -d "$DST_MODS" ]; then
           while IFS= read -r -d '' f; do
             rel="${f#"$DST_MODS"/}"
@@ -154,13 +154,13 @@ runs:
           done < <(find "$DST_MODS" -maxdepth 1 -type f -name "$GLOB" -print0)
         fi
 
-        # 3) 获取提交信息（兼容非 Git 目录的极端兜底）
+        # 3) Read the source commit message with a non-Git fallback.
         if git -C "$SOURCE_ROOT" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
           SRC_SHA="$(git -C "$SOURCE_ROOT" rev-parse --short HEAD)"
           SRC_MSG="$(git -C "$SOURCE_ROOT" log -1 --pretty=%s)"
           MSG="sync(mods): $SRC_MSG (Yoko@$SRC_SHA)"
         else
-          MSG="sync(mods): update mod bundles from latest release"
+          MSG="sync(mods): update bundles from latest release"
           SRC_SHA="unknown"
           SRC_MSG="update bundles"
         fi

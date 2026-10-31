@@ -279,15 +279,25 @@ class OutputTests(BundleTestCase):
 
 
 class RepositoryIntegrationTests(unittest.TestCase):
-    def test_repository_bundles_are_up_to_date(self) -> None:
+    def test_repository_bundles_are_deterministic(self) -> None:
         if not any((REPO_ROOT / "mods").glob("*/src/main.cpp")):
             self.skipTest("repository has no modular mods yet")
-        results = bundle_all(REPO_ROOT, check=True)
-        self.assertTrue(results)
-        for stats in results:
-            self.assertFalse(stats.changed)
-            self.assertGreater(stats.source_lines, 0)
-            self.assertIn(f"mods/{stats.mod_id}/src/main.cpp", stats.files)
+        with tempfile.TemporaryDirectory() as temp:
+            output = Path(temp)
+            first = bundle_all(REPO_ROOT, output_root=output)
+            second = bundle_all(REPO_ROOT, check=True, output_root=output)
+            self.assertTrue(first)
+            self.assertEqual(
+                [(item.mod_id, item.output_lines) for item in first],
+                [(item.mod_id, item.output_lines) for item in second],
+            )
+            for stats in first:
+                self.assertTrue(stats.changed)
+                self.assertGreater(stats.source_lines, 0)
+                self.assertIn(f"mods/{stats.mod_id}/src/main.cpp", stats.files)
+                self.assertTrue((output / f"{stats.mod_id}.wh.cpp").is_file())
+            for stats in second:
+                self.assertFalse(stats.changed)
 
 
 if __name__ == "__main__":

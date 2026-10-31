@@ -339,9 +339,13 @@ def _discover(root: Path, mod_filter: str | None) -> list[Path]:
 
 
 def bundle_all(
-    root: Path, mod_filter: str | None = None, check: bool = False
+    root: Path,
+    mod_filter: str | None = None,
+    check: bool = False,
+    output_root: Path | None = None,
 ) -> list[BundleStats]:
     root = root.resolve()
+    dist_root = (output_root if output_root is not None else root / "dist").resolve()
     results: list[BundleStats] = []
     for entry in _discover(root, mod_filter):
         mod_dir = entry.parent.parent
@@ -353,14 +357,18 @@ def bundle_all(
         if not text.endswith("\n"):
             text += "\n"
         _validate_metadata(mod_id, text, manifest)
-        output_path = root / "dist" / f"{mod_id}.wh.cpp"
+        output_path = dist_root / f"{mod_id}.wh.cpp"
         data = text.encode("utf-8")
         changed = False
+        try:
+            output_label = _normalize_rel(output_path, root)
+        except ValueError:
+            output_label = output_path.as_posix()
         if check:
             existing = output_path.read_bytes() if output_path.is_file() else None
             if existing != data:
                 raise BundleError(
-                    f"stale bundle: {_normalize_rel(output_path, root)} (run python tools/bundle.py)"
+                    f"stale bundle: {output_label} (run python tools/bundle.py)"
                 )
         else:
             previous = output_path.read_bytes() if output_path.is_file() else None
@@ -371,7 +379,7 @@ def bundle_all(
             BundleStats(
                 mod_id=mod_id,
                 entry=_normalize_rel(entry, root),
-                output=_normalize_rel(output_path, root),
+                output=output_label,
                 files=tuple(_normalize_rel(path, root) for path in inlined),
                 source_lines=source_lines,
                 output_lines=text.count("\n"),
@@ -401,6 +409,12 @@ def main(argv: list[str] | None = None) -> int:
         description="Amalgamate modular Windhawk mods into dist/<mod-id>.wh.cpp."
     )
     parser.add_argument("--root", type=Path, default=None, help="repository root")
+    parser.add_argument(
+        "--output",
+        type=Path,
+        default=None,
+        help="bundle output directory (default: <root>/dist)",
+    )
     parser.add_argument("--mod", dest="mod_id", default=None, help="bundle one mod")
     parser.add_argument(
         "--check",
@@ -412,7 +426,7 @@ def main(argv: list[str] | None = None) -> int:
 
     root = args.root if args.root is not None else Path(__file__).resolve().parent.parent
     try:
-        results = bundle_all(root, args.mod_id, args.check)
+        results = bundle_all(root, args.mod_id, args.check, args.output)
     except BundleError as error:
         print(f"error: {error}", file=sys.stderr)
         return 1

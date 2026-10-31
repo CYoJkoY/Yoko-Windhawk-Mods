@@ -1,4 +1,4 @@
-name: Sync mods -> CYoJkoY/windhawk-mods
+name: Sync release bundles -> CYoJkoY/windhawk-mods
 
 on:
   schedule:
@@ -58,7 +58,7 @@ jobs:
           sparse-checkout-cone-mode: false
           token: ${{ secrets.SYNC_PAT }}
 
-      - name: Sync dist bundles
+      - name: Sync release bundles
         uses: ./.github/actions/sync-dist
         with:
           source-root: ${{ github.workspace }}/source
