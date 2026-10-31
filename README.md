@@ -1,8 +1,8 @@
 # Yoko-Windhawk-Mods
 
 Source workspace for my Windhawk mods. Each mod is developed as small C++
-headers under `mods/<mod-id>/` and assembled into a self-contained
-`dist/<mod-id>.wh.cpp` file for the Windhawk mod repository.
+headers under `mods/<mod-id>/`. The `main` branch holds source code and
+tooling; generated bundles live only on the `release` branch.
 
 ## Layout
 
@@ -12,7 +12,7 @@ headers under `mods/<mod-id>/` and assembled into a self-contained
 - `mods/<mod-id>/src/` - settings, hooks, rendering and platform modules.
 - `shared/` - header-only helpers shared by mods.
 - `tools/bundle.py` - deterministic amalgamation tool.
-- `dist/<mod-id>.wh.cpp` - generated source submitted to Windhawk.
+- `dist/<mod-id>.wh.cpp` - local bundler output; ignored by Git.
 - `mods/<mod-id>/doc/` - mod-specific notes and assets.
 
 ## Building
@@ -34,7 +34,7 @@ output atomically.
 
 Never edit a file under `dist/` by hand. Change the modular sources and rerun
 the bundler. `python tools/bundle.py --check` fails when a generated file is
-stale.
+stale. `--output <dir>` writes bundles somewhere other than `dist/`.
 
 ## Validation
 
@@ -43,18 +43,19 @@ metadata, and compiles every bundle with Windhawk 1.7.3 and 2.0.0-alpha.8. It
 uploads the bundled sources as the `mod-bundles` artifact and the compiled x86,
 x64, and ARM64 DLLs as the `windhawk-<version>-dlls` artifacts.
 
-On a push to `main`, the `bundle` job regenerates `dist/` first. When the
-regenerated files match the committed ones, no commit is published and the
-sync job is skipped. When they differ, the `compile` job builds the regenerated
-artifact, the `publish` job commits only `dist/`, and the `sync` job mirrors
-that published commit into `mods/` of
-[CYoJkoY/windhawk-mods](https://github.com/CYoJkoY/windhawk-mods). Pull requests
-and manual runs keep the strict `python tools/bundle.py --check` gate.
+On a push to `main`, the `bundle` job generates `dist/` in the runner, the
+`compile` job validates the artifact, and the `publish` job writes a snapshot
+to the `release` branch. The release root contains only `<mod-id>.wh.cpp`
+files and a `.gitignore` that ignores everything else. Each publish replaces
+the whole snapshot, so deleted mods cannot leave stale bundles behind. An
+unchanged snapshot creates no commit. If `main` moves while compilation runs,
+the publish is skipped and the newer push owns the release update.
 
-`.github/workflows/sync-mods.yml` is the scheduled and manual fallback. It
-requires a successful `Validate mods` push run that covers the checked-out
-commit and leaves an up-to-date target untouched. Set `dry_run` to inspect the
-target diff without pushing.
+The `sync` job then mirrors that exact release commit into `mods/` of
+[CYoJkoY/windhawk-mods](https://github.com/CYoJkoY/windhawk-mods).
+`.github/workflows/sync-mods.yml` is the scheduled and manual fallback for the
+same release branch. It leaves an up-to-date target untouched; set `dry_run`
+to inspect the target diff without pushing.
 
 ## Adding a mod
 
