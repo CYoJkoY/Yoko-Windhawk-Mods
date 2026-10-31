@@ -41,21 +41,22 @@ def extract_run(path: Path, step: str) -> str:
     if start is None:
         raise AssertionError(f"step not found: {step} in {path}")
     body: list[str] = []
-    run_seen = False
+    run_indent: int | None = None
     for line in lines[start + 1 :]:
         if line.startswith("      - name:") or line.startswith("    - name:"):
             break
-        if not run_seen:
+        if run_indent is None:
             if line.strip() == "run: |":
-                run_seen = True
+                run_indent = len(line) - len(line.lstrip()) + 2
             continue
         if not line.strip():
             body.append("")
             continue
-        if not line.startswith("        "):
+        indent = len(line) - len(line.lstrip())
+        if indent < run_indent:
             break
-        body.append(line[8:])
-    if not run_seen:
+        body.append(line[run_indent:])
+    if run_indent is None:
         raise AssertionError(f"step has no run block: {step}")
     return "\n".join(body)
 
@@ -117,13 +118,16 @@ class SyncDistActionTests(unittest.TestCase):
     def tearDownClass(cls) -> None:
         cls._temp.cleanup()
 
-    def make_tree(self, name: str, target: bytes | None) -> tuple[Path, Path, Path]:
+    def make_tree(
+        self, name: str, target: bytes | None, root_only: bool = False
+    ) -> tuple[Path, Path, Path]:
         root = self.root / name
         source = root / "source"
         target_root = root / "target"
-        (source / "dist").mkdir(parents=True)
+        bundle_dir = source if root_only else source / "dist"
+        bundle_dir.mkdir(parents=True)
         (target_root / "mods").mkdir(parents=True)
-        (source / "dist" / "demo.wh.cpp").write_bytes(b"bundle\n")
+        (bundle_dir / "demo.wh.cpp").write_bytes(b"bundle\n")
         if target is not None:
             (target_root / "mods" / "demo.wh.cpp").write_bytes(target)
         git(source, "init", "-q", "-b", "main")
@@ -177,181 +181,22 @@ class SyncDistActionTests(unittest.TestCase):
         self.assertEqual(git(target, "status", "--porcelain"), "M mods/demo.wh.cpp")
         self.assertIn("demo.wh.cpp", summary)
 
+    def test_release_root_without_dist_is_supported(self) -> None:
+        source, target, root = self.make_tree("release-root", b"old\n", root_only=True)
+        code, values, _ = run_script(self.detect, root, self.variables(source, target))
+        self.assertEqual(code, 0)
+        self.assertEqual(values.get("changed"), "true")
 
-class BundleComparisonTests(unittest.TestCase):
-    """A push must publish only when the regenerated bundles differ."""
+
+class PublishReleaseActionTests(unittest.TestCase):
+    """The release branch contains only validated bundles and nothing else."""
 
     @classmethod
     def setUpClass(cls) -> None:
         cls._temp = tempfile.TemporaryDirectory()
         cls.root = Path(cls._temp.name)
-        workflow = REPO_ROOT / ".github" / "workflows" / "validate-mods.yml"
-        cls.compare = extract_run(workflow, "Compare regenerated bundles")
-
-    @classmethod
-    def tearDownClass(cls) -> None:
-        cls._temp.cleanup()
-
-    def make_repo(self, name: str) -> tuple[Path, str]:
-        repo = self.root / name
-        repo.mkdir(parents=True)
-        git(repo, "init", "-q", "-b", "main")
-        git(repo, "config", "user.email", "t@example.com")
-        git(repo, "config", "user.name", "T")
-        (repo / "dist").mkdir()
-        (repo / "dist" / "demo.wh.cpp").write_text("bundle\n", encoding="utf-8")
-        git(repo, "add", "-A")
-        git(repo, "commit", "-qm", "initial")
-        return repo, git(repo, "rev-parse", "HEAD")
-
-    def test_identical_bundle_and_untouched_dist_skip_publish(self) -> None:
-        repo, base = self.make_repo("identical")
-        (repo / "README.md").write_text("docs\n", encoding="utf-8")
-        git(repo, "add", "-A")
-        git(repo, "commit", "-qm", "docs")
-        code, values, summary = run_script(
-            self.compare, repo, {"BASE_SHA": base}
-        )
-        self.assertEqual(code, 0)
-        self.assertEqual(values.get("regenerated"), "false")
-        self.assertEqual(values.get("dist_changed"), "false")
-        self.assertIn("no commit is published", summary)
-
-    def test_identical_bundle_with_dist_change_still_syncs(self) -> None:
-        repo, base = self.make_repo("dist-only")
-        (repo / "dist" / "demo.wh.cpp").write_text("bundle v2\n", encoding="utf-8")
-        git(repo, "add", "-A")
-        git(repo, "commit", "-qm", "dist")
-        code, values, _ = run_script(self.compare, repo, {"BASE_SHA": base})
-        self.assertEqual(code, 0)
-        self.assertEqual(values.get("regenerated"), "false")
-        self.assertEqual(values.get("dist_changed"), "true")
-
-    def test_regenerated_bundle_without_committed_dist_is_flagged(self) -> None:
-        repo, base = self.make_repo("regenerated")
-        (repo / "README.md").write_text("docs\n", encoding="utf-8")
-        git(repo, "add", "-A")
-        git(repo, "commit", "-qm", "docs")
-        # The bundle step writes its output but commits nothing; this dirty
-        # file is the regenerated content the comparison must notice.
-        (repo / "dist" / "demo.wh.cpp").write_text("regenerated\n", encoding="utf-8")
-        code, values, summary = run_script(self.compare, repo, {"BASE_SHA": base})
-        self.assertEqual(code, 0)
-        self.assertEqual(values.get("regenerated"), "true")
-        self.assertEqual(values.get("dist_changed"), "true")
-        self.assertIn("demo.wh.cpp", summary)
-
-    def test_new_bundle_is_detected_as_untracked(self) -> None:
-        repo, _ = self.make_repo("new")
-        (repo / "dist" / "added.wh.cpp").write_text("new\n", encoding="utf-8")
-        code, values, _ = run_script(self.compare, repo, {"BASE_SHA": ""})
-        self.assertEqual(code, 0)
-        self.assertEqual(values.get("regenerated"), "true")
-        self.assertEqual(values.get("dist_changed"), "true")
-
-
-class ValidationGateTests(unittest.TestCase):
-    """The fallback sync accepts only bundles a successful run covered."""
-
-    @classmethod
-    def setUpClass(cls) -> None:
-        cls._temp = tempfile.TemporaryDirectory()
-        cls.root = Path(cls._temp.name)
-        workflow = REPO_ROOT / ".github" / "workflows" / "sync-mods.yml"
-        cls.gate = extract_run(workflow, "Require successful validation")
-
-    @classmethod
-    def tearDownClass(cls) -> None:
-        cls._temp.cleanup()
-
-    def make_source(self, name: str, advance: bool = True) -> tuple[Path, str, str]:
-        source = self.root / name / "source"
-        source.mkdir(parents=True)
-        git(source, "init", "-q", "-b", "main")
-        git(source, "config", "user.email", "t@example.com")
-        git(source, "config", "user.name", "T")
-        (source / "README.md").write_text("readme\n", encoding="utf-8")
-        git(source, "add", "-A")
-        git(source, "commit", "-qm", "initial")
-        validated = git(source, "rev-parse", "HEAD")
-        head = validated
-        if advance:
-            (source / "README.md").write_text("docs\n", encoding="utf-8")
-            git(source, "add", "-A")
-            git(source, "commit", "-qm", "docs")
-            head = git(source, "rev-parse", "HEAD")
-        return source, validated, head
-
-    def variables(self, source: Path) -> dict[str, str]:
-        return {
-            "GITHUB_WORKSPACE": source.parent.as_posix(),
-            "GITHUB_REPOSITORY": "owner/repo",
-            "DRY_RUN": "false",
-        }
-
-    def test_dry_run_bypasses_gate(self) -> None:
-        source, _, _ = self.make_source("dry")
-        variables = self.variables(source)
-        variables["DRY_RUN"] = "true"
-        code, values, _ = run_script(self.gate, source, variables)
-        self.assertEqual(code, 0)
-        self.assertEqual(values.get("ready"), "true")
-
-    def test_covered_commit_passes(self) -> None:
-        source, validated, _ = self.make_source("covered", advance=False)
-        runs = self.root / "covered" / "runs.json"
-        runs.write_text(f"success\t{validated}\n", encoding="utf-8")
-        code, values, _ = run_script(
-            self.gate, source, self.variables(source), self.fake_gh(runs)
-        )
-        self.assertEqual(code, 0)
-        self.assertEqual(values.get("ready"), "true")
-
-    def test_unvalidated_commit_after_success_blocks(self) -> None:
-        source, validated, head = self.make_source("after")
-        runs = self.root / "after" / "runs.json"
-        runs.write_text(f"success\t{validated}\n", encoding="utf-8")
-        code, values, _ = run_script(
-            self.gate, source, self.variables(source), self.fake_gh(runs)
-        )
-        self.assertEqual(code, 0)
-        self.assertNotEqual(validated, head)
-        self.assertEqual(values.get("ready"), "false")
-
-    def test_failed_validation_blocks(self) -> None:
-        source, validated, _ = self.make_source("failed")
-        runs = self.root / "failed" / "runs.json"
-        runs.write_text(f"failure\t{validated}\n", encoding="utf-8")
-        code, values, summary = run_script(
-            self.gate, source, self.variables(source), self.fake_gh(runs)
-        )
-        self.assertEqual(code, 0)
-        self.assertEqual(values.get("ready"), "false")
-        self.assertIn("Sync skipped", summary)
-
-    def fake_gh(self, runs: Path) -> dict[str, str]:
-        """Put a stub gh on PATH that returns one conclusion and head SHA."""
-
-        bindir = runs.parent / "bin"
-        bindir.mkdir(exist_ok=True)
-        gh = bindir / "gh"
-        gh.write_text('#!/usr/bin/env bash\ncat "$FAKE_RUNS"\n', encoding="utf-8", newline="\n")
-        gh.chmod(0o755)
-        return {
-            "PATH": f"{bindir.as_posix()}{os.pathsep}{os.environ['PATH']}",
-            "FAKE_RUNS": runs.as_posix(),
-        }
-
-
-class PublishDistTests(unittest.TestCase):
-    """The publish job must commit only validated dist and never clobber newer sources."""
-
-    @classmethod
-    def setUpClass(cls) -> None:
-        cls._temp = tempfile.TemporaryDirectory()
-        cls.root = Path(cls._temp.name)
-        workflow = REPO_ROOT / ".github" / "workflows" / "validate-mods.yml"
-        cls.publish = extract_run(workflow, "Commit regenerated dist")
+        action = REPO_ROOT / ".github" / "actions" / "publish-release" / "action.yml"
+        cls.publish = extract_run(action, "Publish release snapshot")
 
     @classmethod
     def tearDownClass(cls) -> None:
@@ -369,22 +214,23 @@ class PublishDistTests(unittest.TestCase):
         (work / "shared").mkdir()
         (work / "shared" / "helper.h").write_text("// helper\n", encoding="utf-8")
         (work / ".gitattributes").write_text("*.wh.cpp text eol=lf\n", encoding="utf-8")
-        (work / "dist").mkdir()
-        (work / "dist" / "demo.wh.cpp").write_text("old bundle\n", encoding="utf-8")
         (work / "README.md").write_text("readme\n", encoding="utf-8")
         git(work, "add", "-A")
-        git(work, "commit", "-qm", "[Issue-64] feat(demo): add demo mod")
+        git(work, "commit", "-qm", "[Issue-66] feat(demo): add demo mod")
         git(work, "push", "-q", "origin", "main")
         return origin, work, git(work, "rev-parse", "HEAD")
 
-    def make_artifact(self, name: str, content: str) -> Path:
-        runner_temp = self.root / name / "runner"
+    def make_artifact(
+        self, name: str, files: dict[str, str], run: str = "runner"
+    ) -> Path:
+        runner_temp = self.root / name / run
         artifact = runner_temp / "mod-bundles"
         artifact.mkdir(parents=True)
-        (artifact / "demo.wh.cpp").write_text(content, encoding="utf-8")
+        for filename, content in files.items():
+            (artifact / filename).write_text(content, encoding="utf-8")
         return runner_temp
 
-    def advance_remote(self, origin: Path, path: str, content: str, message: str) -> str:
+    def advance_main(self, origin: Path, path: str, content: str, message: str) -> str:
         other = self.root / origin.parent.name / "other"
         git(self.root, "clone", "-q", str(origin), str(other))
         git(other, "config", "user.email", "t@example.com")
@@ -395,139 +241,111 @@ class PublishDistTests(unittest.TestCase):
         git(other, "push", "-q", "origin", "main")
         return git(other, "rev-parse", "HEAD")
 
-    def test_publishes_dist_only_commit(self) -> None:
+    def run_publish(
+        self, work: Path, runner_temp: Path, validated: str
+    ) -> tuple[int, dict[str, str], str]:
+        return run_script(
+            self.publish,
+            work,
+            {
+                "BUNDLE_DIR": (runner_temp / "mod-bundles").as_posix(),
+                "VALIDATED_SHA": validated,
+                "RELEASE_BRANCH": "release",
+                "RUNNER_TEMP": runner_temp.as_posix(),
+            },
+        )
+
+    def test_publishes_root_only_snapshot_as_orphan(self) -> None:
         origin, work, validated = self.make_remote("publish")
-        runner_temp = self.make_artifact("publish", "new bundle\n")
-        code, values, summary = run_script(
-            self.publish, work, {"RUNNER_TEMP": runner_temp.as_posix()}
+        runner_temp = self.make_artifact(
+            "publish", {"demo.wh.cpp": "new bundle\n", "notes.txt": "ignore me\n"}
         )
+        code, values, summary = self.run_publish(work, runner_temp, validated)
         self.assertEqual(code, 0)
         self.assertEqual(values.get("published"), "true")
-        published = values.get("sha")
-        self.assertIsNotNone(published)
-        self.assertNotEqual(published, validated)
-        self.assertEqual(git(origin, "show", f"{published}:dist/demo.wh.cpp"), "new bundle")
-        changed = git(origin, "diff", "--name-only", f"{validated}", published).splitlines()
-        self.assertEqual(changed, ["dist/demo.wh.cpp"])
-        self.assertIn("chore(dist): #64", git(origin, "log", "-1", "--format=%s", published))
-        self.assertIn("Published dist", summary)
-
-    def test_replays_on_newer_docs_commit(self) -> None:
-        origin, work, validated = self.make_remote("replay")
-        newer = self.advance_remote(origin, "README.md", "updated readme\n", "docs: update readme")
-        runner_temp = self.make_artifact("replay", "new bundle\n")
-        code, values, _ = run_script(
-            self.publish, work, {"RUNNER_TEMP": runner_temp.as_posix()}
+        self.assertEqual(values.get("changed"), "true")
+        release = values.get("sha")
+        self.assertIsNotNone(release)
+        self.assertEqual(
+            git(origin, "ls-tree", "-r", "--name-only", release).splitlines(),
+            [".gitignore", "demo.wh.cpp"],
         )
-        self.assertEqual(code, 0)
-        self.assertEqual(values.get("published"), "true")
-        published = values.get("sha")
-        self.assertEqual(git(origin, "rev-parse", f"{published}^"), newer)
-        self.assertEqual(git(origin, "show", f"{published}:README.md"), "updated readme")
-        self.assertEqual(git(origin, "show", f"{published}:dist/demo.wh.cpp"), "new bundle")
+        self.assertEqual(git(origin, "show", f"{release}:demo.wh.cpp"), "new bundle")
+        self.assertEqual(
+            len(git(origin, "rev-list", "--parents", "-n", "1", release).split()), 1
+        )
+        self.assertEqual(
+            git(origin, "log", "-1", "--format=%s", release),
+            "chore(release): #66 publish bundles from " + validated[:7],
+        )
+        self.assertEqual(git(origin, "rev-parse", "main"), validated)
+        self.assertIn("Release publish", summary)
 
-    def test_refuses_to_overwrite_newer_sources(self) -> None:
-        origin, work, _ = self.make_remote("superseded")
-        newer = self.advance_remote(
+    def test_identical_artifact_does_not_create_an_empty_commit(self) -> None:
+        origin, work, validated = self.make_remote("identical")
+        runner_temp = self.make_artifact("identical", {"demo.wh.cpp": "bundle\n"})
+        first_code, first_values, _ = self.run_publish(work, runner_temp, validated)
+        self.assertEqual(first_code, 0)
+        first_release = first_values.get("sha")
+        second_code, second_values, _ = self.run_publish(work, runner_temp, validated)
+        self.assertEqual(second_code, 0)
+        self.assertEqual(second_values.get("published"), "true")
+        self.assertEqual(second_values.get("changed"), "false")
+        self.assertEqual(second_values.get("sha"), first_release)
+        self.assertEqual(git(origin, "rev-parse", "release"), first_release)
+
+    def test_release_snapshot_removes_stale_bundles(self) -> None:
+        origin, work, validated = self.make_remote("replace")
+        first_runner = self.make_artifact(
+            "replace", {"alpha.wh.cpp": "alpha\n", "demo.wh.cpp": "demo v1\n"}
+        )
+        code, first_values, _ = self.run_publish(work, first_runner, validated)
+        self.assertEqual(code, 0)
+        first_release = first_values.get("sha")
+        second_runner = self.make_artifact(
+            "replace", {"demo.wh.cpp": "demo v2\n"}, run="runner-2"
+        )
+        code, second_values, _ = self.run_publish(work, second_runner, validated)
+        self.assertEqual(code, 0)
+        second_release = second_values.get("sha")
+        self.assertEqual(git(origin, "rev-parse", f"{second_release}^"), first_release)
+        self.assertEqual(
+            git(origin, "ls-tree", "-r", "--name-only", second_release).splitlines(),
+            [".gitignore", "demo.wh.cpp"],
+        )
+        self.assertEqual(git(origin, "show", f"{second_release}:demo.wh.cpp"), "demo v2")
+
+    def test_newer_main_skips_publication(self) -> None:
+        origin, work, validated = self.make_remote("superseded")
+        newer = self.advance_main(
             origin, "mods/demo/src/main.cpp", "// newer source\n", "feat: newer source"
         )
-        runner_temp = self.make_artifact("superseded", "new bundle\n")
-        code, values, summary = run_script(
-            self.publish, work, {"RUNNER_TEMP": runner_temp.as_posix()}
-        )
+        runner_temp = self.make_artifact("superseded", {"demo.wh.cpp": "new bundle\n"})
+        code, values, summary = self.run_publish(work, runner_temp, validated)
         self.assertEqual(code, 0)
         self.assertEqual(values.get("published"), "false")
-        self.assertEqual(git(origin, "rev-parse", "main"), newer)
+        self.assertEqual(values.get("changed"), "false")
         self.assertIn("superseded", summary)
-
-    def test_reuses_main_that_already_has_the_bundle(self) -> None:
-        origin, work, _ = self.make_remote("already")
-        newer = self.advance_remote(
-            origin, "dist/demo.wh.cpp", "new bundle\n", "chore(dist): already published"
-        )
-        runner_temp = self.make_artifact("already", "new bundle\n")
-        code, values, _ = run_script(
-            self.publish, work, {"RUNNER_TEMP": runner_temp.as_posix()}
-        )
-        self.assertEqual(code, 0)
-        self.assertEqual(values.get("published"), "true")
-        self.assertEqual(values.get("sha"), newer)
         self.assertEqual(git(origin, "rev-parse", "main"), newer)
+        self.assertEqual(git(origin, "show", "main:mods/demo/src/main.cpp"), "// newer source")
+        branches = git(origin, "branch", "--list", "release")
+        self.assertEqual(branches, "")
 
-    def test_refuses_to_overwrite_a_newer_direct_dist_commit(self) -> None:
-        origin, work, _ = self.make_remote("dist-race")
-        newer = self.advance_remote(
-            origin, "dist/demo.wh.cpp", "hand edited\n", "fix: hand edit dist"
-        )
-        runner_temp = self.make_artifact("dist-race", "new bundle\n")
-        code, values, summary = run_script(
-            self.publish, work, {"RUNNER_TEMP": runner_temp.as_posix()}
-        )
-        self.assertEqual(code, 0)
-        self.assertEqual(values.get("published"), "false")
-        self.assertEqual(git(origin, "rev-parse", "main"), newer)
-        self.assertEqual(git(origin, "show", "main:dist/demo.wh.cpp"), "hand edited")
-        self.assertIn("superseded", summary)
+    def test_empty_artifact_is_rejected(self) -> None:
+        origin, work, validated = self.make_remote("empty")
+        runner_temp = self.make_artifact("empty", {})
+        code, values, _ = self.run_publish(work, runner_temp, validated)
+        self.assertNotEqual(code, 0)
+        self.assertEqual(values, {})
+        self.assertEqual(git(origin, "branch", "--list", "release"), "")
 
-
-class SyncFreshnessTests(unittest.TestCase):
-    """A queued sync must not mirror dist that main has already replaced."""
-
-    @classmethod
-    def setUpClass(cls) -> None:
-        cls._temp = tempfile.TemporaryDirectory()
-        cls.root = Path(cls._temp.name)
-        workflow = REPO_ROOT / ".github" / "workflows" / "validate-mods.yml"
-        cls.fresh = extract_run(workflow, "Confirm main still has this dist")
-
-    @classmethod
-    def tearDownClass(cls) -> None:
-        cls._temp.cleanup()
-
-    def make_checkout(self, name: str) -> tuple[Path, Path, Path]:
-        origin = self.root / name / "origin.git"
-        author = self.root / name / "author"
-        runner = self.root / name / "runner"
-        git(self.root, "init", "-q", "--bare", "-b", "main", str(origin))
-        git(self.root, "clone", "-q", str(origin), str(author))
-        git(author, "config", "user.email", "t@example.com")
-        git(author, "config", "user.name", "T")
-        (author / "dist").mkdir()
-        (author / "dist" / "demo.wh.cpp").write_text("bundle\n", encoding="utf-8")
-        git(author, "add", "-A")
-        git(author, "commit", "-qm", "initial")
-        git(author, "push", "-q", "origin", "main")
-        git(
-            self.root,
-            "clone",
-            "-q",
-            "--depth",
-            "1",
-            f"file://{origin.as_posix()}",
-            str(runner),
-        )
-        return origin, author, runner
-
-    def test_skips_when_main_has_newer_bundles(self) -> None:
-        origin, author, runner = self.make_checkout("newer")
-        (author / "dist" / "demo.wh.cpp").write_text("newer\n", encoding="utf-8")
-        git(author, "add", "-A")
-        git(author, "commit", "-qm", "chore(dist): newer")
-        git(author, "push", "-q", "origin", "main")
-        code, values, summary = run_script(self.fresh, runner, {})
-        self.assertEqual(code, 0)
-        self.assertEqual(values.get("current"), "false")
-        self.assertIn("newer validation run", summary)
-
-    def test_proceeds_when_main_still_has_this_dist(self) -> None:
-        _, author, runner = self.make_checkout("same")
-        (author / "README.md").write_text("docs\n", encoding="utf-8")
-        git(author, "add", "-A")
-        git(author, "commit", "-qm", "docs")
-        git(author, "push", "-q", "origin", "main")
-        code, values, _ = run_script(self.fresh, runner, {})
-        self.assertEqual(code, 0)
-        self.assertEqual(values.get("current"), "true")
+    def test_invalid_bundle_name_is_rejected(self) -> None:
+        origin, work, validated = self.make_remote("invalid")
+        runner_temp = self.make_artifact("invalid", {"Demo.wh.cpp": "bad name\n"})
+        code, values, _ = self.run_publish(work, runner_temp, validated)
+        self.assertNotEqual(code, 0)
+        self.assertEqual(values, {})
+        self.assertEqual(git(origin, "branch", "--list", "release"), "")
 
 
 if __name__ == "__main__":
