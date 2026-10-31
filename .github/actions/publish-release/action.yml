@@ -1,0 +1,187 @@
+name: Publish release branch
+description: >-
+  Publish validated Windhawk bundles as an isolated release snapshot.
+
+inputs:
+  bundle-dir:
+    description: Directory containing the generated *.wh.cpp bundles
+    required: true
+  validated-sha:
+    description: Commit that produced the bundles
+    required: true
+  branch:
+    description: Branch that holds the generated bundles
+    required: false
+    default: release
+
+outputs:
+  published:
+    description: '"true" when the release branch is ready'
+    value: ${{ steps.publish.outputs.published }}
+  changed:
+    description: '"true" when a new release commit was pushed'
+    value: ${{ steps.publish.outputs.changed }}
+  sha:
+    description: Release commit that should be mirrored
+    value: ${{ steps.publish.outputs.sha }}
+
+runs:
+  using: composite
+  steps:
+    - name: Publish release snapshot
+      id: publish
+      shell: bash
+      env:
+        BUNDLE_DIR: ${{ inputs.bundle-dir }}
+        VALIDATED_SHA: ${{ inputs.validated-sha }}
+        RELEASE_BRANCH: ${{ inputs.branch }}
+      run: |
+        set -euo pipefail
+
+        repo_root="$(pwd)"
+        git_dir="$(git rev-parse --absolute-git-dir)"
+        head_sha="$(git rev-parse HEAD)"
+        if [ "$head_sha" != "$VALIDATED_SHA" ]; then
+          echo "::error::checked out commit $head_sha does not match validated commit $VALIDATED_SHA"
+          exit 1
+        fi
+        if [[ ! "$RELEASE_BRANCH" =~ ^[A-Za-z0-9][A-Za-z0-9._/-]*$ ]]; then
+          echo "::error::invalid release branch name: $RELEASE_BRANCH"
+          exit 1
+        fi
+        if [ ! -d "$BUNDLE_DIR" ]; then
+          echo "::error::bundle directory not found: $BUNDLE_DIR"
+          exit 1
+        fi
+
+        git config user.name "github-actions[bot]"
+        git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+        git fetch --no-tags origin main
+        remote_main="$(git rev-parse refs/remotes/origin/main)"
+        if [ "$remote_main" != "$VALIDATED_SHA" ]; then
+          {
+            echo "### Release publish superseded"
+            echo ""
+            echo "- validated: \`$VALIDATED_SHA\`"
+            echo "- current main: \`$remote_main\`"
+            echo "- A newer main commit owns the release publish."
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "published=false" >> "$GITHUB_OUTPUT"
+          echo "changed=false" >> "$GITHUB_OUTPUT"
+          echo "sha=" >> "$GITHUB_OUTPUT"
+          exit 0
+        fi
+
+        stage=""
+        index=""
+        cleanup() {
+          if [ -n "${stage:-}" ]; then rm -rf "$stage"; fi
+          if [ -n "${index:-}" ]; then rm -f "$index"; fi
+        }
+        trap cleanup EXIT
+
+        stage="$(mktemp -d "${RUNNER_TEMP}/release-stage.XXXXXX")"
+        index="${RUNNER_TEMP}/release-index.$$"
+
+        bundles=()
+        while IFS= read -r -d '' file; do
+          bundles+=("$file")
+        done < <(find "$BUNDLE_DIR" -maxdepth 1 -type f -name '*.wh.cpp' -print0 | sort -z)
+        if [ "${#bundles[@]}" -eq 0 ]; then
+          echo "::error::no .wh.cpp bundles found in $BUNDLE_DIR"
+          exit 1
+        fi
+
+        for file in "${bundles[@]}"; do
+          name="$(basename "$file")"
+          if [[ ! "$name" =~ ^[a-z0-9][a-z0-9-]*\.wh\.cpp$ ]]; then
+            echo "::error::invalid bundle name: $name"
+            exit 1
+          fi
+          cp "$file" "$stage/$name"
+        done
+        printf '*\n!*.wh.cpp\n!.gitignore\n' > "$stage/.gitignore"
+
+        rm -f "$index"
+        export GIT_INDEX_FILE="$index"
+        git read-tree --empty
+        (cd "$stage" && GIT_DIR="$git_dir" GIT_WORK_TREE="$stage" GIT_INDEX_FILE="$index" git add -A -- .)
+        tree="$(git write-tree)"
+        unset GIT_INDEX_FILE
+
+        if [ -z "$(git ls-tree -r --name-only "$tree" | grep -x '.gitignore' || true)" ]; then
+          echo "::error::release tree is missing .gitignore"
+          exit 1
+        fi
+        while IFS= read -r path; do
+          if [ "$path" = ".gitignore" ]; then
+            continue
+          fi
+          if [[ ! "$path" =~ ^[a-z0-9][a-z0-9-]*\.wh\.cpp$ ]]; then
+            echo "::error::release tree contains an unexpected path: $path"
+            exit 1
+          fi
+        done < <(git ls-tree -r --name-only "$tree")
+
+        subject="$(git log -1 --pretty=%s "$VALIDATED_SHA")"
+        issue="$(printf '%s' "$subject" | sed -nE 's/.*Issue-([0-9]+).*/\1/p' | head -n 1)"
+        if [ -z "$issue" ]; then
+          issue="$(printf '%s' "$subject" | grep -oE '#[0-9]+' | head -n 1 | tr -d '#' || true)"
+        fi
+        short_sha="$(git rev-parse --short=7 "$VALIDATED_SHA")"
+        if [ -n "$issue" ]; then
+          message="chore(release): #$issue publish bundles from $short_sha"
+        else
+          message="chore(release): publish bundles from $short_sha"
+        fi
+
+        pushed=0
+        changed=false
+        release_sha=""
+        for attempt in 1 2 3; do
+          remote_release="$(git ls-remote --heads origin "refs/heads/$RELEASE_BRANCH" | awk '{print $1}')"
+          parent=""
+          if [ -n "$remote_release" ]; then
+            git fetch --no-tags origin "+refs/heads/$RELEASE_BRANCH:refs/remotes/origin/$RELEASE_BRANCH"
+            parent="$(git rev-parse "refs/remotes/origin/$RELEASE_BRANCH")"
+          fi
+
+          if [ -n "$parent" ] && [ "$(git rev-parse "$parent^{tree}")" = "$tree" ]; then
+            release_sha="$parent"
+            echo "Release branch already matches the validated bundles."
+            break
+          fi
+
+          commit_args=(-m "$message")
+          if [ -n "$parent" ]; then
+            commit_args+=(-p "$parent")
+          fi
+          commit="$(git commit-tree "$tree" "${commit_args[@]}")"
+
+          if git push origin "$commit:refs/heads/$RELEASE_BRANCH"; then
+            pushed=1
+            changed=true
+            release_sha="$commit"
+            break
+          fi
+          echo "Release push attempt $attempt lost a race, retrying"
+          sleep $((attempt * 5))
+        done
+
+        if [ -z "$release_sha" ]; then
+          echo "::error::could not publish bundles to $RELEASE_BRANCH after 3 attempts"
+          exit 1
+        fi
+
+        {
+          echo "### Release publish"
+          echo ""
+          echo "- branch: \`$RELEASE_BRANCH\`"
+          echo "- commit: \`$release_sha\`"
+          echo "- changed: $changed"
+          echo "- bundles: ${#bundles[@]}"
+        } >> "$GITHUB_STEP_SUMMARY"
+        echo "published=true" >> "$GITHUB_OUTPUT"
+        echo "changed=$changed" >> "$GITHUB_OUTPUT"
+        echo "sha=$release_sha" >> "$GITHUB_OUTPUT"

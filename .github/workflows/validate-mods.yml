@@ -37,7 +37,6 @@ jobs:
         with:
           python-version: '3.12'
 
-      # 不再依赖本地是否提交了 dist，统一由 bundler 在 Runner 中构建
       - name: Generate mod bundles
         run: python tools/bundle.py
 
@@ -94,7 +93,7 @@ jobs:
           tag_with_v="v${raw_version#v}"
           tag_without_v="${raw_version#v}"
 
-          # 自动兼容带或不带 'v' 的 GitHub Release Tag
+          # Accept release tags with or without the leading "v".
           installer_url="https://github.com/ramensoftware/windhawk/releases/download/${tag_with_v}/windhawk_setup.exe"
           echo "Downloading $installer_url"
           if ! curl --fail --location --retry 3 --retry-delay 1 "$installer_url" -o "$installer_path" 2>/dev/null; then
@@ -226,12 +225,15 @@ jobs:
     permissions:
       contents: write
     timeout-minutes: 10
+    outputs:
+      published: ${{ steps.publish.outputs.published }}
+      sha: ${{ steps.publish.outputs.sha }}
     steps:
-      - name: Checkout repository
+      - name: Checkout validated commit
         uses: actions/checkout@v4
         with:
-          fetch-depth: 1
-          token: ${{ secrets.GITHUB_TOKEN }}
+          ref: ${{ github.sha }}
+          fetch-depth: 0
 
       - name: Download bundled mods
         uses: actions/download-artifact@v4
@@ -239,60 +241,13 @@ jobs:
           name: mod-bundles
           path: ${{ runner.temp }}/mod-bundles
 
-      - name: Deploy rebuilt bundles to release branch root
-        shell: bash
-        run: |
-          set -euo pipefail
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-
-          orig_msg="$(git log -1 --pretty=%s)"
-          short_sha="$(echo "${{ github.sha }}" | cut -c1-7)"
-
-          # 1. 检出 release 分支（基于 FETCH_HEAD 避免单分支 shallow 模式下 origin/release 引用缺失）
-          if git ls-remote --exit-code --heads origin release >/dev/null 2>&1; then
-            git fetch origin release
-            git checkout -B release FETCH_HEAD
-          else
-            echo "Release branch not found. Initializing orphan branch."
-            git checkout --orphan release
-            git rm -rf . 2>/dev/null || true
-          fi
-
-          # 2. 写入 release 专有 .gitignore
-          printf "*\n!*.wh.cpp\n!.gitignore\n" > .gitignore
-          git add .gitignore
-
-          # 3. 先清理旧的 *.wh.cpp，避免已删除的 mod 成为幽灵文件
-          git rm -f *.wh.cpp 2>/dev/null || rm -f *.wh.cpp || true
-
-          # 4. 覆盖当前构建出的所有 mod 文件并统一暂存
-          cp -r "${{ runner.temp }}"/mod-bundles/*.wh.cpp .
-          git add -A
-
-          # 5. 若无实际变动则跳过
-          if git diff --staged --quiet; then
-            echo "Release branch root is already up to date, skipping commit."
-            exit 0
-          fi
-
-          # 6. 提交并推送到 release 分支（带严格重试与状态校验）
-          git commit -m "chore(release): $orig_msg ($short_sha)"
-          pushed=0
-          for i in 1 2 3; do
-            if git push origin release; then
-              echo "Successfully pushed to release branch."
-              pushed=1
-              break
-            fi
-            echo "Push failed, pulling and retrying ($i/3)..."
-            git pull --rebase origin release || true
-          done
-
-          if [ "$pushed" -ne 1 ]; then
-            echo "::error::Failed to push to release branch after 3 attempts."
-            exit 1
-          fi
+      - name: Publish release snapshot
+        id: publish
+        uses: ./.github/actions/publish-release
+        with:
+          bundle-dir: ${{ runner.temp }}/mod-bundles
+          validated-sha: ${{ github.sha }}
+          branch: release
 
   sync:
     name: Sync to CYoJkoY/windhawk-mods
@@ -301,7 +256,8 @@ jobs:
     if: |
       github.event_name == 'push' &&
       github.ref == 'refs/heads/main' &&
-      needs.publish.result == 'success'
+      needs.publish.result == 'success' &&
+      needs.publish.outputs.published == 'true'
     timeout-minutes: 10
     concurrency:
       group: sync-mods-to-windhawk-mods
@@ -317,10 +273,10 @@ jobs:
             .github/actions/sync-dist/
           sparse-checkout-cone-mode: false
 
-      - name: Checkout fresh release bundles
+      - name: Checkout published release
         uses: actions/checkout@v4
         with:
-          ref: release
+          ref: ${{ needs.publish.outputs.sha }}
           path: source
           fetch-depth: 1
 
@@ -336,7 +292,7 @@ jobs:
           sparse-checkout-cone-mode: false
           token: ${{ secrets.SYNC_PAT }}
 
-      - name: Sync dist bundles
+      - name: Sync release bundles
         uses: ./.github/actions/sync-dist
         with:
           source-root: ${{ github.workspace }}/source
