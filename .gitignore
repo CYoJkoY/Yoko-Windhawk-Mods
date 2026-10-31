@@ -4,3 +4,4 @@ __pycache__/
 .scratch/
 .tmp_issue.md
 .tmp_pr.md
+dist/

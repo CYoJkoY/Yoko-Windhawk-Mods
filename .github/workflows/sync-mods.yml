@@ -1,12 +1,7 @@
 name: Sync mods -> CYoJkoY/windhawk-mods
 
-# Fallback mirror for scheduled and manual runs. A push to main is mirrored
-# inside "Validate mods", right after the regenerated bundles compile, so that
-# path reaches the target repository only when dist/ changed.
-
 on:
   schedule:
-    # Safety net in case a main push was missed. Runs at 03:17 UTC daily.
     - cron: "17 3 * * *"
   workflow_dispatch:
     inputs:
@@ -21,135 +16,50 @@ on:
 
 permissions:
   contents: read
-  actions: read
 
 concurrency:
-  # Shared with the sync job of "Validate mods" so the two never push to the
-  # target repository at the same time.
   group: sync-mods-to-windhawk-mods
   cancel-in-progress: false
 
 jobs:
   sync:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 10
     env:
       TARGET_REPO: CYoJkoY/windhawk-mods
       TARGET_BRANCH: main
-      PRUNE: ${{ github.event.inputs.prune || 'false' }}
-      DRY_RUN: ${{ github.event.inputs.dry_run || 'false' }}
+      PRUNE: ${{ inputs.prune || github.event.inputs.prune || 'false' }}
+      DRY_RUN: ${{ inputs.dry_run || github.event.inputs.dry_run || 'false' }}
 
     steps:
-      - name: Checkout source
-        uses: actions/checkout@v7.0.1
+      - name: Checkout sync action
+        uses: actions/checkout@v4
         with:
+          sparse-checkout: |
+            .github/actions/sync-dist/
+          sparse-checkout-cone-mode: false
+
+      - name: Checkout built mods from release branch
+        uses: actions/checkout@v4
+        with:
+          ref: release
           path: source
-          fetch-depth: 0
-
-      - name: Setup Python
-        uses: actions/setup-python@v7.1.0
-        with:
-          python-version: '3.12'
-
-      - name: Verify bundles are current
-        run: python source/tools/bundle.py --check
-
-      - name: Require successful validation
-        id: gate
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-
-          if [ "${DRY_RUN:-false}" = "true" ]; then
-            echo "dry_run=true, validation gate bypassed"
-            echo "ready=true" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-
-          repo="$GITHUB_REPOSITORY"
-          source="$GITHUB_WORKSPACE/source"
-          sha="$(git -C "$source" rev-parse HEAD)"
-
-          fields="$(gh api \
-            "repos/$repo/actions/workflows/validate-mods.yml/runs?branch=main&event=push&status=completed&per_page=1" \
-            --jq '[.workflow_runs[0].conclusion // "", .workflow_runs[0].head_sha // ""] | @tsv')"
-          conclusion="${fields%%$'\t'*}"
-          run_sha="${fields#*$'\t'}"
-          [ "$run_sha" = "$fields" ] && run_sha=""
-
-          ready=false
-          if [ "$conclusion" = "success" ] && [ -n "$run_sha" ]; then
-            if [ "$run_sha" = "$sha" ]; then
-              ready=true
-            elif git -C "$source" merge-base --is-ancestor "$run_sha" HEAD; then
-              # A dist publish is pushed with GITHUB_TOKEN and starts no run of
-              # its own. It may sit on the validated commit only when every
-              # commit above it is such a publish.
-              only_publish=true
-              while IFS= read -r subject; do
-                case "$subject" in
-                  'chore(dist):'*) ;;
-                  *) only_publish=false ;;
-                esac
-              done < <(git -C "$source" log --format=%s "$run_sha..HEAD")
-              if [ "$only_publish" = "true" ]; then
-                ready=true
-              fi
-            fi
-          fi
-
-          if [ "$ready" != "true" ]; then
-            {
-              echo "### Sync gate"
-              echo ""
-              echo "- No successful \`Validate mods\` push run covers \`$sha\`."
-              echo "- Latest completed run: \`${run_sha:-none}\` (\`${conclusion:-none}\`)."
-              echo "- Sync skipped."
-            } >> "$GITHUB_STEP_SUMMARY"
-            echo "ready=false" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-          echo "ready=true" >> "$GITHUB_OUTPUT"
-
-      - name: Confirm main still has this dist
-        id: fresh
-        if: steps.gate.outputs.ready == 'true'
-        run: |
-          set -euo pipefail
-
-          git -C source fetch --no-tags origin main
-          remote="$(git -C source rev-parse FETCH_HEAD)"
-          if ! git -C source diff --quiet HEAD "$remote" -- dist; then
-            {
-              echo "### Sync gate"
-              echo ""
-              echo "- main moved to different bundles at \`$(git -C source rev-parse --short=7 "$remote")\`."
-              echo "- Sync skipped; a newer run owns this content."
-            } >> "$GITHUB_STEP_SUMMARY"
-            echo "current=false" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-          echo "current=true" >> "$GITHUB_OUTPUT"
+          fetch-depth: 1
 
       - name: Checkout target
-        if: steps.fresh.outputs.current == 'true'
-        uses: actions/checkout@v7.0.1
+        uses: actions/checkout@v4
         with:
           repository: ${{ env.TARGET_REPO }}
           ref: ${{ env.TARGET_BRANCH }}
           path: target
           fetch-depth: 1
-          # Only mods/ is needed, so the thousands of upstream files stay out
-          # of the checkout.
           sparse-checkout: |
-            mods
+            mods/
           sparse-checkout-cone-mode: false
           token: ${{ secrets.SYNC_PAT }}
 
       - name: Sync dist bundles
-        if: steps.fresh.outputs.current == 'true'
-        uses: ./source/.github/actions/sync-dist
+        uses: ./.github/actions/sync-dist
         with:
           source-root: ${{ github.workspace }}/source
           target-root: ${{ github.workspace }}/target

@@ -1,6 +1,6 @@
 name: Sync dist bundles
 description: >-
-  Mirror dist/*.wh.cpp from this repository into the mods directory of the
+  Mirror *.wh.cpp from this repository into the mods directory of the
   target repository, committing only when the file contents differ.
 
 inputs:
@@ -32,7 +32,7 @@ outputs:
     value: ${{ steps.diff.outputs.changed }}
   pushed:
     description: '"true" when a commit was pushed to the target'
-    value: ${{ steps.mirror.outputs.pushed }}
+    value: ${{ steps.mirror.outputs.pushed || 'false' }}
 
 runs:
   using: composite
@@ -48,14 +48,18 @@ runs:
       run: |
         set -euo pipefail
 
-        SRC_MODS="$SOURCE_ROOT/dist"
-        DST_MODS="$TARGET_ROOT/mods"
-        GLOB="$FILE_GLOB"
-
-        if [ ! -d "$SRC_MODS" ]; then
-          echo "::error::source/dist not found, nothing to sync"
+        # 优先检测 source-root/dist，不存在则回退至 source-root 根目录
+        if [ -d "$SOURCE_ROOT/dist" ]; then
+          SRC_MODS="$SOURCE_ROOT/dist"
+        elif [ -d "$SOURCE_ROOT" ]; then
+          SRC_MODS="$SOURCE_ROOT"
+        else
+          echo "::error::source path not found: $SOURCE_ROOT"
           exit 1
         fi
+
+        DST_MODS="$TARGET_ROOT/mods"
+        GLOB="$FILE_GLOB"
 
         changed=0
         pending=()
@@ -66,7 +70,7 @@ runs:
             pending+=("$rel")
             changed=1
           fi
-        done < <(find "$SRC_MODS" -type f -name "$GLOB" -print0)
+        done < <(find "$SRC_MODS" -maxdepth 1 -type f -name "$GLOB" -print0)
 
         if [ "${PRUNE:-false}" = "true" ] && [ -d "$DST_MODS" ]; then
           while IFS= read -r -d '' f; do
@@ -75,14 +79,14 @@ runs:
               pending+=("$rel")
               changed=1
             fi
-          done < <(find "$DST_MODS" -type f -name "$GLOB" -print0)
+          done < <(find "$DST_MODS" -maxdepth 1 -type f -name "$GLOB" -print0)
         fi
 
         if [ "$changed" -eq 0 ]; then
           {
             echo "### Sync gate"
             echo ""
-            echo "- No differences between \`source/dist\` and \`target/mods\`."
+            echo "- No differences between source bundles and \`target/mods\`."
             echo "- Sync skipped; the target is already current."
           } >> "$GITHUB_STEP_SUMMARY"
           echo "changed=false" >> "$GITHUB_OUTPUT"
@@ -111,19 +115,23 @@ runs:
       run: |
         set -euo pipefail
 
-        SRC_MODS="$SOURCE_ROOT/dist"
-        DST_MODS="$TARGET_ROOT/mods"
-        GLOB="$FILE_GLOB"
-
-        if [ ! -d "$SRC_MODS" ]; then
-          echo "::error::source/dist not found, nothing to sync"
+        # 优先检测 source-root/dist，不存在则回退至 source-root 根目录
+        if [ -d "$SOURCE_ROOT/dist" ]; then
+          SRC_MODS="$SOURCE_ROOT/dist"
+        elif [ -d "$SOURCE_ROOT" ]; then
+          SRC_MODS="$SOURCE_ROOT"
+        else
+          echo "::error::source path not found: $SOURCE_ROOT"
           exit 1
         fi
+
+        DST_MODS="$TARGET_ROOT/mods"
+        GLOB="$FILE_GLOB"
         mkdir -p "$DST_MODS"
 
         added=(); updated=(); removed=()
 
-        # 1) Copy new and changed bundles.
+        # 1) 拷贝新增与变动文件
         while IFS= read -r -d '' f; do
           rel="${f#"$SRC_MODS"/}"
           dst="$DST_MODS/$rel"
@@ -133,20 +141,29 @@ runs:
           elif ! cmp -s "$f" "$dst"; then
             cp "$f" "$dst"; updated+=("$rel")
           fi
-        done < <(find "$SRC_MODS" -type f -name "$GLOB" -print0)
+        done < <(find "$SRC_MODS" -maxdepth 1 -type f -name "$GLOB" -print0)
 
-        # 2) Optionally remove files that no longer exist here.
-        if [ "${PRUNE:-false}" = "true" ]; then
+        # 2) 按需删除目标中已废弃的文件
+        if [ "${PRUNE:-false}" = "true" ] && [ -d "$DST_MODS" ]; then
           while IFS= read -r -d '' f; do
             rel="${f#"$DST_MODS"/}"
-            [ -f "$SRC_MODS/$rel" ] || { rm -f "$f"; removed+=("$rel"); }
-          done < <(find "$DST_MODS" -type f -name "$GLOB" -print0)
+            if [ ! -f "$SRC_MODS/$rel" ]; then
+              rm -f "$f"
+              removed+=("$rel")
+            fi
+          done < <(find "$DST_MODS" -maxdepth 1 -type f -name "$GLOB" -print0)
         fi
 
-        # 3) Commit message derives from the latest source commit.
-        SRC_SHA="$(git -C "$SOURCE_ROOT" rev-parse --short HEAD)"
-        SRC_MSG="$(git -C "$SOURCE_ROOT" log -1 --pretty=%s)"
-        MSG="sync(mods): $SRC_MSG (Yoko@$SRC_SHA)"
+        # 3) 获取提交信息（兼容非 Git 目录的极端兜底）
+        if git -C "$SOURCE_ROOT" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+          SRC_SHA="$(git -C "$SOURCE_ROOT" rev-parse --short HEAD)"
+          SRC_MSG="$(git -C "$SOURCE_ROOT" log -1 --pretty=%s)"
+          MSG="sync(mods): $SRC_MSG (Yoko@$SRC_SHA)"
+        else
+          MSG="sync(mods): update mod bundles from latest release"
+          SRC_SHA="unknown"
+          SRC_MSG="update bundles"
+        fi
 
         {
           echo "### Sync summary"
@@ -168,7 +185,6 @@ runs:
 
         cd "$TARGET_ROOT"
 
-        # Only mods/ is staged; every other file stays untouched.
         git add -A mods
 
         if git diff --cached --quiet; then
@@ -181,15 +197,22 @@ runs:
         git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
         git commit -m "$MSG"
 
+        pushed=0
         for attempt in 1 2 3 4 5; do
-          if git pull --rebase --autostash origin "$TARGET_BRANCH" \
-             && git push origin "HEAD:$TARGET_BRANCH"; then
+          if [ "$attempt" -gt 1 ]; then
+            echo "Attempt $attempt: pulling remote changes with rebase..."
+            git pull --rebase --autostash origin "$TARGET_BRANCH" || true
+          fi
+          if git push origin "HEAD:$TARGET_BRANCH"; then
+            pushed=1
             echo "pushed=true" >> "$GITHUB_OUTPUT"
-            exit 0
+            break
           fi
           echo "attempt $attempt failed, retrying..."
           sleep $((attempt * 5))
         done
 
-        echo "::error::push failed after 5 attempts"
-        exit 1
+        if [ "$pushed" -ne 1 ]; then
+          echo "::error::push failed after 5 attempts"
+          exit 1
+        fi
