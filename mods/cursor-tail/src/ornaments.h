@@ -432,7 +432,7 @@ static void StepOrnamentPhysics(
         context.ornamentRopePoints[0] = anchor;
         ConstrainOrnamentDistance(
             context.ornamentRopePoints[1],
-            anchor,
+            context.ornamentRopePoints[0],
             context.ornamentRopeSegmentPx,
             false);
         for (int i = 1; i < count - 1; ++i) {

@@ -378,7 +378,7 @@ static int TrailConvergeRenderLength(LONGLONG nowQpc) {
 static int TrailConvergeTaperPowerIndex(LONGLONG nowQpc) {
     const float eased = TrailConvergeEasing(TrailConvergeProgress(nowQpc));
     const float start = static_cast<float>(context.trailConvergeStartTaperPowerIndex);
-    const float target = static_cast<float>(kTaperConvergeTargetTaperPowerIndex);
+    const float target = static_cast<float>(kTrailConvergeTargetTaperPowerIndex);
     return static_cast<int>(std::lround(start + (target - start) * eased));
 }
 
