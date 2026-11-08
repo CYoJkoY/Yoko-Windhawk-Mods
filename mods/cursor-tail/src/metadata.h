@@ -4,7 +4,7 @@
 // @name:zh-CN      光标拖尾
 // @description     Adds a speed-reactive cursor trail with optional interaction feedback.
 // @description:zh-CN 为鼠标指针添加速度响应式拖尾与可选的交互反馈。
-// @version         3.23
+// @version         3.24
 // @author          CYoJkoY
 // @github          https://github.com/CYoJkoY
 // @license         MIT
@@ -33,9 +33,9 @@ Direct2D overlay, independently of the application under the pointer.
 - **Smooth motion:** Historical cursor samples can be smoothed with Chaikin subdivision for a continuous ribbon.
 - **Custom appearance:** Configure trail color, outline color, gradient, and optional glow.
 - **Adaptive color:** Automatically sample the active cursor image and prefer colors with sufficient contrast against the screen background.
-- **Fade-out:** Smoothly fade the trail after the pointer slows down.
+- **Fade-out:** Smoothly fade the trail after the pointer slows down. When the pointer stops, the tail also shrinks toward the pointer and sharpens to a point, whether or not fading is enabled.
 - **Interaction feedback:** Optional expanding rings for left, right, and middle clicks, plus animated scroll arrows. Native horizontal/tilt-wheel input points left or right directly. Hold Shift to map vertical wheel feedback to horizontal arrows: wheel up points left and wheel down points right. These effects can run without a motion trail.
-- **Pendant ornaments:** Hang a preset pendant from the pointer on a simulated rope. Choose Classic, Bouncy, Floaty, or Comet, optionally supply one image, and scale the rope length. The rope follows the pointer, swings at direction changes, and stretches while moving without decoding an animated GIF.
+- **Pendant ornaments:** Hang a preset pendant from the pointer on a simulated rope. Choose Classic, Bouncy, Ribbon, or Comet, optionally supply one image, and scale the rope length. The rope follows the pointer, swings at direction changes, and stretches while moving without decoding an animated GIF.
 - **Per-app rules:** Enable or disable the trail for selected executables.
 - **Fullscreen suppression:** Automatically hide the trail for exclusive or borderless fullscreen applications and restore it after fullscreen ends.
 
@@ -69,12 +69,12 @@ Pendant ornaments hang a preset from the pointer on a rope. Pick a preset and, o
 
 - **Classic:** a single pendant on a thin silk cord with a natural swing.
 - **Bouncy:** a beaded chain that swings farther and reacts strongly to clicks and wheel input.
-- **Floaty:** low gravity and high damping for a slow, gentle drift on a wide ribbon.
+- **Ribbon:** a wide ribbon that hangs heavily and drops naturally below the pointer.
 - **Comet:** three shrinking nodes spread along a glowing neon line.
 
 `Pendant image` accepts one file path. PNG, JPEG, BMP, GIF, and TIFF are supported; an animated GIF is decoded to its first frame. Leave the path empty to draw a circular pendant in the current trail color.
 
-Image metadata is read only when the settings change. Decoded pixels are uploaded once to a device bitmap and then released, and are decoded again on demand if the Direct2D target is recreated, so the pendant does not keep a full decoded copy in memory. The rope is simulated at 125 Hz with at most eight substeps per sample. Rope points, smoothing buffers, and ribbon outlines are fixed-size. A path geometry cannot be repopulated after it is closed, so each drawn trail layer creates one transient Direct2D path geometry per frame; one fill per layer replaces a stroke per trail segment.
+Image metadata is read only when the settings change. Decoded pixels are uploaded once to a device bitmap and then released, and are decoded again on demand if the Direct2D target is recreated, so the pendant does not keep a full decoded copy in memory. The rope is simulated at 1000 Hz with at most 256 substeps per sample, and every preset uses the same earth gravity of 9.8 meters per second squared. Rope points, smoothing buffers, and ribbon outlines are fixed-size. A path geometry cannot be repopulated after it is closed, so each drawn trail layer creates one transient Direct2D path geometry per frame; one fill per layer replaces a stroke per trail segment.
 
 ## Performance
 
@@ -401,17 +401,17 @@ This mod is derived in part from the Windhawk **Cursor Motion Blur** mod by Thea
     - preset: classic
       $name: Pendant preset
       $name:zh-CN: 挂坠预设
-      $description: Classic hangs one pendant on a silk cord, Bouncy swings on a beaded chain, Floaty drifts on a ribbon, and Comet spreads three shrinking nodes along a neon line.
-      $description:zh-CN: “经典”为丝线挂坠，“弹跳”为摆动更强的珠链，“漂浮”为缓慢漂移的缎带，“彗星”为三个沿霓虹线分布的逐渐缩小节点。
+      $description: Classic hangs one pendant on a silk cord, Bouncy swings on a beaded chain, Ribbon hangs heavily on a wide ribbon, and Comet spreads three shrinking nodes along a neon line.
+      $description:zh-CN: “经典”为丝线挂坠，“弹跳”为摆动更强的珠链，“缎带”为自然下垂的宽缎带，“彗星”为三个沿霓虹线分布的逐渐缩小节点。
       $options:
         - classic: Classic
         - bouncy: Bouncy
-        - floaty: Floaty
+        - floaty: Ribbon
         - comet: Comet
       $options:zh-CN:
         - classic: 经典
         - bouncy: 弹跳
-        - floaty: 漂浮
+        - floaty: 缎带
         - comet: 彗星
     - rope_length_scale: 100
       $name: Rope length
