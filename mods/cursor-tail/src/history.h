@@ -11,6 +11,10 @@ static void ResetTrailState() {
     context.isSmearing = false;
     context.lowVelocityFrames = 0;
     context.fadeAlpha = 0.0f;
+    context.trailConvergeActive = false;
+    context.trailConvergeStartQpc = 0;
+    context.trailConvergeStartLength = 2.0f;
+    context.trailConvergeStartTaperPowerIndex = kTaperPowerSettingMin;
 }
 void HistoryPushFront(const POINT& point) {
     if (context.historyCount == kHistoryCapacity) --context.historyCount;

@@ -19,14 +19,19 @@ bool RenderOverlay(HWND hwnd, LONGLONG nowQpc) {
     const bool ornamentVisible = OrnamentVisible();
     bool drawTrail = context.historyCount >= 2;
     const float speed = context.speedScaling ? (context.isSmearing ? context.smoothedSpeedNorm : context.frozenSpeedNorm) : 1.0f;
-    const int renderLength = GetEffectiveTailLength(speed);
+    int renderLength = GetEffectiveTailLength(speed);
+    int taperPowerIndex = context.taperPowerIndex;
+    if (context.trailConvergeActive) {
+        renderLength = TrailConvergeRenderLength(nowQpc);
+        taperPowerIndex = TrailConvergeTaperPowerIndex(nowQpc);
+    }
     const float outerHalf = (context.widthMin + (context.widthMax - context.widthMin) * speed) * context.currentDpiScale;
     const float coreHalf = (context.coreWidthMin + (context.coreWidthMax - context.coreWidthMin) * speed) * context.currentDpiScale;
     const float alphaScale = context.alphaMin + (context.alphaMax - context.alphaMin) * speed;
     const float trailAlpha = alphaScale * context.fadeAlpha;
 
     if (drawTrail) {
-        SmoothTrail(context.smoothIterations, renderLength);
+        SmoothTrail(context.smoothIterations, renderLength, taperPowerIndex);
         drawTrail = context.renderCache.pointCount >= 2 && trailAlpha >= 0.02f;
     }
 

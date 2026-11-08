@@ -312,7 +312,10 @@ DWORD WINAPI OverlayThreadProc(LPVOID) {
                     HasActiveRipples(sampledQpc)
                     || HasActiveMotionAccents(sampledQpc)
                     || OrnamentActive();
-                const bool active = context.isSmearing || OrnamentActive();
+                // The converge window animates geometry at a steady pace, so
+                // it renders at the active cadence instead of the fade cadence.
+                const bool active =
+                    context.isSmearing || context.trailConvergeActive || OrnamentActive();
                 const bool fading = !active && context.historyCount >= 2;
                 if (active || fading || interactionActive) {
                     const LONGLONG interval = (active || interactionActive)

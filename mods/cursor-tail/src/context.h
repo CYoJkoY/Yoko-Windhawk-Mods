@@ -55,6 +55,10 @@ struct ModContext {
     LONGLONG lastTurnAccentQpc = 0;
     float smoothedSpeedNorm = 0.0f;
     float frozenSpeedNorm = 0.5f;
+    bool trailConvergeActive = false;
+    LONGLONG trailConvergeStartQpc = 0;
+    float trailConvergeStartLength = 2.0f;
+    int trailConvergeStartTaperPowerIndex = kTaperPowerSettingMin;
     bool windowVisible = false;
 
     ID2D1Factory* d2dFactory = nullptr;

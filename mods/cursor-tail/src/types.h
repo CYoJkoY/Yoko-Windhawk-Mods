@@ -213,6 +213,7 @@ struct TrailRenderCache {
     float taper[kMaxTrailRenderPoints] = {};
     int cachedTaperPointCount = -1;
     int cachedTaperPowerIndex = -1;
+    int taperPowerIndex = kTaperPowerSettingMin;
     bool taperCacheValid = false;
 
     void PrepareTaper();

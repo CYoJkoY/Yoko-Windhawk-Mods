@@ -42,6 +42,12 @@ static_assert(
     "The cap sample tables encode a six-segment half circle");
 constexpr int kRenderPadding = 2;
 constexpr float kFadeCutoff = 0.05f;
+// After the pointer stops, the rendered tail shrinks toward the cursor and
+// sharpens to a point. This geometry runs on every frame, independent of the
+// fade setting, and the tail is cleared once the converge window elapses.
+constexpr DWORD kTrailConvergeDurationMs = 240;
+constexpr int kTrailConvergeTargetLength = 2;
+constexpr int kTrailConvergeTargetTaperPowerIndex = kTaperPowerSettingMax;
 constexpr int kAutoResampleIntervalMaxMs = 10000;
 constexpr int kBackgroundSampleRadius = 24;
 constexpr int kBackgroundSampleGrid = 5;
