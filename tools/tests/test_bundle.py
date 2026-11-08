@@ -26,6 +26,25 @@ METADATA = """\
 // ==/WindhawkMod==
 """
 
+README_BLOCK = """\
+// ==WindhawkModReadme==
+/*
+# Test Mod
+*/
+// ==/WindhawkModReadme==
+"""
+
+SETTINGS_BLOCK = """\
+// ==WindhawkModSettings==
+/*
+- Section:
+    - value: 5
+      $name: Value
+  $name: Section
+*/
+// ==/WindhawkModSettings==
+"""
+
 
 def write(root: Path, relative: str, content: str) -> Path:
     path = root / relative
@@ -222,6 +241,60 @@ class FailureTests(BundleTestCase):
         with self.assertRaises(BundleError) as context:
             bundle_all(self.root)
         self.assertIn("metadata block", str(context.exception))
+
+
+class MetadataBlockTests(BundleTestCase):
+    def source(self, blocks: str) -> None:
+        write(
+            self.root,
+            "mods/test-mod/src/main.cpp",
+            METADATA + "\n" + blocks + "\nint main() { return 0; }\n",
+        )
+
+    def test_readme_and_settings_blocks_are_accepted(self) -> None:
+        self.source(README_BLOCK + "\n" + SETTINGS_BLOCK)
+
+        text, _ = self.build()
+        self.assertIn("// ==WindhawkModReadme==", text)
+        self.assertIn("// ==/WindhawkModReadme==", text)
+        self.assertIn("// ==WindhawkModSettings==", text)
+        self.assertIn("// ==/WindhawkModSettings==", text)
+
+    def test_block_without_optional_blocks_is_still_valid(self) -> None:
+        self.source("")
+
+        text, _ = self.build()
+        self.assertNotIn("WindhawkModReadme", text)
+
+    def test_readme_block_missing_closing_marker_is_rejected(self) -> None:
+        self.source("// ==WindhawkModReadme==\n/*\n# Test\n*/\n")
+        with self.assertRaises(BundleError) as context:
+            bundle_all(self.root)
+        self.assertIn("missing // ==/WindhawkModReadme==", str(context.exception))
+
+    def test_settings_block_missing_closing_marker_is_rejected(self) -> None:
+        self.source("// ==WindhawkModSettings==\n/*\n- Section:\n*/\n")
+        with self.assertRaises(BundleError) as context:
+            bundle_all(self.root)
+        self.assertIn("missing // ==/WindhawkModSettings==", str(context.exception))
+
+    def test_opening_marker_used_as_closing_marker_is_rejected(self) -> None:
+        self.source("// ==WindhawkModReadme==\n/*\n# Test\n*/\n// ==WindhawkModReadme==\n")
+        with self.assertRaises(BundleError) as context:
+            bundle_all(self.root)
+        self.assertIn("duplicate WindhawkModReadme block", str(context.exception))
+
+    def test_closing_marker_before_opening_marker_is_rejected(self) -> None:
+        self.source("// ==/WindhawkModReadme==\n// ==WindhawkModReadme==\n/*\n# Test\n*/\n")
+        with self.assertRaises(BundleError) as context:
+            bundle_all(self.root)
+        self.assertIn("before its opening marker", str(context.exception))
+
+    def test_settings_block_before_readme_block_is_rejected(self) -> None:
+        self.source(SETTINGS_BLOCK + "\n" + README_BLOCK)
+        with self.assertRaises(BundleError) as context:
+            bundle_all(self.root)
+        self.assertIn("must come before", str(context.exception))
 
 
 class OutputTests(BundleTestCase):

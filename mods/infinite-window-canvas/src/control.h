@@ -4,8 +4,10 @@
 #include "context.h"
 #include "settings.h"
 #include "canvas.h"
+#include "picker.h"
 
 static constexpr int kResetHotkeyId = 1;
+static constexpr int kJumpHotkeyId = 2;
 static constexpr UINT_PTR kCanvasTimerId = 1;
 
 static void RegisterCanvasHotkey() {
@@ -14,6 +16,14 @@ static void RegisterCanvasHotkey() {
     if (!RegisterHotKey(context.controlWindow, kResetHotkeyId,
                         context.resetModifiers | MOD_NOREPEAT, context.resetKey)) {
         Wh_Log(L"RegisterHotKey failed: %lu", GetLastError());
+    }
+    UnregisterHotKey(context.controlWindow, kJumpHotkeyId);
+    if (!context.jumpEnabled) return;
+    // A collision with the reset hotkey is a user choice, so a rejected
+    // registration only disables the picker instead of failing the mod.
+    if (!RegisterHotKey(context.controlWindow, kJumpHotkeyId,
+                        context.jumpModifiers | MOD_NOREPEAT, context.jumpKey)) {
+        Wh_Log(L"RegisterHotKey quick jump failed: %lu", GetLastError());
     }
 }
 
@@ -32,6 +42,7 @@ static LRESULT CALLBACK CanvasWndProc(HWND hwnd, UINT message, WPARAM wParam, LP
     switch (message) {
         case WM_HOTKEY:
             if (wParam == kResetHotkeyId) context.resetRequested = true;
+            if (wParam == kJumpHotkeyId) OpenWindowPicker();
             return 0;
         case WM_TIMER:
             if (wParam == kCanvasTimerId) TickCanvas();
@@ -59,6 +70,7 @@ static LRESULT CALLBACK CanvasWndProc(HWND hwnd, UINT message, WPARAM wParam, LP
             return 0;
         case WM_DESTROY:
             UnregisterHotKey(hwnd, kResetHotkeyId);
+            UnregisterHotKey(hwnd, kJumpHotkeyId);
             KillTimer(hwnd, kCanvasTimerId);
             PostQuitMessage(0);
             return 0;
@@ -107,6 +119,7 @@ static DWORD WINAPI CanvasThreadProc(LPVOID) {
         }
     }
     UnregisterHotKey(context.controlWindow, kResetHotkeyId);
+    UnregisterHotKey(context.controlWindow, kJumpHotkeyId);
     KillTimer(context.controlWindow, kCanvasTimerId);
     DestroyWindow(context.controlWindow);
     context.controlWindow = nullptr;

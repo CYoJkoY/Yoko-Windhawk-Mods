@@ -44,6 +44,7 @@ GUARD_DEFINE_RE = re.compile(
 GUARD_ENDIF_RE = re.compile(r"^[ \t]*#[ \t]*endif\b[ \t]*(?://.*)?$")
 METADATA_START = "// ==WindhawkMod=="
 METADATA_END = "// ==/WindhawkMod=="
+OPTIONAL_METADATA_BLOCKS = ("WindhawkModReadme", "WindhawkModSettings")
 METADATA_ID_RE = re.compile(r"^//\s*@id\s+(\S+)\s*$")
 METADATA_VERSION_RE = re.compile(r"^//\s*@version\s+(\S+)\s*$")
 SUPPORTED_SUFFIXES = {".h", ".hpp", ".hh", ".inc", ".cpp"}
@@ -262,6 +263,45 @@ def _read_manifest(mod_dir: Path) -> dict[str, object]:
     return manifest
 
 
+def _validate_optional_blocks(mod_id: str, lines: list[str]) -> None:
+    """Ensure README and settings blocks are opened and closed exactly once.
+
+    Using the opening marker as a closing marker is accepted by the C++
+    compiler and silently drops the block from the mod page, so the shape of
+    these blocks has to be checked here instead of relying on the build.
+    """
+
+    opened_at: dict[str, int] = {}
+    for name in OPTIONAL_METADATA_BLOCKS:
+        opener = f"// =={name}=="
+        closer = f"// ==/{name}=="
+        opens = [index for index, line in enumerate(lines) if line.strip() == opener]
+        closes = [index for index, line in enumerate(lines) if line.strip() == closer]
+        if not opens:
+            if closes:
+                raise BundleError(
+                    f"{mod_id}: {name} block is closed without being opened"
+                )
+            continue
+        if len(opens) > 1:
+            raise BundleError(f"{mod_id}: duplicate {name} block")
+        if not closes:
+            raise BundleError(f"{mod_id}: {name} block is missing {closer}")
+        if len(closes) > 1:
+            raise BundleError(f"{mod_id}: duplicate {closer}")
+        if closes[0] < opens[0]:
+            raise BundleError(
+                f"{mod_id}: {name} closing marker appears before its opening marker"
+            )
+        opened_at[name] = opens[0]
+
+    for index in range(1, len(OPTIONAL_METADATA_BLOCKS)):
+        previous = OPTIONAL_METADATA_BLOCKS[index - 1]
+        current = OPTIONAL_METADATA_BLOCKS[index]
+        if previous in opened_at and current in opened_at and opened_at[current] < opened_at[previous]:
+            raise BundleError(f"{mod_id}: {previous} block must come before {current}")
+
+
 def _validate_metadata(mod_id: str, text: str, manifest: dict[str, object]) -> None:
     """Ensure the bundle opens with the official metadata block."""
 
@@ -298,6 +338,7 @@ def _validate_metadata(mod_id: str, text: str, manifest: dict[str, object]) -> N
         raise BundleError(
             f"{mod_id}: metadata @version {version!r} != mod.json version {declared!r}"
         )
+    _validate_optional_blocks(mod_id, lines)
     manifest_id = manifest.get("id")
     if manifest_id != mod_id:
         raise BundleError(

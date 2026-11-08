@@ -10,11 +10,6 @@ static constexpr UINT kWindowPositionFlags =
     SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOOWNERZORDER |
     SWP_NOSENDCHANGING;
 
-static bool IsManaged(HWND hwnd) {
-    size_t index = 0;
-    return FindManagedWindow(hwnd, index);
-}
-
 static void ApplyCanvasOffset() {
     for (const ManagedWindow& item : context.windows) {
         if (!IsWindow(item.hwnd)) continue;
@@ -68,6 +63,26 @@ static void ClampOffset() {
     const LONG maxY = context.monitorRect.bottom - unionRect.top;
     context.canvasOffset.x = std::clamp<LONG>(context.canvasOffset.x, minX, maxX);
     context.canvasOffset.y = std::clamp<LONG>(context.canvasOffset.y, minY, maxY);
+}
+
+// Centers one managed window on the active monitor in a single step. The edge
+// dwell state is cleared so the canvas does not resume panning just because the
+// pointer still happens to rest near an edge.
+static void JumpToWindow(HWND hwnd) {
+    size_t index = 0;
+    if (!FindManagedWindow(hwnd, index)) return;
+    const RECT& origin = context.windows[index].origin;
+    const LONG centerX = context.monitorRect.left
+        + (context.monitorRect.right - context.monitorRect.left) / 2;
+    const LONG centerY = context.monitorRect.top
+        + (context.monitorRect.bottom - context.monitorRect.top) / 2;
+    context.canvasOffset.x = centerX - (origin.left + (origin.right - origin.left) / 2);
+    context.canvasOffset.y = centerY - (origin.top + (origin.bottom - origin.top) / 2);
+    context.edgeActive = false;
+    context.panning = false;
+    context.lastTick = GetTickCount();
+    ClampOffset();
+    ApplyCanvasOffset();
 }
 
 // Reports whether this monitor edge faces empty desktop space. A one-pixel
@@ -135,6 +150,7 @@ static void StartLayout(POINT cursor) {
 }
 
 static void TickCanvas() {
+    if (context.pickerOpen) return;
     POINT cursor = {};
     if (!GetCursorPos(&cursor)) return;
     const HMONITOR cursorMonitor = MonitorFromPoint(cursor, MONITOR_DEFAULTTONEAREST);
@@ -196,7 +212,11 @@ static void TickCanvas() {
     const float magnitude = std::sqrt(edgeX * edgeX + edgeY * edgeY);
     if (magnitude == 0.0f) return;
     const float easingPower = 1.0f + static_cast<float>(context.easing) / 50.0f;
-    const float strength = std::pow(std::min(1.0f, magnitude), easingPower);
+    // Proximity alone leaves the pan crawling right after the dwell expires.
+    // A minimum share keeps the pointer responsive near the trigger boundary,
+    // while the full speed still applies at the physical edge.
+    const float proximity = std::min(1.0f, magnitude);
+    const float strength = std::pow(0.35f + 0.65f * proximity, easingPower);
     const float seconds = std::min(0.1f, static_cast<float>(elapsed) / 1000.0f);
     context.canvasOffset.x += static_cast<int>(
         std::lround(edgeX / magnitude * context.maxSpeed * strength * seconds));

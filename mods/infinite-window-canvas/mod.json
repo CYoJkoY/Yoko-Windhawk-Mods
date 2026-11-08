@@ -1,8 +1,8 @@
 {
   "id": "infinite-window-canvas",
   "name": "Infinite Window Canvas",
-  "version": "1.0.0",
-  "description": "Pans ordinary windows as a virtual canvas when the pointer dwells at a monitor edge.",
+  "version": "1.1.0",
+  "description": "Pans ordinary windows as a virtual canvas at monitor edges and jumps to any managed window from a picker.",
   "author": "CYoJkoY",
   "license": "MIT"
 }
