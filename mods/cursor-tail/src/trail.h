@@ -28,13 +28,13 @@ inline void TrailRenderCache::PrepareTaper() {
         if (pointCount <= 1) return;
         if (taperCacheValid &&
             cachedTaperPointCount == pointCount &&
-            cachedTaperPowerIndex == context.taperPowerIndex) {
+            cachedTaperPowerIndex == taperPowerIndex) {
             return;
         }
 
         EnsureTaperLut();
         const int lutPower = std::clamp(
-            context.taperPowerIndex - kTaperPowerSettingMin,
+            taperPowerIndex - kTaperPowerSettingMin,
             0,
             kTaperPowerCount - 1);
         const float* row = context.taperLut[lutPower];
@@ -52,10 +52,11 @@ inline void TrailRenderCache::PrepareTaper() {
         taper[pointCount - 1] = 0.0f;
 
         cachedTaperPointCount = pointCount;
-        cachedTaperPowerIndex = context.taperPowerIndex;
+        cachedTaperPowerIndex = taperPowerIndex;
         taperCacheValid = true;
 }
-void SmoothTrail(int iterations, int renderLength) {
+void SmoothTrail(int iterations, int renderLength, int taperPowerIndex) {
+    context.renderCache.taperPowerIndex = taperPowerIndex;
     D2D1_POINT_2F* current = context.renderCache.pointsA;
     D2D1_POINT_2F* next = context.renderCache.pointsB;
     const int pointCount = std::min(context.historyCount, std::max(renderLength, 2));
@@ -346,10 +347,62 @@ static int GetEffectiveTailLength(float speedNorm) {
     return std::max(2, static_cast<int>(context.tailLength * (0.55f + 0.45f * std::clamp(speedNorm, 0.0f, 1.0f))));
 }
 
-void UpdateTrailState(const POINT& previousPoint, const POINT& point, float velocity) {
+static LONGLONG TrailConvergeDurationTicks() {
+    if (context.qpcFrequency <= 0) return 1;
+    return std::max<LONGLONG>(
+        1,
+        context.qpcFrequency * static_cast<LONGLONG>(kTrailConvergeDurationMs) / 1000);
+}
+
+// Convergence is driven by wall-clock time so the tail reaches the cursor at
+// the same pace regardless of the sample cadence.
+static float TrailConvergeProgress(LONGLONG nowQpc) {
+    const LONGLONG elapsed = nowQpc - context.trailConvergeStartQpc;
+    if (elapsed <= 0) return 0.0f;
+    const LONGLONG durationTicks = TrailConvergeDurationTicks();
+    if (elapsed >= durationTicks) return 1.0f;
+    return static_cast<float>(elapsed) / static_cast<float>(durationTicks);
+}
+
+static float TrailConvergeEasing(float progress) {
+    return progress * progress * (3.0f - 2.0f * progress);
+}
+
+static int TrailConvergeRenderLength(LONGLONG nowQpc) {
+    const float eased = TrailConvergeEasing(TrailConvergeProgress(nowQpc));
+    const float start = context.trailConvergeStartLength;
+    const float target = static_cast<float>(kTrailConvergeTargetLength);
+    return static_cast<int>(std::lround(start + (target - start) * eased));
+}
+
+static int TrailConvergeTaperPowerIndex(LONGLONG nowQpc) {
+    const float eased = TrailConvergeEasing(TrailConvergeProgress(nowQpc));
+    const float start = static_cast<float>(context.trailConvergeStartTaperPowerIndex);
+    const float target = static_cast<float>(kTrailConvergeTargetTaperPowerIndex);
+    return static_cast<int>(std::lround(start + (target - start) * eased));
+}
+
+// The whole history buffer is kept while the tail converges so the rendered
+// tail can shrink from its former length instead of dropping points abruptly.
+static void UpdateTrailConvergence(LONGLONG nowQpc) {
+    if (nowQpc - context.trailConvergeStartQpc >= TrailConvergeDurationTicks()) {
+        HistoryClear();
+        context.fadeAlpha = 0.0f;
+        context.trailConvergeActive = false;
+        return;
+    }
+    if (context.fadeEnabled) {
+        context.fadeAlpha *= context.fadeDecay;
+    } else {
+        context.fadeAlpha = 1.0f;
+    }
+}
+
+void UpdateTrailState(const POINT& previousPoint, const POINT& point, float velocity, LONGLONG nowQpc) {
     const bool startedSmearing = velocity > context.triggerVelocity && !context.isSmearing;
     if (startedSmearing) {
         context.isSmearing = true;
+        context.trailConvergeActive = false;
         context.lowVelocityFrames = 0;
         context.fadeAlpha = 1.0f;
         context.smoothedSpeedNorm = 0.0f;
@@ -357,6 +410,13 @@ void UpdateTrailState(const POINT& previousPoint, const POINT& point, float velo
         if (++context.lowVelocityFrames > 2) {
             context.isSmearing = false;
             context.frozenSpeedNorm = context.smoothedSpeedNorm;
+            if (context.historyCount >= 2) {
+                context.trailConvergeActive = true;
+                context.trailConvergeStartQpc = nowQpc;
+                context.trailConvergeStartLength =
+                    static_cast<float>(GetEffectiveTailLength(context.frozenSpeedNorm));
+                context.trailConvergeStartTaperPowerIndex = context.taperPowerIndex;
+            }
         }
     } else if (context.isSmearing) {
         context.lowVelocityFrames = 0;
@@ -392,6 +452,8 @@ void UpdateTrailState(const POINT& previousPoint, const POINT& point, float velo
             HistoryPushFront(sample);
             while (context.historyCount > context.tailLength) HistoryPopBack();
         }
+    } else if (context.trailConvergeActive) {
+        UpdateTrailConvergence(nowQpc);
     } else if (context.fadeEnabled) {
         context.fadeAlpha *= context.fadeDecay;
         if (context.fadeAlpha < kFadeCutoff || context.historyCount < 2) {

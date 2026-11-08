@@ -94,7 +94,7 @@ bool SmearFrame(HWND hwnd, DWORD now, bool renderFrame) {
     const POINT previousPoint = context.lastPos;
     const float velocity = PointerSpeedPxPerSecond(point, sampleQpc);
     UpdateMotionCueTracking(point, sampleQpc);
-    UpdateTrailState(previousPoint, point, velocity);
+    UpdateTrailState(previousPoint, point, velocity, sampleQpc);
     UpdateOrnamentPhysics(velocity, sampleQpc);
     MaybeReleaseIdleBackbuffer(now, sampleQpc);
     if (context.isSmearing || context.historyCount >= 2) UpdateTrailColorIfNeeded(now, point);

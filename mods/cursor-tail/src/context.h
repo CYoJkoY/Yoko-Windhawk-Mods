@@ -55,6 +55,10 @@ struct ModContext {
     LONGLONG lastTurnAccentQpc = 0;
     float smoothedSpeedNorm = 0.0f;
     float frozenSpeedNorm = 0.5f;
+    bool trailConvergeActive = false;
+    LONGLONG trailConvergeStartQpc = 0;
+    float trailConvergeStartLength = 2.0f;
+    int trailConvergeStartTaperPowerIndex = kTaperPowerSettingMin;
     bool windowVisible = false;
 
     ID2D1Factory* d2dFactory = nullptr;
@@ -150,7 +154,6 @@ struct ModContext {
     int ornamentEnabled = 0;
     float ornamentAnchorOffsetX = 10.0f;
     float ornamentAnchorOffsetY = 12.0f;
-    float ornamentGravity = 1400.0f;
     float ornamentDamping = 8.0f;
     int ornamentConstraintIterations = 4;
     float ornamentStretch = 0.18f;
@@ -183,6 +186,7 @@ struct ModContext {
     bool ornamentPhysicsInitialized = false;
     bool ornamentRedrawPending = false;
     LONGLONG ornamentLastStepQpc = 0;
+    float ornamentLastStepSeconds = 1.0f / kOrnamentSimulationHz;
     LONGLONG ornamentNextRenderQpc = 0;
     D2D1_POINT_2F ornamentLastAnchor = {};
     float ornamentSmoothedSpeedNorm = 0.0f;

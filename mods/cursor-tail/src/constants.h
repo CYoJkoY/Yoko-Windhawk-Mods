@@ -42,6 +42,12 @@ static_assert(
     "The cap sample tables encode a six-segment half circle");
 constexpr int kRenderPadding = 2;
 constexpr float kFadeCutoff = 0.05f;
+// After the pointer stops, the rendered tail shrinks toward the cursor and
+// sharpens to a point. This geometry runs on every frame, independent of the
+// fade setting, and the tail is cleared once the converge window elapses.
+constexpr DWORD kTrailConvergeDurationMs = 240;
+constexpr int kTrailConvergeTargetLength = 2;
+constexpr int kTrailConvergeTargetTaperPowerIndex = kTaperPowerSettingMax;
 constexpr int kAutoResampleIntervalMaxMs = 10000;
 constexpr int kBackgroundSampleRadius = 24;
 constexpr int kBackgroundSampleGrid = 5;
@@ -81,10 +87,17 @@ constexpr float kOrnamentDefaultSizePx = 32.0f;
 constexpr float kOrnamentConstraintEpsilonPx = 0.0001f;
 constexpr float kOrnamentSpeedReferencePxPerSecond = 2400.0f;
 constexpr float kOrnamentSpeedSmoothing = 0.35f;
-constexpr float kOrnamentRestVelocityPx = 0.25f;
-constexpr float kOrnamentSimulationHz = 125.0f;
-constexpr int kOrnamentMaxSubSteps = 8;
+// Earth gravity converted from meters per second squared to pixels per second
+// squared at the mod's 96 DPI baseline: 9.8 * 96 / 0.0254.
+constexpr float kOrnamentGravityPxPerSecondSquared = 37039.37f;
+constexpr float kOrnamentRestVelocityPxPerSecond = 16.0f;
+constexpr float kOrnamentSimulationHz = 1000.0f;
+constexpr int kOrnamentMaxSubSteps = 256;
 constexpr float kOrnamentMaxCatchUpSeconds = 0.25f;
+constexpr float kOrnamentDampingReferenceHz = 125.0f;
+static_assert(
+    kOrnamentMaxSubSteps >= kOrnamentSimulationHz * kOrnamentMaxCatchUpSeconds,
+    "The substep budget must cover the maximum catch-up interval");
 constexpr float kOrnamentMinDrawOpacity = 0.004f;
 constexpr float kOrnamentPi = 3.14159265f;
 constexpr float kOrnamentDefaultClickImpulse = 240.0f;
