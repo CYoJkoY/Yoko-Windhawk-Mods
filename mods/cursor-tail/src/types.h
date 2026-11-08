@@ -35,7 +35,6 @@ struct OrnamentPresetDefinition {
     const wchar_t* key;
     float anchorOffsetX;
     float anchorOffsetY;
-    float gravity;
     float damping;
     int constraintIterations;
     float stretch;
@@ -51,16 +50,16 @@ struct OrnamentPresetDefinition {
     OrnamentPresetNode nodes[kOrnamentMaxPresetNodes];
 };
 
-// Damping sets the drag lag time constant, dt * 100 / damping, so a low value
-// makes a steady drag trail far behind the pointer instead of just swinging.
+// Damping sets the drag lag time constant, so a low value makes a steady drag
+// trail far behind the pointer instead of just swinging. The solver preserves
+// the original damping response across substeps.
 constexpr OrnamentPresetDefinition kOrnamentPresets[] = {
     {
         L"classic",
         10.0f,
         12.0f,
-        1400.0f,
         22.0f,
-        12,
+        18,
         0.18f,
         1.0f,
         240.0f,
@@ -77,9 +76,8 @@ constexpr OrnamentPresetDefinition kOrnamentPresets[] = {
         L"bouncy",
         12.0f,
         10.0f,
-        1800.0f,
         16.0f,
-        14,
+        18,
         0.30f,
         1.0f,
         420.0f,
@@ -96,9 +94,8 @@ constexpr OrnamentPresetDefinition kOrnamentPresets[] = {
         L"floaty",
         8.0f,
         8.0f,
-        220.0f,
         26.0f,
-        10,
+        18,
         0.06f,
         0.9f,
         120.0f,
@@ -115,9 +112,8 @@ constexpr OrnamentPresetDefinition kOrnamentPresets[] = {
         L"comet",
         10.0f,
         12.0f,
-        1200.0f,
         20.0f,
-        12,
+        18,
         0.22f,
         1.0f,
         300.0f,

@@ -150,7 +150,6 @@ struct ModContext {
     int ornamentEnabled = 0;
     float ornamentAnchorOffsetX = 10.0f;
     float ornamentAnchorOffsetY = 12.0f;
-    float ornamentGravity = 1400.0f;
     float ornamentDamping = 8.0f;
     int ornamentConstraintIterations = 4;
     float ornamentStretch = 0.18f;
@@ -183,6 +182,7 @@ struct ModContext {
     bool ornamentPhysicsInitialized = false;
     bool ornamentRedrawPending = false;
     LONGLONG ornamentLastStepQpc = 0;
+    float ornamentLastStepSeconds = 1.0f / kOrnamentSimulationHz;
     LONGLONG ornamentNextRenderQpc = 0;
     D2D1_POINT_2F ornamentLastAnchor = {};
     float ornamentSmoothedSpeedNorm = 0.0f;

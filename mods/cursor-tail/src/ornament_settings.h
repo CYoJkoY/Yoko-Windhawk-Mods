@@ -81,7 +81,6 @@ static void ApplyOrnamentPreset(OrnamentPreset preset) {
         kOrnamentPresets[static_cast<size_t>(preset)];
     context.ornamentAnchorOffsetX = definition.anchorOffsetX;
     context.ornamentAnchorOffsetY = definition.anchorOffsetY;
-    context.ornamentGravity = definition.gravity;
     context.ornamentDamping = definition.damping;
     context.ornamentConstraintIterations = definition.constraintIterations;
     context.ornamentStretch = definition.stretch;

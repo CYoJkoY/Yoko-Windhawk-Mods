@@ -246,6 +246,7 @@ static void ResetOrnamentPhysics() {
         context.ornamentRopePrevious[i] = point;
     }
     context.ornamentLastAnchor = anchor;
+    context.ornamentLastStepSeconds = 1.0f / kOrnamentSimulationHz;
     context.ornamentSmoothedSpeedNorm = 0.0f;
     context.ornamentSmoothedSpeedPx = 0.0f;
     context.ornamentPhysicsInitialized = true;
@@ -407,11 +408,13 @@ static void ConstrainOrnamentDistance(
 static void StepOrnamentPhysics(
     float dtSeconds,
     float retain,
+    const D2D1_POINT_2F& anchor,
     float anchorStepX,
     float anchorStepY) {
     const int count = context.ornamentRopePointCount;
     if (count < 2) return;
-    const float gravityStep = context.ornamentGravity * context.currentDpiScale * dtSeconds * dtSeconds;
+    const float gravityStep =
+        kOrnamentGravityPxPerSecondSquared * context.currentDpiScale * dtSeconds * dtSeconds;
     for (int i = 1; i < count; ++i) {
         D2D1_POINT_2F& point = context.ornamentRopePoints[i];
         // Verlet velocity is world-space. Damping must act on the velocity
@@ -425,7 +428,6 @@ static void StepOrnamentPhysics(
         point.y += vy * retain + anchorStepY + gravityStep;
     }
 
-    D2D1_POINT_2F anchor = OrnamentAnchorPoint();
     for (int iteration = 0; iteration < context.ornamentConstraintIterations; ++iteration) {
         context.ornamentRopePoints[0] = anchor;
         ConstrainOrnamentDistance(
@@ -452,10 +454,11 @@ static void StepOrnamentPhysics(
 }
 
 static bool OrnamentAnimating() {
+    const float restStepPx = kOrnamentRestVelocityPxPerSecond * context.ornamentLastStepSeconds;
     for (int i = 1; i < context.ornamentRopePointCount; ++i) {
         const float dx = context.ornamentRopePoints[i].x - context.ornamentRopePrevious[i].x;
         const float dy = context.ornamentRopePoints[i].y - context.ornamentRopePrevious[i].y;
-        if (dx * dx + dy * dy > kOrnamentRestVelocityPx * kOrnamentRestVelocityPx) return true;
+        if (dx * dx + dy * dy > restStepPx * restStepPx) return true;
     }
     return false;
 }
@@ -505,9 +508,14 @@ static void UpdateOrnamentPhysics(float velocity, LONGLONG nowQpc) {
         // evaluated once per frame instead of once per substep.
         const float retain = powf(
             std::clamp(1.0f - context.ornamentDamping / 100.0f, 0.5f, 1.0f),
-            step * kOrnamentSimulationHz);
+            step * kOrnamentDampingReferenceHz);
+        context.ornamentLastStepSeconds = step;
         for (int i = 0; i < steps; ++i) {
-            StepOrnamentPhysics(step, retain, stepX, stepY);
+            const float anchorProgress = static_cast<float>(i + 1) / static_cast<float>(steps);
+            const D2D1_POINT_2F substepAnchor = D2D1::Point2F(
+                context.ornamentLastAnchor.x + anchorStepX * anchorProgress,
+                context.ornamentLastAnchor.y + anchorStepY * anchorProgress);
+            StepOrnamentPhysics(step, retain, substepAnchor, stepX, stepY);
         }
         context.ornamentLastAnchor = anchor;
     }
