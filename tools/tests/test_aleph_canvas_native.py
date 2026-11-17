@@ -1,0 +1,164 @@
+"""Compile and execute Aleph Canvas regressions with the Windhawk SDK.
+
+Set WINDHAWK_ROOT to a portable Windhawk installation when it is not in a
+standard location. WH_EDITING uses the SDK's inert settings/logging helpers;
+the harness calls production algorithms without loading the injected engine.
+"""
+
+from __future__ import annotations
+
+import os
+import shutil
+import subprocess
+import tempfile
+import unittest
+from pathlib import Path
+
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+FIXTURE = Path(__file__).with_name("fixtures") / "aleph_canvas_native.cpp"
+COMPILE_TIMEOUT_SECONDS = 120
+CASE_TIMEOUT_SECONDS = 10
+KNOWN_ROOTS = (
+    Path.home() / "scoop/apps/windhawk-dev/current",
+    Path.home() / "scoop/apps/windhawk/current",
+    Path(os.environ.get("ProgramFiles", "C:/Program Files")) / "Windhawk",
+)
+COMPILER_FLAGS = (
+    "--target=x86_64-w64-mingw32",
+    "-std=c++20",
+    "-O2",
+    "-DUNICODE",
+    "-D_UNICODE",
+    "-DNOMINMAX",
+    "-DWINVER=0x0A00",
+    "-D_WIN32_WINNT=0x0A00",
+    "-DWH_MOD",
+    "-DWH_EDITING",
+    "-ffunction-sections",
+    "-fdata-sections",
+    "-Wl,--gc-sections",
+    "-static",
+)
+WINDOWS_LIBRARIES = ("-ldwmapi", "-luser32", "-lshell32", "-lole32", "-lshcore")
+
+
+def windhawk_roots() -> list[Path]:
+    roots: list[Path] = []
+    configured = os.environ.get("WINDHAWK_ROOT")
+    if configured:
+        roots.append(Path(configured))
+    scoop = os.environ.get("SCOOP")
+    if scoop is not None:
+        roots.extend(Path(scoop) / "apps" / name / "current"
+                     for name in ("windhawk-dev", "windhawk"))
+    for command in ("windhawk-cli.exe", "windhawk.exe"):
+        executable = shutil.which(command)
+        if executable is not None:
+            roots.append(Path(executable).resolve().parent)
+    return roots + list(KNOWN_ROOTS)
+
+
+def find_windhawk_root() -> Path:
+    if os.name != "nt":
+        raise unittest.SkipTest("Aleph native regressions require Windows")
+    for root in windhawk_roots():
+        compiler = root / "Compiler/bin/clang++.exe"
+        sdk = root / "Compiler/include/windhawk_api.h"
+        if compiler.is_file() and sdk.is_file():
+            return root
+    raise unittest.SkipTest(
+        "Windhawk clang++ and SDK not found; set WINDHAWK_ROOT to the "
+        "Windhawk installation (the bundle-only CI job has no compiler)"
+    )
+
+
+def run_process(command: list[str], timeout: int) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        command,
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=timeout,
+        check=False,
+    )
+
+
+class AlephCanvasNativeTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls) -> None:
+        root = find_windhawk_root()
+        temporary = tempfile.TemporaryDirectory(prefix="aleph-native-")
+        cls.addClassCleanup(temporary.cleanup)
+        cls.executable = Path(temporary.name) / "aleph_canvas_native.exe"
+        command = [str(root / "Compiler/bin/clang++.exe"), *COMPILER_FLAGS]
+        command.extend(["-I", str(root / "Compiler/include"), "-I", str(REPO_ROOT)])
+        command.extend([str(FIXTURE), "-o", str(cls.executable), *WINDOWS_LIBRARIES])
+        result = run_process(command, COMPILE_TIMEOUT_SECONDS)
+        if result.returncode != 0:
+            raise AssertionError(
+                f"Native harness compilation failed ({result.returncode}):\n"
+                f"{result.stdout}{result.stderr}"
+            )
+
+    def run_case(self, name: str) -> None:
+        try:
+            result = run_process([str(self.executable), name], CASE_TIMEOUT_SECONDS)
+        except subprocess.TimeoutExpired as error:
+            self.fail(f"Native case {name!r} exceeded {CASE_TIMEOUT_SECONDS}s: {error}")
+        self.assertEqual(
+            result.returncode, 0,
+            f"Native case {name!r} failed:\n{result.stdout}{result.stderr}",
+        )
+        self.assertEqual(result.stdout.strip(), f"PASS {name}")
+
+    def test_snap_positive_delta(self) -> None:
+        self.run_case("snap_positive")
+
+    def test_snap_negative_delta(self) -> None:
+        self.run_case("snap_negative")
+
+    def test_disabled_snap_keeps_position(self) -> None:
+        self.run_case("snap_disabled")
+
+    def test_snap_ignores_self_and_distant_cards(self) -> None:
+        self.run_case("snap_unmatched")
+
+    def test_zoom_anchor_stays_fixed_during_animation(self) -> None:
+        self.run_case("zoom_anchor")
+
+    def test_minimap_click_centers_world_point(self) -> None:
+        self.run_case("minimap_center")
+
+    def test_degenerate_minimap_keeps_camera(self) -> None:
+        self.run_case("minimap_empty")
+
+    def test_malformed_json_terminates_and_rejects_partial_data(self) -> None:
+        self.run_case("json_malformed")
+
+    def test_disabled_layout_saving_does_not_schedule_writes(self) -> None:
+        self.run_case("layout_save_disabled")
+
+    def test_nonfinite_json_geometry_is_rejected(self) -> None:
+        self.run_case("json_finite")
+
+    def test_json_fields_are_order_independent(self) -> None:
+        self.run_case("json_order")
+
+    def test_json_roundtrip_preserves_unicode_and_geometry(self) -> None:
+        self.run_case("json_roundtrip")
+
+    def test_hotkeys_require_complete_function_key_suffix(self) -> None:
+        self.run_case("hotkey_suffix")
+
+    def test_duplicate_window_fingerprints_survive_close_and_reopen(self) -> None:
+        self.run_case("fingerprint_lifetime")
+
+    def test_destroyed_or_reused_window_does_not_match_old_card(self) -> None:
+        self.run_case("window_identity")
+
+
+if __name__ == "__main__":
+    unittest.main()
