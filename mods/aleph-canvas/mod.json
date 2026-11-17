@@ -1,0 +1,8 @@
+{
+  "id": "aleph-canvas",
+  "name": "Aleph - Infinite Window Canvas",
+  "version": "1.0.0",
+  "description": "Arrange open windows across a pannable canvas with live DWM previews.",
+  "author": "CYoJkoY",
+  "license": "MIT"
+}

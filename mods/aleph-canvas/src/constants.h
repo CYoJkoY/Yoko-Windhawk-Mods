@@ -1,0 +1,47 @@
+#pragma once
+
+// Compile-time geometry, timing and policy values.
+//
+// Everything a user may want to change is a Windhawk setting; this header only
+// holds canvas structure that must stay internally consistent (frame pacing,
+// hit-test tolerances, cap sizes).
+
+#include "platform.h"
+
+constexpr UINT kToggleHotkeyId = 0xA1E1;
+constexpr int kMaxCards = 64;
+constexpr int kMaxLayoutEntries = 256;
+constexpr int kMaxExcludeEntries = 64;
+
+constexpr int kFrameIntervalMs = 16;
+constexpr int kMinRescanIntervalMs = 100;
+constexpr int kMaxRescanIntervalMs = 5000;
+
+constexpr int kMinZoomPercent = 15;
+constexpr int kMaxZoomPercent = 250;
+constexpr int kMinAnimationMs = 60;
+constexpr int kMaxAnimationMs = 600;
+
+constexpr float kZoomStep = 1.15f;
+constexpr float kCameraSmoothingPerSecond = 20.0f;
+constexpr float kCameraEpsilonPx = 0.2f;
+constexpr float kZoomEpsilon = 0.001f;
+
+constexpr float kCardHeaderPx = 26.0f;
+constexpr float kCardHeaderMinPx = 10.0f;
+constexpr float kCardHeaderMaxPx = 30.0f;
+constexpr float kCardCornerRadiusPx = 8.0f;
+constexpr float kCardTitlePaddingPx = 10.0f;
+constexpr float kCardIconMaxPx = 128.0f;
+
+constexpr float kMinimapMarginPx = 16.0f;
+constexpr int kMinimapMinSize = 96;
+constexpr int kMinimapMaxSize = 420;
+constexpr float kMinimapPaddingPx = 8.0f;
+
+constexpr int kMaxGridLines = 400;
+constexpr float kMinGridSpacingPx = 6.0f;
+
+constexpr DWORD kLayoutSaveDelayMs = 800;
+constexpr DWORD kIconRetryDelayMs = 4000;
+constexpr DWORD kThumbnailRetryDelayMs = 2000;
