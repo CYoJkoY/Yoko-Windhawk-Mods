@@ -592,6 +592,23 @@ class PublishModBranchesActionTests(unittest.TestCase):
         self.assertEqual(len(log.read_text(encoding="utf-8").splitlines()), 2)
         self.assertEqual(git(target, "branch", "--list", "mods/demo"), "mods/demo")
 
+    def test_exhausted_retries_report_the_refusal_not_the_remote_url(self) -> None:
+        upstream, target, _ = self.make_repositories("transient-all")
+        log = self.install_pre_receive(target, "exit 1")
+        bundle_dir = self.make_bundles(
+            "transient-all", {"demo.wh.cpp": bundle_text("demo", "1.1.0", 1)}
+        )
+        runner = self.runner_temp("transient-all")
+        code, values, summary = run_script(
+            self.branches, runner, self.variables(bundle_dir, target, upstream, runner)
+        )
+
+        self.assertEqual(code, 0, summary)
+        self.assertEqual(values.get("failed"), "1")
+        self.assertEqual(len(log.read_text(encoding="utf-8").splitlines()), 3)
+        self.assertIn("[remote rejected]", summary)
+        self.assertNotIn(target.as_posix(), summary)
+
     def test_report_step_fails_after_a_branch_failure(self) -> None:
         code, _ = self.run_report(self.runner_temp("report-branch"), {"failed": "2"})
         self.assertNotEqual(code, 0)

@@ -157,7 +157,7 @@ runs:
           text="$(printf '%s\n' "$1" | tr -d '\r' | grep -m1 -v '^[[:space:]]*$' || true)"
           printf '%s' "${text:-unknown error}" | tr '\n\t' '  ' \
             | LC_ALL=C tr -cd '\40-\176' | cut -c1-300 \
-            | sed 's/|/\\|/g; s/`/'"'"'/g'
+            | sed 's/[[:space:]]*$//; s/|/\\|/g; s/`/'"'"'/g'
         }
 
         # Print the first line that names a policy rejection, and fail when the
@@ -171,6 +171,24 @@ runs:
             fi
           done <<< "$1"
           return 1
+        }
+
+        # A push that failed for a transient reason writes progress lines
+        # before the fault, so `To https://host/repo.git` would become the
+        # reported reason. The rejected-ref line and a fatal or remote line
+        # carry the actual cause, so they win; a quiet failure still falls back
+        # to its first line.
+        failure_line() {
+          local marker candidate
+          for marker in ' [rejected]' ' [remote rejected]' \
+            'fatal:' 'error:'; do
+            while IFS= read -r candidate; do
+              case "$candidate" in
+                *"$marker"*) printf '%s' "$candidate"; return 0 ;;
+              esac
+            done <<< "$1"
+          done
+          printf '%s' "$1"
         }
 
         is_selected() {
@@ -246,7 +264,7 @@ runs:
             lease="$fresh"
             sleep $((attempt * 3))
           done
-          push_error="$(one_line "${output:-push failed}")"
+          push_error="$(one_line "$(failure_line "${output:-push failed}")")"
           return 1
         }
 
