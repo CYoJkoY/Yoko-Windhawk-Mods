@@ -12,12 +12,15 @@ Canvas coordinates are physical pixels relative to the virtual-screen origin.
 This differs from the guide's 96-DPI world-coordinate proposal, but avoids
 applying a monitor-specific scale to windows spanning monitors with different
 DPI. UI chrome scales with the monitor under the pointer. The mod never moves
-real windows; dragging a canvas card only changes the saved canvas layout.
+real windows while arranging cards; dragging a canvas card only changes the
+saved canvas layout.
 
-The public `IVirtualDesktopManager` interface identifies windows on other
-desktops. It does not expose the current desktop identifier required by
-`MoveWindowToDesktop`, so double-clicking an other-desktop card uses the normal
-foreground activation path instead of claiming to move the window.
+The public `IVirtualDesktopManager` interface both identifies windows on other
+desktops and moves them. Activating an other-desktop card therefore asks
+`MoveWindowToDesktop` for the desktop that `GetWindowDesktopId` reports for the
+canvas host window, which is the desktop showing the canvas the user just
+clicked. A window that already sits there is never moved, and a refused request
+still ends in foreground activation, which is what elevated windows require.
 
 Duplicate windows keep their assigned executable/class slots while alive.
 After a restart, indistinguishable windows reuse available saved slots; the
@@ -48,10 +51,14 @@ the window title and two buttons on the right edge.
    and confirm saved positions return.
 4. Navigate via the minimap, select with Tab, pan with arrows, fit with Home,
    and activate with Enter or double-click.
-5. Pin two cards and confirm both stay above the rest, restart the tool process
+5. Open a window on another virtual desktop, double-click its icon card, and
+   confirm the window arrives on the current desktop, is restored if it was
+   minimized, and receives the focus. Check that a window owned by an elevated
+   process still fails gracefully and only gets foreground activation.
+6. Pin two cards and confirm both stay above the rest, restart the tool process
    and confirm they are still pinned. Close one card, confirm it stays gone,
    then hide and show the canvas and confirm it returns.
-6. Check mixed-DPI displays, a window spanning monitors, 15 or more windows,
+7. Check mixed-DPI displays, a window spanning monitors, 15 or more windows,
    and repeated enable/disable cycles. Confirm Explorer desktop positions stay
    unchanged throughout.
 

@@ -5,6 +5,7 @@
 #include "card_chrome.h"
 #include "cards.h"
 #include "context.h"
+#include "desktop_pull.h"
 #include "math_utils.h"
 #include "minimap.h"
 
@@ -55,6 +56,22 @@ inline bool PointInMinimap(Vec2 point) {
            ContainsPoint(context.minimapRect, point.x, point.y);
 }
 
+// An other-desktop card only becomes usable once its window joins the desktop
+// that displays the canvas. A refused move keeps the old behaviour: the dive
+// still ends in foreground activation.
+inline void PullOtherDesktopWindow(const Card& card) {
+    if (card.destroyed) {
+        return;
+    }
+    const DesktopPullOutcome outcome =
+        PullWindowToDesktop(context.desktopManager, card.hwnd, context.hostWindow);
+    if (outcome.result != DesktopPullResult::Rejected) {
+        return;
+    }
+    Wh_Log(L"Aleph: MoveWindowToDesktop failed: 0x%08X",
+           static_cast<unsigned int>(outcome.error));
+}
+
 inline void BeginDive(int index) {
     if (index < 0 || static_cast<size_t>(index) >= context.cards.size()) {
         return;
@@ -65,11 +82,16 @@ inline void BeginDive(int index) {
     context.camera.zoomAnchored = false;
     context.diveCard = index;
     context.diveStart = context.camera;
-    context.diveTarget = DiveCameraForCard(context.cards[static_cast<size_t>(index)]);
+    Card& card = context.cards[static_cast<size_t>(index)];
+    context.diveTarget = DiveCameraForCard(card);
     context.diveStartTick = GetTickCount();
-    if (context.cards[static_cast<size_t>(index)].state ==
-        WindowVisualState::Minimized) {
-        ShowWindowAsync(context.cards[static_cast<size_t>(index)].hwnd, SW_RESTORE);
+    if (card.state == WindowVisualState::OtherDesktop) {
+        PullOtherDesktopWindow(card);
+    }
+    // Pulling a minimized cross-desktop window leaves it iconic, so the restore
+    // follows the pull instead of the scan state.
+    if (IsIconic(card.hwnd) != FALSE) {
+        ShowWindowAsync(card.hwnd, SW_RESTORE);
     }
     context.diving = true;
 }

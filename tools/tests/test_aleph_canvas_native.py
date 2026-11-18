@@ -174,6 +174,21 @@ class AlephCanvasNativeTests(unittest.TestCase):
     def test_dismissed_window_stays_off_the_canvas(self) -> None:
         self.run_case("dismissed_cards")
 
+    def test_other_desktop_window_is_pulled_onto_the_canvas_desktop(self) -> None:
+        self.run_case("desktop_pull_moves")
+
+    def test_window_already_on_the_canvas_desktop_is_not_moved(self) -> None:
+        self.run_case("desktop_pull_same")
+
+    def test_unusable_pull_inputs_leave_the_window_untouched(self) -> None:
+        self.run_case("desktop_pull_null")
+
+    def test_unreadable_canvas_desktop_blocks_the_pull(self) -> None:
+        self.run_case("desktop_pull_reference_failure")
+
+    def test_refused_pull_reports_its_error(self) -> None:
+        self.run_case("desktop_pull_rejected")
+
 
 if __name__ == "__main__":
     unittest.main()

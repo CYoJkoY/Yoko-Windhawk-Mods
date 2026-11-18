@@ -367,12 +367,14 @@ inline DWORD WINAPI CanvasWorkerThread(LPVOID) {
     IVirtualDesktopManager* desktopManager = nullptr;
     CoCreateInstance(CLSID_VirtualDesktopManager, nullptr, CLSCTX_INPROC_SERVER,
                     IID_PPV_ARGS(&desktopManager));
+    context.desktopManager = desktopManager;
     if (context.settings.openOnStart) {
         ToggleCanvas();
     }
     context.startupSucceeded = true;
     SetEvent(context.readyEvent);
     RunCanvasLoop(desktopManager);
+    context.desktopManager = nullptr;
     if (desktopManager != nullptr) {
         desktopManager->Release();
     }

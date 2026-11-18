@@ -2,10 +2,12 @@
 
 // Card creation, packing and snapping.
 //
-// The canvas never moves a real window. A card keeps its own position in world
-// space, and dive-in solves for the camera state that projects the card back
-// onto the window's real desktop rectangle. That keeps the user's desktop
+// Arranging cards never moves a real window. A card keeps its own position in
+// world space, and dive-in solves for the camera state that projects the card
+// back onto the window's real desktop rectangle. That keeps the user's desktop
 // arrangement untouched and works for elevated windows the mod cannot move.
+// The one deliberate move lives in interaction.h: activating an other-desktop
+// card pulls that window onto the desktop that displays the canvas.
 
 #include "platform.h"
 #include "constants.h"
