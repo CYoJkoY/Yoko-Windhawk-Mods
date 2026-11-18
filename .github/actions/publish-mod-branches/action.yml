@@ -426,7 +426,7 @@ runs:
           text="$(printf '%s\n' "$1" | tr -d '\r' | grep -m1 -v '^[[:space:]]*$' || true)"
           printf '%s' "${text:-unknown error}" | tr '\n\t' '  ' \
             | LC_ALL=C tr -cd '\40-\176' | cut -c1-300 \
-            | sed 's/|/\\|/g; s/`/'"'"'/g'
+            | sed 's/[[:space:]]*$//; s/|/\\|/g; s/`/'"'"'/g'
         }
 
         write_body() {
