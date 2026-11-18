@@ -60,13 +60,13 @@ def extract_run(path: Path, step: str) -> str:
     return "\n".join(body)
 
 
-def run_script(
+def run_script_verbose(
     script: str,
     cwd: Path,
     variables: dict[str, str],
     extra_env: dict[str, str] | None = None,
-) -> tuple[int, dict[str, str], str]:
-    """Run a workflow script with GitHub output files in a temporary root."""
+) -> tuple[subprocess.CompletedProcess[str], dict[str, str], str]:
+    """Run a workflow script and return its process, outputs and summary."""
 
     output = cwd.parent / f"{cwd.name}-output.txt"
     summary = cwd.parent / f"{cwd.name}-summary.md"
@@ -92,7 +92,19 @@ def run_script(
         if "=" in line:
             key, value = line.split("=", 1)
             values[key] = value
-    return proc.returncode, values, summary.read_text(encoding="utf-8")
+    return proc, values, summary.read_text(encoding="utf-8")
+
+
+def run_script(
+    script: str,
+    cwd: Path,
+    variables: dict[str, str],
+    extra_env: dict[str, str] | None = None,
+) -> tuple[int, dict[str, str], str]:
+    """Run a workflow script with GitHub output files in a temporary root."""
+
+    proc, values, summary = run_script_verbose(script, cwd, variables, extra_env)
+    return proc.returncode, values, summary
 
 
 def git(cwd: Path, *args: str) -> str:
@@ -608,6 +620,26 @@ class PublishModBranchesActionTests(unittest.TestCase):
         self.assertEqual(len(log.read_text(encoding="utf-8").splitlines()), 3)
         self.assertIn("[remote rejected]", summary)
         self.assertNotIn(target.as_posix(), summary)
+
+    def test_reported_reason_escapes_workflow_command_percent(self) -> None:
+        upstream, target, _ = self.make_repositories("percent")
+        self.install_pre_receive(
+            target,
+            "echo 'refusing to allow a token 100% without a scope' >&2\nexit 1",
+        )
+        bundle_dir = self.make_bundles(
+            "percent", {"demo.wh.cpp": bundle_text("demo", "1.1.0", 1)}
+        )
+        runner = self.runner_temp("percent")
+        proc, _, summary = run_script_verbose(
+            self.branches, runner, self.variables(bundle_dir, target, upstream, runner)
+        )
+
+        self.assertEqual(proc.returncode, 0, summary)
+        annotation = next(
+            line for line in proc.stdout.splitlines() if line.startswith("::error::")
+        )
+        self.assertIn("100%25", annotation)
 
     def test_report_step_fails_after_a_branch_failure(self) -> None:
         code, _ = self.run_report(self.runner_temp("report-branch"), {"failed": "2"})

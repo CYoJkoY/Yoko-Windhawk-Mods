@@ -160,6 +160,13 @@ runs:
             | sed 's/[[:space:]]*$//; s/|/\\|/g; s/`/'"'"'/g'
         }
 
+        # A workflow command reads its message as an escaped string: a literal
+        # `%` there starts an escape sequence, so the runner would swallow it.
+        # `one_line` already removed line breaks, so only `%` needs encoding.
+        command_text() {
+          printf '%s' "${1//%/%25}"
+        }
+
         # Print the first line that names a policy rejection, and fail when the
         # push output holds none, so a transient failure still gets retried.
         first_policy_rejection() {
@@ -362,7 +369,7 @@ runs:
           if ! push_branch "$branch" "$commit" "$head_sha"; then
             failed=$((failed + 1))
             reason="${push_error:-push failed}"
-            echo "::error::${id}: ${reason}"
+            echo "::error::${id}: $(command_text "$reason")"
             echo "| \`$id\` | ${version:-?} | \`$branch\` | error: ${reason} |" >> "$GITHUB_STEP_SUMMARY"
             printf 'failed\t%s\t%s\t%s\t%s\t\n' \
               "$id" "$branch" "$version" "$kind" >> "$status_file"
@@ -436,6 +443,13 @@ runs:
             | sed 's/[[:space:]]*$//; s/|/\\|/g; s/`/'"'"'/g'
         }
 
+        # A workflow command reads its message as an escaped string: a literal
+        # `%` there starts an escape sequence, so the runner would swallow it.
+        # `one_line` already removed line breaks, so only `%` needs encoding.
+        command_text() {
+          printf '%s' "${1//%/%25}"
+        }
+
         write_body() {
           local version="$1" kind="$2" body="$3"
           {
@@ -496,7 +510,7 @@ runs:
             else
               pr_failed=$((pr_failed + 1))
               reason="$(one_line "$edit_error")"
-              echo "::error::${id}: could not update #$number: ${reason}"
+              echo "::error::${id}: could not update #$number: $(command_text "$reason")"
               echo "| \`$id\` | \`$head\` | error: #$number: ${reason} |" >> "$GITHUB_STEP_SUMMARY"
             fi
             continue
@@ -509,7 +523,7 @@ runs:
           else
             pr_failed=$((pr_failed + 1))
             reason="$(one_line "$url")"
-            echo "::error::${id}: could not open the pull request: ${reason}"
+            echo "::error::${id}: could not open the pull request: $(command_text "$reason")"
             echo "| \`$id\` | \`$head\` | error: ${reason} |" >> "$GITHUB_STEP_SUMMARY"
           fi
         done < "$status_file"
