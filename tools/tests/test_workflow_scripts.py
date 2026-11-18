@@ -504,6 +504,42 @@ class PublishModBranchesActionTests(unittest.TestCase):
         self.assertEqual(values, {})
         self.assertEqual(git(target, "branch", "--list", "mods/*"), "")
 
+    def test_invalid_branch_prefix_is_rejected(self) -> None:
+        upstream, target, _ = self.make_repositories("prefix")
+        bundle_dir = self.make_bundles(
+            "prefix", {"demo.wh.cpp": bundle_text("demo", "1.1.0", 1)}
+        )
+        runner = self.runner_temp("prefix")
+        code, values, _ = run_script(
+            self.branches,
+            runner,
+            self.variables(bundle_dir, target, upstream, runner, BRANCH_PREFIX="-bad"),
+        )
+        self.assertNotEqual(code, 0)
+        self.assertEqual(values, {})
+
+    def test_multiline_changelog_keeps_only_the_first_line(self) -> None:
+        upstream, target, _ = self.make_repositories("multi")
+        bundle_dir = self.make_bundles(
+            "multi", {"demo.wh.cpp": bundle_text("demo", "1.1.0", 1)}
+        )
+        runner = self.runner_temp("multi")
+        code, _, _ = run_script(
+            self.branches,
+            runner,
+            self.variables(
+                bundle_dir,
+                target,
+                upstream,
+                runner,
+                CHANGELOG="feat(demo): headline\n\nBody line\nCo-authored-by: X <x@e>",
+            ),
+        )
+        self.assertEqual(code, 0)
+        body = git(target, "log", "-1", "--format=%b", "mods/demo")
+        self.assertTrue(body.startswith("feat(demo): headline"))
+        self.assertNotIn("Body line", body)
+
     def test_empty_bundle_directory_is_rejected(self) -> None:
         upstream, target, _ = self.make_repositories("empty")
         bundle_dir = self.make_bundles("empty", {"notes.txt": "ignored\n"})

@@ -114,8 +114,20 @@ runs:
           echo "::error::no .wh.cpp bundles found in $bundle_dir"
           exit 1
         fi
+        if [[ ! "$branch_prefix" =~ ^[A-Za-z0-9][A-Za-z0-9._/-]*$ ]]; then
+          echo "::error::invalid branch prefix: $branch_prefix"
+          exit 1
+        fi
+        if [[ ! "$base_branch" =~ ^[A-Za-z0-9][A-Za-z0-9._/-]*$ ]]; then
+          echo "::error::invalid base branch name: $base_branch"
+          exit 1
+        fi
 
-        changelog_text="$(printf '%s' "${CHANGELOG:-}" | head -n 1 | tr -cd '\11\12\40-\176')"
+        # Keep the first line only, using parameter expansion so no pipe reader
+        # can close early and trip pipefail.
+        changelog_text="${CHANGELOG:-}"
+        changelog_text="${changelog_text%%$'\n'*}"
+        changelog_text="$(printf '%s' "$changelog_text" | tr -cd '\11\12\40-\176')"
         if [ -z "$changelog_text" ]; then
           changelog_text="Publish the latest build"
         fi
@@ -338,8 +350,11 @@ runs:
           exit 0
         fi
         export GH_TOKEN="$TOKEN"
+        mkdir -p "$workspace"
 
-        changelog_text="$(printf '%s' "${CHANGELOG:-}" | head -n 1 | tr -cd '\11\12\40-\176')"
+        changelog_text="${CHANGELOG:-}"
+        changelog_text="${changelog_text%%$'\n'*}"
+        changelog_text="$(printf '%s' "$changelog_text" | tr -cd '\11\12\40-\176')"
         if [ -z "$changelog_text" ]; then
           changelog_text="Publish the latest build"
         fi
