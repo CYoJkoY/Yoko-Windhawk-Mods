@@ -2,7 +2,7 @@
 
 Source workspace for my Windhawk mods. Each mod is developed as small C++
 headers under `mods/<mod-id>/`. The `main` branch holds source code and
-tooling; generated bundles live only on the `release` branch.
+tooling; generated bundles live only on generated branches.
 
 ## Layout
 
@@ -51,11 +51,37 @@ the whole snapshot, so deleted mods cannot leave stale bundles behind. An
 unchanged snapshot creates no commit. If `main` moves while compilation runs,
 the publish is skipped and the newer push owns the release update.
 
-The `sync` job then mirrors that exact release commit into `mods/` of
-[CYoJkoY/windhawk-mods](https://github.com/CYoJkoY/windhawk-mods).
-`.github/workflows/sync-mods.yml` is the scheduled and manual fallback for the
-same release branch. It leaves an up-to-date target untouched; set `dry_run`
-to inspect the target diff without pushing.
+The `release` branch is the aggregate snapshot: useful for install links and
+for anyone who tracks one branch. It is not the submission path, because a
+single snapshot cannot become a separate upstream pull request per mod.
+
+## Publishing one branch per mod
+
+The `select` job maps the changed paths of each push to mod ids with
+`tools/changed_mods.py`. A push that only touches `mods/<mod-id>/` selects that
+mod; a push that touches `shared/` or `tools/bundle.py` selects every mod, as
+those inputs can change any bundle.
+
+For each selected mod, `publish-mod-branches` writes one commit on top of the
+current upstream `main` that replaces exactly `mods/<mod-id>.wh.cpp`, then
+pushes it to `mods/<mod-id>` in
+[CYoJkoY/windhawk-mods](https://github.com/CYoJkoY/windhawk-mods). The rest of
+the tree is the untouched upstream tree, so the branch diff is one file. A
+branch already carrying the same bundle on the current upstream tip is left
+untouched; a branch on an older base is rebuilt and force-pushed with a lease.
+A bundle identical to the upstream file produces no branch at all.
+
+The same action then opens or refreshes the matching pull request in
+`ramensoftware/windhawk-mods` with `gh`, inserting the push's first commit line
+inside `<!-- changelog:start -->` / `<!-- changelog:end -->`, and adding the
+authorship section for a mod that does not exist upstream yet. Because every
+mod owns a branch, one mod can be updated, reverted, or submitted on its own.
+
+The default branch prefix, target, and upstream repositories are workflow
+environment variables; the action also accepts `mods` (an explicit id filter),
+`dry-run`, and `open-prs` for manual runs. `SYNC_PAT` must be able to push to
+the fork and open pull requests upstream; without it, branches are still
+published and the pull request step reports that it was skipped.
 
 ## Adding a mod
 

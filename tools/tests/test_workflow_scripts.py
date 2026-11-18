@@ -5,7 +5,6 @@ from __future__ import annotations
 import os
 import shutil
 import subprocess
-import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -103,89 +102,572 @@ def git(cwd: Path, *args: str) -> str:
     return proc.stdout.strip()
 
 
-class SyncDistActionTests(unittest.TestCase):
-    """The composite action must skip identical targets and commit real changes."""
+MOD_TEMPLATE = """\
+// ==WindhawkMod==
+// @id              {mod_id}
+// @name            {mod_id}
+// @version         {version}
+// @author          Tester
+// @github          https://github.com/CYoJkoY
+// ==/WindhawkMod==
+
+int entry()
+{{
+    return {value};
+}}
+"""
+
+
+def bundle_text(mod_id: str, version: str, value: int = 0) -> str:
+    return MOD_TEMPLATE.format(mod_id=mod_id, version=version, value=value)
+
+
+def make_gh_stub(directory: Path, existing: str = "") -> tuple[Path, dict[str, str]]:
+    """Fake `gh` that records calls and answers pr list/create/edit."""
+
+    directory.mkdir(parents=True, exist_ok=True)
+    script = directory / "gh"
+    script.write_text(
+        "\n".join(
+            [
+                "#!/usr/bin/env bash",
+                'printf \'%s\\n\' "$*" >> "$GH_LOG"',
+                'if [ "$1" = "pr" ] && [ "$2" = "list" ]; then',
+                f'  printf \'%s\' "{existing}"',
+                'elif [ "$1" = "pr" ] && [ "$2" = "create" ]; then',
+                '  echo "https://github.com/ramensoftware/windhawk-mods/pull/321"',
+                "fi",
+                "exit 0",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+        newline="\n",
+    )
+    os.chmod(script, 0o755)
+    log = directory / "gh.log"
+    log.write_text("", encoding="utf-8")
+    env = {
+        "PATH": os.pathsep.join([str(directory), os.environ.get("PATH", "")]),
+        "GH_LOG": log.as_posix(),
+    }
+    return log, env
+
+
+class PublishModBranchesActionTests(unittest.TestCase):
+    """Every mod is published as one atomic commit on its own branch."""
 
     @classmethod
     def setUpClass(cls) -> None:
         cls._temp = tempfile.TemporaryDirectory()
         cls.root = Path(cls._temp.name)
-        cls.action = REPO_ROOT / ".github" / "actions" / "sync-dist" / "action.yml"
-        cls.detect = extract_run(cls.action, "Detect target differences")
-        cls.mirror = extract_run(cls.action, "Mirror dist to target mods")
+        action = REPO_ROOT / ".github" / "actions" / "publish-mod-branches" / "action.yml"
+        cls.branches = extract_run(action, "Publish mod branches")
+        cls.pull_requests = extract_run(action, "Open or refresh upstream pull requests")
+        cls.report = extract_run(action, "Report failures")
 
     @classmethod
     def tearDownClass(cls) -> None:
         cls._temp.cleanup()
 
-    def make_tree(
-        self, name: str, target: bytes | None, root_only: bool = False
-    ) -> tuple[Path, Path, Path]:
-        root = self.root / name
-        source = root / "source"
-        target_root = root / "target"
-        bundle_dir = source if root_only else source / "dist"
+    def make_repositories(self, name: str) -> tuple[Path, Path, str]:
+        base = self.root / name
+        upstream = base / "upstream.git"
+        target = base / "target.git"
+        seed = base / "seed"
+        git(self.root, "init", "-q", "--bare", "-b", "main", str(upstream))
+        git(self.root, "init", "-q", "--bare", "-b", "main", str(target))
+        git(self.root, "clone", "-q", str(upstream), str(seed))
+        git(seed, "config", "user.email", "t@example.com")
+        git(seed, "config", "user.name", "T")
+        (seed / "mods").mkdir()
+        (seed / "mods" / "demo.wh.cpp").write_text(bundle_text("demo", "1.0.0"), encoding="utf-8")
+        (seed / "mods" / "other.wh.cpp").write_text(bundle_text("other", "2.0.0"), encoding="utf-8")
+        (seed / "README.md").write_text("readme\n", encoding="utf-8")
+        (seed / ".gitattributes").write_text("*.wh.cpp text eol=lf\n", encoding="utf-8")
+        git(seed, "add", "-A")
+        git(seed, "commit", "-qm", "seed: upstream mods")
+        git(seed, "push", "-q", "origin", "main")
+        git(seed, "push", "-q", str(target), "main")
+        return upstream, target, git(seed, "rev-parse", "HEAD")
+
+    def make_bundles(self, name: str, files: dict[str, str]) -> Path:
+        bundle_dir = self.root / name / "bundles"
         bundle_dir.mkdir(parents=True)
-        (target_root / "mods").mkdir(parents=True)
-        (bundle_dir / "demo.wh.cpp").write_bytes(b"bundle\n")
-        if target is not None:
-            (target_root / "mods" / "demo.wh.cpp").write_bytes(target)
-        git(source, "init", "-q", "-b", "main")
-        git(source, "config", "user.email", "t@example.com")
-        git(source, "config", "user.name", "T")
-        git(source, "add", "-A")
-        git(source, "commit", "-qm", "source")
-        git(target_root, "init", "-q", "-b", "main")
-        git(target_root, "config", "user.email", "t@example.com")
-        git(target_root, "config", "user.name", "T")
-        (target_root / "README.md").write_text("keep\n", encoding="utf-8")
-        git(target_root, "add", "-A")
-        git(target_root, "commit", "-qm", "target")
-        return source, target_root, root
+        for filename, content in files.items():
+            (bundle_dir / filename).write_text(content, encoding="utf-8", newline="\n")
+        return bundle_dir
 
-    def variables(self, source: Path, target: Path) -> dict[str, str]:
-        return {
-            "SOURCE_ROOT": source.as_posix(),
-            "TARGET_ROOT": target.as_posix(),
-            "TARGET_BRANCH": "main",
-            "FILE_GLOB": "*.wh.cpp",
-            "PRUNE": "false",
-            "DRY_RUN": "true",
+    def variables(
+        self,
+        bundle_dir: Path,
+        target: Path,
+        upstream: Path,
+        runner_temp: Path,
+        **overrides: str,
+    ) -> dict[str, str]:
+        values = {
+            "BUNDLE_DIR": bundle_dir.as_posix(),
+            "TARGET_REPO": "CYoJkoY/windhawk-mods",
+            "UPSTREAM_REPO": "ramensoftware/windhawk-mods",
+            "TARGET_URL": target.as_posix(),
+            "UPSTREAM_URL": upstream.as_posix(),
+            "TOKEN": "",
+            "BRANCH_PREFIX": "mods/",
+            "BASE_BRANCH": "main",
+            "MOD_FILTER": "",
+            "CHANGELOG": "feat(demo): refresh demo",
+            "DRY_RUN": "false",
+            "RUNNER_TEMP": runner_temp.as_posix(),
         }
+        values.update(overrides)
+        return values
 
-    def test_identical_target_reports_no_change(self) -> None:
-        source, target, root = self.make_tree("same", b"bundle\n")
-        code, values, summary = run_script(self.detect, root, self.variables(source, target))
-        self.assertEqual(code, 0)
-        self.assertEqual(values.get("changed"), "false")
-        self.assertIn("No differences", summary)
+    def runner_temp(self, name: str) -> Path:
+        path = self.root / name / "runner"
+        path.mkdir(parents=True, exist_ok=True)
+        return path
 
-    def test_stale_target_reports_change(self) -> None:
-        source, target, root = self.make_tree("stale", b"old\n")
-        code, values, _ = run_script(self.detect, root, self.variables(source, target))
-        self.assertEqual(code, 0)
-        self.assertEqual(values.get("changed"), "true")
+    def run_report(
+        self,
+        runner: Path,
+        branch_values: dict[str, str],
+        pr_failed: str = "",
+        branch_outcome: str = "success",
+        pr_outcome: str = "success",
+    ) -> tuple[int, str]:
+        code, _, summary = run_script(
+            self.report,
+            runner,
+            {
+                "BRANCH_FAILED": branch_values.get("failed", ""),
+                "PR_FAILED": pr_failed,
+                "BRANCH_OUTCOME": branch_outcome,
+                "PR_OUTCOME": pr_outcome,
+                "RUNNER_TEMP": runner.as_posix(),
+            },
+        )
+        return code, summary
 
-    def test_missing_target_reports_change(self) -> None:
-        source, target, root = self.make_tree("missing", None)
-        code, values, _ = run_script(self.detect, root, self.variables(source, target))
-        self.assertEqual(code, 0)
-        self.assertEqual(values.get("changed"), "true")
+    def run_pull_requests(
+        self,
+        name: str,
+        runner: Path,
+        variables: dict[str, str],
+        status_file: str,
+        existing: str = "",
+    ) -> tuple[int, str, dict[str, str], str]:
+        """Run the pull request step with a stubbed `gh`."""
 
-    def test_dry_run_copies_without_committing(self) -> None:
-        source, target, root = self.make_tree("dry", b"old\n")
-        code, values, summary = run_script(self.mirror, root, self.variables(source, target))
-        self.assertEqual(code, 0)
-        self.assertEqual(values.get("pushed"), "false")
-        self.assertEqual((target / "mods" / "demo.wh.cpp").read_bytes(), b"bundle\n")
-        self.assertEqual(git(target, "status", "--porcelain"), "M mods/demo.wh.cpp")
-        self.assertIn("demo.wh.cpp", summary)
+        log, env = make_gh_stub(self.root / name / "bin", existing=existing)
+        values = {
+            "STATUS_FILE": status_file,
+            "TARGET_REPO": variables["TARGET_REPO"],
+            "UPSTREAM_REPO": variables["UPSTREAM_REPO"],
+            "BASE_BRANCH": variables["BASE_BRANCH"],
+            "TOKEN": variables["TOKEN"],
+            "AUTHORSHIP": "The submitter, with AI assistance",
+            "CHANGELOG": variables["CHANGELOG"],
+            "RUNNER_TEMP": variables["RUNNER_TEMP"],
+        }
+        code, outputs, summary = run_script(
+            self.pull_requests, runner, values, extra_env=env
+        )
+        return code, summary, outputs, log.read_text(encoding="utf-8")
 
-    def test_release_root_without_dist_is_supported(self) -> None:
-        source, target, root = self.make_tree("release-root", b"old\n", root_only=True)
-        code, values, _ = run_script(self.detect, root, self.variables(source, target))
+    def pull_request_body(self, variables: dict[str, str], mod_id: str) -> str:
+        return (
+            Path(variables["RUNNER_TEMP"])
+            / "publish-mod-branches"
+            / f"pr-body.{mod_id}.md"
+        ).read_text(encoding="utf-8")
+
+    def test_new_mod_becomes_one_commit_on_the_upstream_tip(self) -> None:
+        upstream, target, base_sha = self.make_repositories("new")
+        bundle_dir = self.make_bundles(
+            "new", {"demo.wh.cpp": bundle_text("demo", "1.1.0", 1)}
+        )
+        runner = self.runner_temp("new")
+        code, values, summary = run_script(
+            self.branches,
+            runner,
+            self.variables(bundle_dir, target, upstream, runner),
+        )
+        self.assertEqual(code, 0, summary)
+        self.assertEqual(values.get("pushed"), "1")
+        self.assertEqual(values.get("failed"), "0")
+
+        head = git(target, "rev-parse", "mods/demo")
+        self.assertEqual(git(target, "rev-list", "--count", f"{base_sha}..{head}"), "1")
+        self.assertEqual(git(target, "rev-parse", f"{head}^"), base_sha)
+        self.assertEqual(
+            git(target, "diff", "--name-only", base_sha, head).splitlines(),
+            ["mods/demo.wh.cpp"],
+        )
+        self.assertEqual(git(target, "show", f"{head}:mods/other.wh.cpp"), bundle_text("other", "2.0.0").rstrip("\n"))
+        self.assertEqual(git(target, "show", f"{head}:mods/demo.wh.cpp"), bundle_text("demo", "1.1.0", 1).rstrip("\n"))
+        self.assertEqual(
+            git(target, "log", "-1", "--format=%s", head),
+            "Update mods/demo.wh.cpp to v1.1.0",
+        )
+        self.assertIn("feat(demo): refresh demo", git(target, "log", "-1", "--format=%b", head))
+        self.assertIn("| `demo` | 1.1.0 | `mods/demo` | pushed", summary)
+
+    def test_new_mod_commit_subject_names_the_addition(self) -> None:
+        upstream, target, _ = self.make_repositories("added")
+        bundle_dir = self.make_bundles(
+            "added", {"fresh-mod.wh.cpp": bundle_text("fresh-mod", "0.1.0")}
+        )
+        runner = self.runner_temp("added")
+        code, values, _ = run_script(
+            self.branches, runner, self.variables(bundle_dir, target, upstream, runner)
+        )
         self.assertEqual(code, 0)
-        self.assertEqual(values.get("changed"), "true")
+        head = git(target, "rev-parse", "mods/fresh-mod")
+        self.assertEqual(
+            git(target, "log", "-1", "--format=%s", head), "Add mod: fresh-mod (0.1.0)"
+        )
+        self.assertEqual(
+            git(target, "diff", "--name-only", "main", head).splitlines(),
+            ["mods/fresh-mod.wh.cpp"],
+        )
+
+    def test_repeated_publish_keeps_the_branch_untouched(self) -> None:
+        upstream, target, base_sha = self.make_repositories("repeat")
+        bundle_dir = self.make_bundles(
+            "repeat", {"demo.wh.cpp": bundle_text("demo", "1.1.0", 1)}
+        )
+        runner = self.runner_temp("repeat")
+        first = run_script(
+            self.branches, runner, self.variables(bundle_dir, target, upstream, runner)
+        )
+        self.assertEqual(first[0], 0)
+        head = git(target, "rev-parse", "mods/demo")
+
+        second = run_script(
+            self.branches, runner, self.variables(bundle_dir, target, upstream, runner)
+        )
+        self.assertEqual(second[0], 0)
+        self.assertEqual(second[1].get("pushed"), "0")
+        self.assertEqual(second[1].get("unchanged"), "1")
+        self.assertEqual(git(target, "rev-parse", "mods/demo"), head)
+        self.assertEqual(git(target, "rev-parse", f"{head}^"), base_sha)
+
+    def test_updated_bundle_replaces_the_branch_commit(self) -> None:
+        upstream, target, base_sha = self.make_repositories("update")
+        first_dir = self.make_bundles(
+            "update", {"demo.wh.cpp": bundle_text("demo", "1.1.0", 1)}
+        )
+        runner = self.runner_temp("update")
+        first = run_script(
+            self.branches, runner, self.variables(first_dir, target, upstream, runner)
+        )
+        self.assertEqual(first[0], 0)
+        first_head = git(target, "rev-parse", "mods/demo")
+
+        second_dir = self.root / "update" / "bundles-v2"
+        second_dir.mkdir(parents=True)
+        (second_dir / "demo.wh.cpp").write_text(
+            bundle_text("demo", "1.2.0", 2), encoding="utf-8", newline="\n"
+        )
+        second = run_script(
+            self.branches, runner, self.variables(second_dir, target, upstream, runner)
+        )
+        self.assertEqual(second[0], 0)
+        self.assertEqual(second[1].get("pushed"), "1")
+        second_head = git(target, "rev-parse", "mods/demo")
+        self.assertNotEqual(second_head, first_head)
+        self.assertEqual(git(target, "rev-parse", f"{second_head}^"), base_sha)
+        self.assertEqual(git(target, "rev-list", "--count", "main..mods/demo"), "1")
+        self.assertEqual(
+            git(target, "log", "-1", "--format=%s", second_head),
+            "Update mods/demo.wh.cpp to v1.2.0",
+        )
+
+    def test_branch_left_on_an_old_base_is_rebuilt(self) -> None:
+        upstream, target, _ = self.make_repositories("stale")
+        bundle_dir = self.make_bundles(
+            "stale", {"demo.wh.cpp": bundle_text("demo", "1.1.0", 1)}
+        )
+        runner = self.runner_temp("stale")
+        code, _, _ = run_script(
+            self.branches, runner, self.variables(bundle_dir, target, upstream, runner)
+        )
+        self.assertEqual(code, 0)
+        old_head = git(target, "rev-parse", "mods/demo")
+
+        movert = self.root / "stale" / "movert"
+        git(self.root, "clone", "-q", str(upstream), str(movert))
+        git(movert, "config", "user.email", "t@example.com")
+        git(movert, "config", "user.name", "T")
+        (movert / "README.md").write_text("readme v2\n", encoding="utf-8")
+        git(movert, "add", "-A")
+        git(movert, "commit", "-qm", "docs: newer upstream")
+        git(movert, "push", "-q", "origin", "main")
+        new_base = git(movert, "rev-parse", "HEAD")
+
+        code, values, _ = run_script(
+            self.branches, runner, self.variables(bundle_dir, target, upstream, runner)
+        )
+        self.assertEqual(code, 0)
+        self.assertEqual(values.get("pushed"), "1")
+        new_head = git(target, "rev-parse", "mods/demo")
+        self.assertNotEqual(new_head, old_head)
+        self.assertEqual(git(target, "rev-parse", f"{new_head}^"), new_base)
+        self.assertEqual(
+            git(target, "diff", "--name-only", new_base, new_head).splitlines(),
+            ["mods/demo.wh.cpp"],
+        )
+        self.assertEqual(git(target, "show", f"{new_head}:README.md"), "readme v2")
+
+    def test_bundle_matching_upstream_creates_no_branch(self) -> None:
+        upstream, target, _ = self.make_repositories("current")
+        bundle_dir = self.make_bundles(
+            "current", {"demo.wh.cpp": bundle_text("demo", "1.0.0")}
+        )
+        runner = self.runner_temp("current")
+        code, values, summary = run_script(
+            self.branches, runner, self.variables(bundle_dir, target, upstream, runner)
+        )
+        self.assertEqual(code, 0)
+        self.assertEqual(values.get("current"), "1")
+        self.assertEqual(values.get("pushed"), "0")
+        self.assertEqual(git(target, "branch", "--list", "mods/demo"), "")
+        self.assertIn("already upstream", summary)
+
+    def test_mod_filter_limits_the_branches(self) -> None:
+        upstream, target, _ = self.make_repositories("filter")
+        bundle_dir = self.make_bundles(
+            "filter",
+            {
+                "demo.wh.cpp": bundle_text("demo", "1.1.0", 1),
+                "other.wh.cpp": bundle_text("other", "2.1.0", 2),
+            },
+        )
+        runner = self.runner_temp("filter")
+        code, values, summary = run_script(
+            self.branches,
+            runner,
+            self.variables(bundle_dir, target, upstream, runner, MOD_FILTER="other"),
+        )
+        self.assertEqual(code, 0)
+        self.assertEqual(values.get("pushed"), "1")
+        self.assertEqual(git(target, "branch", "--list", "mods/demo"), "")
+        self.assertEqual(git(target, "branch", "--list", "mods/other"), "mods/other")
+        self.assertNotIn("| `demo` |", summary)
+
+    def test_reused_version_fails_before_pushing(self) -> None:
+        upstream, target, _ = self.make_repositories("version")
+        bundle_dir = self.make_bundles(
+            "version", {"demo.wh.cpp": bundle_text("demo", "1.0.0", 9)}
+        )
+        runner = self.runner_temp("version")
+        code, values, summary = run_script(
+            self.branches, runner, self.variables(bundle_dir, target, upstream, runner)
+        )
+        self.assertEqual(code, 0)
+        self.assertEqual(values.get("failed"), "1")
+        self.assertIn("version already used", summary)
+        self.assertEqual(git(target, "branch", "--list", "mods/demo"), "")
+        self.assertNotEqual(self.run_report(runner, values)[0], 0)
+
+    def test_dry_run_reports_without_pushing(self) -> None:
+        upstream, target, _ = self.make_repositories("dry")
+        bundle_dir = self.make_bundles(
+            "dry", {"demo.wh.cpp": bundle_text("demo", "1.1.0", 1)}
+        )
+        runner = self.runner_temp("dry")
+        code, values, summary = run_script(
+            self.branches,
+            runner,
+            self.variables(bundle_dir, target, upstream, runner, DRY_RUN="true"),
+        )
+        self.assertEqual(code, 0)
+        self.assertEqual(values.get("pushed"), "1")
+        self.assertEqual(git(target, "branch", "--list", "mods/demo"), "")
+        self.assertIn("dry run", summary)
+
+    def test_one_failing_mod_does_not_block_the_others(self) -> None:
+        upstream, target, _ = self.make_repositories("partial")
+        bundle_dir = self.make_bundles(
+            "partial",
+            {
+                "demo.wh.cpp": bundle_text("demo", "1.0.0", 1),
+                "other.wh.cpp": bundle_text("other", "2.1.0", 2),
+            },
+        )
+        runner = self.runner_temp("partial")
+        code, values, _ = run_script(
+            self.branches, runner, self.variables(bundle_dir, target, upstream, runner)
+        )
+        self.assertEqual(code, 0)
+        self.assertEqual(values.get("failed"), "1")
+        self.assertEqual(values.get("pushed"), "1")
+        self.assertEqual(git(target, "branch", "--list", "mods/demo"), "")
+        self.assertEqual(git(target, "branch", "--list", "mods/other"), "mods/other")
+
+    def test_report_step_succeeds_when_nothing_failed(self) -> None:
+        code, _ = self.run_report(self.runner_temp("report-ok"), {"failed": "0"}, "0")
+        self.assertEqual(code, 0)
+
+    def test_report_step_fails_after_a_branch_failure(self) -> None:
+        code, _ = self.run_report(self.runner_temp("report-branch"), {"failed": "2"})
+        self.assertNotEqual(code, 0)
+
+    def test_report_step_fails_after_a_pull_request_failure(self) -> None:
+        code, _ = self.run_report(self.runner_temp("report-pr"), {"failed": "0"}, "1")
+        self.assertNotEqual(code, 0)
+
+    def test_report_step_fails_when_a_step_died_before_reporting(self) -> None:
+        code, _ = self.run_report(
+            self.runner_temp("report-crash"), {"failed": ""}, branch_outcome="failure"
+        )
+        self.assertNotEqual(code, 0)
+
+    def test_invalid_bundle_name_is_rejected(self) -> None:
+        upstream, target, _ = self.make_repositories("invalid")
+        bundle_dir = self.make_bundles(
+            "invalid", {"Demo.wh.cpp": bundle_text("Demo", "1.0.0")}
+        )
+        runner = self.runner_temp("invalid")
+        code, values, _ = run_script(
+            self.branches, runner, self.variables(bundle_dir, target, upstream, runner)
+        )
+        self.assertNotEqual(code, 0)
+        self.assertEqual(values, {})
+        self.assertEqual(git(target, "branch", "--list", "mods/*"), "")
+
+    def test_invalid_branch_prefix_is_rejected(self) -> None:
+        upstream, target, _ = self.make_repositories("prefix")
+        bundle_dir = self.make_bundles(
+            "prefix", {"demo.wh.cpp": bundle_text("demo", "1.1.0", 1)}
+        )
+        runner = self.runner_temp("prefix")
+        code, values, _ = run_script(
+            self.branches,
+            runner,
+            self.variables(bundle_dir, target, upstream, runner, BRANCH_PREFIX="-bad"),
+        )
+        self.assertNotEqual(code, 0)
+        self.assertEqual(values, {})
+
+    def test_multiline_changelog_keeps_only_the_first_line(self) -> None:
+        upstream, target, _ = self.make_repositories("multi")
+        bundle_dir = self.make_bundles(
+            "multi", {"demo.wh.cpp": bundle_text("demo", "1.1.0", 1)}
+        )
+        runner = self.runner_temp("multi")
+        code, _, _ = run_script(
+            self.branches,
+            runner,
+            self.variables(
+                bundle_dir,
+                target,
+                upstream,
+                runner,
+                CHANGELOG="feat(demo): headline\n\nBody line\nCo-authored-by: X <x@e>",
+            ),
+        )
+        self.assertEqual(code, 0)
+        body = git(target, "log", "-1", "--format=%b", "mods/demo")
+        self.assertTrue(body.startswith("feat(demo): headline"))
+        self.assertNotIn("Body line", body)
+
+    def test_empty_bundle_directory_is_rejected(self) -> None:
+        upstream, target, _ = self.make_repositories("empty")
+        bundle_dir = self.make_bundles("empty", {"notes.txt": "ignored\n"})
+        runner = self.runner_temp("empty")
+        code, values, _ = run_script(
+            self.branches, runner, self.variables(bundle_dir, target, upstream, runner)
+        )
+        self.assertNotEqual(code, 0)
+        self.assertEqual(values, {})
+
+    def test_opened_pull_request_satisfies_the_upstream_rules(self) -> None:
+        upstream, target, _ = self.make_repositories("pr-new")
+        bundle_dir = self.make_bundles(
+            "pr-new", {"demo.wh.cpp": bundle_text("demo", "1.1.0", 1)}
+        )
+        runner = self.runner_temp("pr-new")
+        variables = self.variables(
+            bundle_dir, target, upstream, runner, TOKEN="test-token"
+        )
+        code, values, _ = run_script(self.branches, runner, variables)
+        self.assertEqual(code, 0)
+
+        code, summary, _, calls = self.run_pull_requests(
+            "pr-new", runner, variables, values["status-file"]
+        )
+        self.assertEqual(code, 0, summary)
+        self.assertIn("pr list --repo ramensoftware/windhawk-mods --head CYoJkoY:mods/demo", calls)
+        self.assertIn("--state open", calls)
+        self.assertIn("pr create --repo ramensoftware/windhawk-mods --base main", calls)
+        self.assertIn("--head CYoJkoY:mods/demo", calls)
+        self.assertIn("--title Update mods/demo.wh.cpp to v1.1.0", calls)
+        body = self.pull_request_body(variables, "demo")
+        self.assertTrue(body.startswith("<!-- changelog:start -->"))
+        self.assertIn("feat(demo): refresh demo (v1.1.0)", body)
+        self.assertIn("<!-- changelog:end -->", body)
+        self.assertNotIn("## Mod authorship", body)
+        self.assertIn("opened 321", summary)
+
+    def test_new_mod_pull_request_declares_authorship(self) -> None:
+        upstream, target, _ = self.make_repositories("pr-author")
+        bundle_dir = self.make_bundles(
+            "pr-author", {"fresh-mod.wh.cpp": bundle_text("fresh-mod", "0.1.0")}
+        )
+        runner = self.runner_temp("pr-author")
+        variables = self.variables(
+            bundle_dir, target, upstream, runner, TOKEN="test-token"
+        )
+        code, values, _ = run_script(self.branches, runner, variables)
+        self.assertEqual(code, 0)
+
+        code, summary, _, calls = self.run_pull_requests(
+            "pr-author", runner, variables, values["status-file"]
+        )
+        self.assertEqual(code, 0, summary)
+        self.assertIn("--title Add mod: fresh-mod", calls)
+        body = self.pull_request_body(variables, "fresh-mod")
+        self.assertIn("## Mod authorship", body)
+        self.assertIn("- [x] The submitter, with AI assistance", body)
+
+    def test_refreshed_pull_request_is_edited_not_duplicated(self) -> None:
+        upstream, target, _ = self.make_repositories("pr-edit")
+        bundle_dir = self.make_bundles(
+            "pr-edit", {"demo.wh.cpp": bundle_text("demo", "1.1.0", 1)}
+        )
+        runner = self.runner_temp("pr-edit")
+        variables = self.variables(
+            bundle_dir, target, upstream, runner, TOKEN="test-token"
+        )
+        code, values, _ = run_script(self.branches, runner, variables)
+        self.assertEqual(code, 0)
+
+        code, summary, _, calls = self.run_pull_requests(
+            "pr-edit", runner, variables, values["status-file"], existing="77\n"
+        )
+        self.assertEqual(code, 0, summary)
+        self.assertIn("pr edit 77 --repo ramensoftware/windhawk-mods", calls)
+        self.assertNotIn("pr reopen", calls)
+        self.assertNotIn("pr create", calls)
+        self.assertIn("refreshed #77", summary)
+
+    def test_pull_requests_are_skipped_without_a_token(self) -> None:
+        upstream, target, _ = self.make_repositories("pr-skip")
+        bundle_dir = self.make_bundles(
+            "pr-skip", {"demo.wh.cpp": bundle_text("demo", "1.1.0", 1)}
+        )
+        runner = self.runner_temp("pr-skip")
+        variables = self.variables(bundle_dir, target, upstream, runner)
+        code, values, _ = run_script(self.branches, runner, variables)
+        self.assertEqual(code, 0)
+
+        code, _, _, calls = self.run_pull_requests(
+            "pr-skip", runner, variables | {"TOKEN": ""}, values["status-file"]
+        )
+        self.assertEqual(code, 0)
+        self.assertEqual(calls, "")
 
 
 class PublishReleaseActionTests(unittest.TestCase):

@@ -1,0 +1,474 @@
+name: Publish one branch per mod
+description: >-
+  Publish each validated bundle to its own branch in the target repository and
+  open or refresh the matching upstream pull request. Every branch holds one
+  commit that changes one file on top of the current upstream base, so a single
+  mod can be published, updated, or dropped without touching the other mods.
+
+inputs:
+  bundle-dir:
+    description: Directory holding the validated <mod-id>.wh.cpp bundles
+    required: true
+  target-repo:
+    description: Repository receiving the per-mod branches, as owner/name
+    required: true
+  upstream-repo:
+    description: Repository owning the base branch, as owner/name
+    required: true
+  target-url:
+    description: Clone URL of the target repository; defaults to its GitHub URL
+    required: false
+    default: ''
+  upstream-url:
+    description: Clone URL of the upstream repository; defaults to its GitHub URL
+    required: false
+    default: ''
+  token:
+    description: Token with push access to the target and pull request access upstream
+    required: false
+    default: ''
+  branch-prefix:
+    description: Prefix of the per-mod branch name
+    required: false
+    default: 'mods/'
+  base-branch:
+    description: Upstream branch each mod branch is based on
+    required: false
+    default: main
+  mods:
+    description: Space or comma separated mod ids; empty publishes every bundle
+    required: false
+    default: ''
+  changelog:
+    description: Changelog line for pull requests
+    required: false
+    default: ''
+  open-prs:
+    description: '"true" to open or refresh the upstream pull requests'
+    required: false
+    default: 'true'
+  authorship:
+    description: Authorship line written into new-mod pull request bodies
+    required: false
+    default: 'The submitter, with AI assistance'
+  dry-run:
+    description: Report the pending branches without pushing
+    required: false
+    default: 'false'
+
+outputs:
+  pushed:
+    description: Branches created or updated
+    value: ${{ steps.branches.outputs.pushed }}
+  unchanged:
+    description: Bundles that already match their branch
+    value: ${{ steps.branches.outputs.unchanged }}
+  current:
+    description: Bundles that already match the upstream base
+    value: ${{ steps.branches.outputs.current }}
+  failed:
+    description: Bundles that could not be published
+    value: ${{ steps.branches.outputs.failed }}
+  status-file:
+    description: TSV status file consumed by the pull request step
+    value: ${{ steps.branches.outputs.status-file }}
+
+runs:
+  using: composite
+  steps:
+    - name: Publish mod branches
+      id: branches
+      shell: bash
+      env:
+        BUNDLE_DIR: ${{ inputs.bundle-dir }}
+        TARGET_REPO: ${{ inputs.target-repo }}
+        UPSTREAM_REPO: ${{ inputs.upstream-repo }}
+        TARGET_URL: ${{ inputs.target-url }}
+        UPSTREAM_URL: ${{ inputs.upstream-url }}
+        TOKEN: ${{ inputs.token }}
+        BRANCH_PREFIX: ${{ inputs.branch-prefix }}
+        BASE_BRANCH: ${{ inputs.base-branch }}
+        MOD_FILTER: ${{ inputs.mods }}
+        CHANGELOG: ${{ inputs.changelog }}
+        DRY_RUN: ${{ inputs.dry-run }}
+      run: |
+        set -euo pipefail
+
+        bundle_dir="${BUNDLE_DIR:?bundle directory is required}"
+        target_repo="${TARGET_REPO:?target repository is required}"
+        upstream_repo="${UPSTREAM_REPO:?upstream repository is required}"
+        branch_prefix="${BRANCH_PREFIX:-mods/}"
+        base_branch="${BASE_BRANCH:-main}"
+        dry_run="${DRY_RUN:-false}"
+        owner="${target_repo%%/*}"
+        workspace="${RUNNER_TEMP:-${TMPDIR:-/tmp}}/publish-mod-branches"
+        status_file="$workspace/status.tsv"
+        target_url="${TARGET_URL:-https://github.com/${target_repo}.git}"
+        upstream_url="${UPSTREAM_URL:-https://github.com/${upstream_repo}.git}"
+
+        if [ ! -d "$bundle_dir" ]; then
+          echo "::error::bundle directory not found: $bundle_dir"
+          exit 1
+        fi
+        if [ -z "$(find "$bundle_dir" -maxdepth 1 -type f -name '*.wh.cpp' -print -quit)" ]; then
+          echo "::error::no .wh.cpp bundles found in $bundle_dir"
+          exit 1
+        fi
+        if [[ ! "$branch_prefix" =~ ^[A-Za-z0-9][A-Za-z0-9._/-]*$ ]]; then
+          echo "::error::invalid branch prefix: $branch_prefix"
+          exit 1
+        fi
+        if [[ ! "$base_branch" =~ ^[A-Za-z0-9][A-Za-z0-9._/-]*$ ]]; then
+          echo "::error::invalid base branch name: $base_branch"
+          exit 1
+        fi
+
+        # Keep the first line only, using parameter expansion so no pipe reader
+        # can close early and trip pipefail.
+        changelog_text="${CHANGELOG:-}"
+        changelog_text="${changelog_text%%$'\n'*}"
+        changelog_text="$(printf '%s' "$changelog_text" | tr -cd '\11\12\40-\176')"
+        if [ -z "$changelog_text" ]; then
+          changelog_text="Publish the latest build"
+        fi
+
+        # Read one metadata value. The stream is read to the end so the writer
+        # never sees a broken pipe, which would trip pipefail.
+        metadata_field() {
+          awk -v key="$1" '!taken && $1 == "//" && $2 == "@" key { print $3; taken = 1 }'
+        }
+
+        blob_at() {
+          git rev-parse --verify --quiet "$1:$2" || true
+        }
+
+        is_selected() {
+          local filter="${MOD_FILTER//,/ }"
+          if [ -z "${filter// /}" ]; then
+            return 0
+          fi
+          case " $filter " in
+            *" $1 "*) return 0 ;;
+          esac
+          return 1
+        }
+
+        # A mod branch is based on the upstream tip, which the target shares
+        # through the fork network. The base is fetched in full so its trees
+        # can be read without a working tree.
+        work="$workspace/work"
+        rm -rf "$work" "$status_file"
+        mkdir -p "$work"
+        cd "$work"
+        git init --quiet
+        git config user.name "github-actions[bot]"
+        git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+        git config core.autocrlf false
+        git remote add origin "$target_url"
+        if [ -n "${TOKEN:-}" ]; then
+          basic="$(printf 'x-access-token:%s' "$TOKEN" | base64 | tr -d '\n')"
+          git config 'http.https://github.com/.extraheader' "AUTHORIZATION: basic $basic"
+        fi
+        git fetch --quiet --no-tags "$upstream_url" \
+          "+refs/heads/${base_branch}:refs/remotes/upstream/${base_branch}"
+        base_sha="$(git rev-parse "refs/remotes/upstream/${base_branch}")"
+        git fetch --quiet --no-tags origin \
+          "+refs/heads/${branch_prefix}*:refs/remotes/origin/${branch_prefix}*" || true
+
+        make_commit() {
+          local id="$1" blob="$2" version="$3" kind="$4" subject index tree
+          if [ "$kind" = "new" ]; then
+            subject="Add mod: ${id} (${version})"
+          else
+            subject="Update mods/${id}.wh.cpp to v${version}"
+          fi
+          index="$workspace/index.$(printf '%s' "$id" | tr -cd 'a-z0-9-')"
+          rm -f "$index"
+          GIT_INDEX_FILE="$index" git read-tree "$base_sha"
+          GIT_INDEX_FILE="$index" git update-index --add \
+            --cacheinfo "100644,${blob},mods/${id}.wh.cpp"
+          tree="$(GIT_INDEX_FILE="$index" git write-tree)"
+          rm -f "$index"
+          git commit-tree "$tree" -p "$base_sha" -m "$subject" -m "$changelog_text"
+        }
+
+        push_branch() {
+          local branch="$1" commit="$2" lease="$3" attempt fresh
+          for attempt in 1 2 3; do
+            if [ -z "$lease" ]; then
+              if git push --quiet origin "$commit:refs/heads/$branch"; then
+                return 0
+              fi
+            elif git push --quiet origin \
+              "--force-with-lease=refs/heads/$branch:$lease" \
+              "$commit:refs/heads/$branch"; then
+              return 0
+            fi
+            fresh="$(git ls-remote --heads origin "refs/heads/$branch" | awk 'NR==1{print $1}')"
+            echo "Push of $branch failed (attempt $attempt), lease becomes ${fresh:-unset}"
+            lease="$fresh"
+            sleep $((attempt * 3))
+          done
+          return 1
+        }
+
+        pushed=0
+        unchanged=0
+        current=0
+        failed=0
+        : > "$status_file"
+        {
+          echo "### Publish mod branches"
+          echo ""
+          echo "- base: \`${upstream_repo}@${base_sha:0:12}\`"
+          echo "- target: \`${target_repo}\`, branches \`${branch_prefix}<mod-id>\`"
+          echo ""
+          echo "| Mod | Version | Branch | Result |"
+          echo "| :--- | :--- | :--- | :--- |"
+        } >> "$GITHUB_STEP_SUMMARY"
+
+        for file in "$bundle_dir"/*.wh.cpp; do
+          id="$(basename "$file" .wh.cpp)"
+          if [[ ! "$id" =~ ^[a-z0-9][a-z0-9-]*$ ]]; then
+            echo "::error::invalid bundle name: $(basename "$file")"
+            exit 1
+          fi
+          if ! is_selected "$id"; then
+            continue
+          fi
+
+          path="mods/${id}.wh.cpp"
+          branch="${branch_prefix}${id}"
+          version="$(metadata_field version < "$file")"
+          github="$(metadata_field github < "$file")"
+          blob="$(git hash-object -w --no-filters "$file")"
+          base_blob="$(blob_at "$base_sha" "$path")"
+
+          if [ -n "$github" ] && [ "${github,,}" != "https://github.com/${owner,,}" ]; then
+            echo "::warning::${id}: @github ${github} is not ${owner}; upstream rejects other authors"
+          fi
+          if [ -n "$base_blob" ] && [ "$base_blob" != "$blob" ]; then
+            base_version="$(git cat-file blob "$base_sha:$path" | metadata_field version)"
+            if [ "$base_version" = "$version" ]; then
+              failed=$((failed + 1))
+              echo "::error::${id}: @version ${version} already exists upstream; bump it"
+              echo "| \`$id\` | ${version:-?} | \`$branch\` | error: version already used |" \
+                >> "$GITHUB_STEP_SUMMARY"
+              printf 'failed\t%s\t%s\t%s\t%s\t\n' \
+                "$id" "$branch" "$version" "update" >> "$status_file"
+              continue
+            fi
+          fi
+
+          if [ "$base_blob" = "$blob" ]; then
+            current=$((current + 1))
+            echo "| \`$id\` | ${version:-?} | \`$branch\` | already upstream |" >> "$GITHUB_STEP_SUMMARY"
+            printf 'current\t%s\t%s\t%s\t-\t\n' "$id" "$branch" "$version" >> "$status_file"
+            continue
+          fi
+
+          kind="update"
+          if [ -z "$base_blob" ]; then
+            kind="new"
+          fi
+
+          # A branch is only up to date when it carries the same bundle on top
+          # of the current base. A branch left on an older base is rebuilt so
+          # its pull request follows the upstream tip.
+          head_sha="$(git rev-parse --verify --quiet "refs/remotes/origin/$branch" || true)"
+          if [ -n "$head_sha" ] && [ "$(blob_at "$head_sha" "$path")" = "$blob" ]; then
+            head_parent="$(git rev-parse --verify --quiet "${head_sha}^" || true)"
+            if [ "$head_parent" = "$base_sha" ]; then
+              unchanged=$((unchanged + 1))
+              echo "| \`$id\` | ${version:-?} | \`$branch\` | unchanged |" >> "$GITHUB_STEP_SUMMARY"
+              printf 'unchanged\t%s\t%s\t%s\t%s\t%s\n' \
+                "$id" "$branch" "$version" "$kind" "$head_sha" >> "$status_file"
+              continue
+            fi
+          fi
+
+          commit="$(make_commit "$id" "$blob" "${version:-0}" "$kind")"
+          if [ "$dry_run" = "true" ]; then
+            pushed=$((pushed + 1))
+            echo "| \`$id\` | ${version:-?} | \`$branch\` | dry run: ${commit:0:12} |" >> "$GITHUB_STEP_SUMMARY"
+            printf 'dry-run\t%s\t%s\t%s\t%s\t%s\n' \
+              "$id" "$branch" "$version" "$kind" "$commit" >> "$status_file"
+            continue
+          fi
+
+          if ! push_branch "$branch" "$commit" "$head_sha"; then
+            failed=$((failed + 1))
+            echo "| \`$id\` | ${version:-?} | \`$branch\` | error: push failed |" >> "$GITHUB_STEP_SUMMARY"
+            printf 'failed\t%s\t%s\t%s\t%s\t\n' \
+              "$id" "$branch" "$version" "$kind" >> "$status_file"
+            continue
+          fi
+
+          pushed=$((pushed + 1))
+          echo "| \`$id\` | ${version:-?} | \`$branch\` | pushed ${commit:0:12} |" >> "$GITHUB_STEP_SUMMARY"
+          printf 'published\t%s\t%s\t%s\t%s\t%s\n' \
+            "$id" "$branch" "$version" "$kind" "$commit" >> "$status_file"
+        done
+
+        {
+          echo ""
+          echo "- pushed: $pushed / unchanged: $unchanged / already upstream: $current / failed: $failed"
+        } >> "$GITHUB_STEP_SUMMARY"
+
+        echo "pushed=$pushed" >> "$GITHUB_OUTPUT"
+        echo "unchanged=$unchanged" >> "$GITHUB_OUTPUT"
+        echo "current=$current" >> "$GITHUB_OUTPUT"
+        echo "failed=$failed" >> "$GITHUB_OUTPUT"
+        echo "status-file=$status_file" >> "$GITHUB_OUTPUT"
+
+    - name: Open or refresh upstream pull requests
+      id: pull-requests
+      if: |
+        inputs.open-prs == 'true' &&
+        inputs.dry-run != 'true' &&
+        steps.branches.outputs.status-file != ''
+      shell: bash
+      env:
+        STATUS_FILE: ${{ steps.branches.outputs.status-file }}
+        TARGET_REPO: ${{ inputs.target-repo }}
+        UPSTREAM_REPO: ${{ inputs.upstream-repo }}
+        BASE_BRANCH: ${{ inputs.base-branch }}
+        TOKEN: ${{ inputs.token }}
+        AUTHORSHIP: ${{ inputs.authorship }}
+        CHANGELOG: ${{ inputs.changelog }}
+      run: |
+        set -euo pipefail
+
+        status_file="${STATUS_FILE:?status file is required}"
+        upstream_repo="${UPSTREAM_REPO:?upstream repository is required}"
+        base_branch="${BASE_BRANCH:-main}"
+        owner="${TARGET_REPO%%/*}"
+        workspace="${RUNNER_TEMP:-${TMPDIR:-/tmp}}/publish-mod-branches"
+
+        if [ -z "${TOKEN:-}" ]; then
+          echo "::notice::no token supplied, upstream pull requests are skipped"
+          exit 0
+        fi
+        export GH_TOKEN="$TOKEN"
+        mkdir -p "$workspace"
+
+        changelog_text="${CHANGELOG:-}"
+        changelog_text="${changelog_text%%$'\n'*}"
+        changelog_text="$(printf '%s' "$changelog_text" | tr -cd '\11\12\40-\176')"
+        if [ -z "$changelog_text" ]; then
+          changelog_text="Publish the latest build"
+        fi
+
+        write_body() {
+          local version="$1" kind="$2" body="$3"
+          {
+            echo "<!-- changelog:start -->"
+            echo ""
+            echo "* ${changelog_text} (v${version})"
+            echo ""
+            echo "<!-- changelog:end -->"
+            if [ "$kind" = "new" ]; then
+              echo ""
+              echo "## Mod authorship"
+              echo ""
+              echo "This mod was created by:"
+              echo ""
+              echo "- [x] ${AUTHORSHIP}"
+            fi
+          } > "$body"
+        }
+
+        pr_title() {
+          if [ "$2" = "new" ]; then
+            printf 'Add mod: %s' "$1"
+          else
+            printf 'Update mods/%s.wh.cpp to v%s' "$1" "$3"
+          fi
+        }
+
+        created=0
+        refreshed=0
+        pr_failed=0
+        {
+          echo ""
+          echo "### Upstream pull requests"
+          echo ""
+          echo "| Mod | Head | Result |"
+          echo "| :--- | :--- | :--- |"
+        } >> "$GITHUB_STEP_SUMMARY"
+
+        while IFS=$'\t' read -r state id branch version kind commit; do
+          if [ "$state" != "published" ] && [ "$state" != "unchanged" ]; then
+            continue
+          fi
+          head="${owner}:${branch}"
+          title="$(pr_title "$id" "$kind" "${version:-0}")"
+          body="$workspace/pr-body.${id}.md"
+          write_body "${version:-0}" "$kind" "$body"
+          # Only an open request blocks a new one: GitHub accepts a fresh pull
+          # request for a branch whose previous request was closed or merged,
+          # and reopening a declined one is the maintainer's call, not ours.
+          number="$(gh pr list --repo "$upstream_repo" --head "$head" --state open \
+            --json number --jq '.[0].number // ""')"
+
+          if [ -n "$number" ]; then
+            if gh pr edit "$number" --repo "$upstream_repo" --title "$title" \
+              --body-file "$body" >/dev/null 2>&1; then
+              refreshed=$((refreshed + 1))
+              echo "| \`$id\` | \`$head\` | refreshed #$number |" >> "$GITHUB_STEP_SUMMARY"
+            else
+              pr_failed=$((pr_failed + 1))
+              echo "| \`$id\` | \`$head\` | error: could not update #$number |" >> "$GITHUB_STEP_SUMMARY"
+            fi
+            continue
+          fi
+
+          if url="$(gh pr create --repo "$upstream_repo" --base "$base_branch" \
+            --head "$head" --title "$title" --body-file "$body" 2>&1)"; then
+            created=$((created + 1))
+            echo "| \`$id\` | \`$head\` | opened ${url##*/} |" >> "$GITHUB_STEP_SUMMARY"
+          else
+            pr_failed=$((pr_failed + 1))
+            echo "| \`$id\` | \`$head\` | error: ${url} |" >> "$GITHUB_STEP_SUMMARY"
+          fi
+        done < "$status_file"
+
+        {
+          echo ""
+          echo "- opened: $created / refreshed: $refreshed / failed: $pr_failed"
+        } >> "$GITHUB_STEP_SUMMARY"
+
+        echo "pr-failed=$pr_failed" >> "$GITHUB_OUTPUT"
+
+    # One mod must never hide another. Branches and pull requests for the mods
+    # that succeeded are already in place, so the run only fails once every
+    # selected mod had its chance.
+    - name: Report failures
+      if: always()
+      shell: bash
+      env:
+        BRANCH_FAILED: ${{ steps.branches.outputs.failed }}
+        BRANCH_OUTCOME: ${{ steps.branches.outcome }}
+        PR_FAILED: ${{ steps.pull-requests.outputs.pr-failed }}
+        PR_OUTCOME: ${{ steps.pull-requests.outcome }}
+      run: |
+        set -euo pipefail
+
+        branch_failed="${BRANCH_FAILED:-0}"
+        pr_failed="${PR_FAILED:-0}"
+        if [ "${BRANCH_OUTCOME:-}" = "failure" ]; then
+          echo "::error::the branch step stopped before reporting a result"
+        elif [ "$branch_failed" -ne 0 ]; then
+          echo "::error::$branch_failed mod branch(es) could not be published"
+        fi
+        if [ "${PR_OUTCOME:-}" = "failure" ]; then
+          echo "::error::the pull request step stopped before reporting a result"
+        elif [ "$pr_failed" -ne 0 ]; then
+          echo "::error::$pr_failed pull request(s) could not be opened or refreshed"
+        fi
+        if [ "${BRANCH_OUTCOME:-}" = "failure" ] || [ "${PR_OUTCOME:-}" = "failure" ]; then
+          exit 1
+        fi
+        if [ "$branch_failed" -ne 0 ] || [ "$pr_failed" -ne 0 ]; then
+          exit 1
+        fi

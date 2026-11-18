@@ -20,6 +20,10 @@ concurrency:
 
 env:
   PYTHONUTF8: '1'
+  TARGET_REPO: CYoJkoY/windhawk-mods
+  UPSTREAM_REPO: ramensoftware/windhawk-mods
+  BRANCH_PREFIX: 'mods/'
+  BASE_BRANCH: main
 
 jobs:
   bundle:
@@ -234,9 +238,6 @@ jobs:
     permissions:
       contents: write
     timeout-minutes: 10
-    outputs:
-      published: ${{ steps.publish.outputs.published }}
-      sha: ${{ steps.publish.outputs.sha }}
     steps:
       - name: Checkout validated commit
         uses: actions/checkout@v4
@@ -251,62 +252,99 @@ jobs:
           path: ${{ runner.temp }}/mod-bundles
 
       - name: Publish release snapshot
-        id: publish
         uses: ./.github/actions/publish-release
         with:
           bundle-dir: ${{ runner.temp }}/mod-bundles
           validated-sha: ${{ github.sha }}
           branch: release
 
-  sync:
-    name: Sync to CYoJkoY/windhawk-mods
+  select:
+    name: Select changed mods
     runs-on: ubuntu-latest
-    needs: [publish]
     if: |
-      github.event_name == 'push' &&
-      github.ref == 'refs/heads/main' &&
-      needs.publish.result == 'success' &&
-      needs.publish.outputs.published == 'true'
-    timeout-minutes: 10
-    concurrency:
-      group: sync-mods-to-windhawk-mods
-      cancel-in-progress: false
-    env:
-      TARGET_REPO: CYoJkoY/windhawk-mods
-      TARGET_BRANCH: main
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'push' && github.ref == 'refs/heads/main')
+    timeout-minutes: 5
+    outputs:
+      mods: ${{ steps.select.outputs.mods }}
+      count: ${{ steps.select.outputs.count }}
     steps:
-      - name: Checkout action tooling
+      - name: Checkout
         uses: actions/checkout@v4
         with:
-          sparse-checkout: |
-            .github/actions/sync-dist/
-          sparse-checkout-cone-mode: false
+          fetch-depth: 0
 
-      - name: Checkout published release
-        uses: actions/checkout@v4
+      - name: Setup Python
+        uses: actions/setup-python@v5
         with:
-          ref: ${{ needs.publish.outputs.sha }}
-          path: source
-          fetch-depth: 1
+          python-version: '3.12'
 
-      - name: Checkout target
+      # A push that only touches mods/<id>/ republishes that mod. A bundle-wide
+      # input republishes every mod because it can change any bundle.
+      - name: Map changed paths to mods
+        id: select
+        env:
+          BEFORE_SHA: ${{ github.event.before }}
+          HEAD_SHA: ${{ github.sha }}
+          FORCE_ALL: ${{ github.event_name == 'workflow_dispatch' }}
+        run: |
+          set -euo pipefail
+          paths="$RUNNER_TEMP/changed-paths.txt"
+          : > "$paths"
+          extra=()
+          if [ "$FORCE_ALL" = "true" ]; then
+            echo "Manual run; every mod is republished."
+            extra=(--all)
+          elif [ -z "${BEFORE_SHA:-}" ] || [[ "$BEFORE_SHA" =~ ^0+$ ]] ||
+            ! git cat-file -e "${BEFORE_SHA}^{commit}" 2>/dev/null; then
+            echo "No usable base commit; every mod is republished."
+            extra=(--all)
+          else
+            git diff --name-only "$BEFORE_SHA" "$HEAD_SHA" > "$paths"
+            echo "Changed paths:"
+            cat "$paths"
+          fi
+          python tools/changed_mods.py --paths "$paths" \
+            --trigger shared \
+            --trigger tools/bundle.py \
+            --github-output "$GITHUB_OUTPUT" \
+            ${extra[@]+"${extra[@]}"}
+
+  publish-mods:
+    name: Publish per-mod branches
+    runs-on: ubuntu-latest
+    needs: [bundle, compile, select]
+    if: |
+      (github.event_name == 'push' || github.event_name == 'workflow_dispatch') &&
+      github.ref == 'refs/heads/main' &&
+      needs.select.outputs.count != '' &&
+      needs.select.outputs.count != '0'
+    permissions:
+      contents: read
+    timeout-minutes: 15
+    concurrency:
+      group: publish-mod-branches
+      cancel-in-progress: false
+    steps:
+      - name: Checkout
         uses: actions/checkout@v4
         with:
-          repository: ${{ env.TARGET_REPO }}
-          ref: ${{ env.TARGET_BRANCH }}
-          path: target
-          fetch-depth: 1
-          sparse-checkout: |
-            mods/
-          sparse-checkout-cone-mode: false
+          ref: ${{ github.sha }}
+
+      - name: Download bundled mods
+        uses: actions/download-artifact@v4
+        with:
+          name: mod-bundles
+          path: ${{ runner.temp }}/mod-bundles
+
+      - name: Publish mod branches and pull requests
+        uses: ./.github/actions/publish-mod-branches
+        with:
+          bundle-dir: ${{ runner.temp }}/mod-bundles
+          target-repo: ${{ env.TARGET_REPO }}
+          upstream-repo: ${{ env.UPSTREAM_REPO }}
           token: ${{ secrets.SYNC_PAT }}
-
-      - name: Sync release bundles
-        uses: ./.github/actions/sync-dist
-        with:
-          source-root: ${{ github.workspace }}/source
-          target-root: ${{ github.workspace }}/target
-          target-branch: ${{ env.TARGET_BRANCH }}
-          file-glob: '*.wh.cpp'
-          prune: 'false'
-          dry-run: 'false'
+          branch-prefix: ${{ env.BRANCH_PREFIX }}
+          base-branch: ${{ env.BASE_BRANCH }}
+          mods: ${{ needs.select.outputs.mods }}
+          changelog: ${{ github.event.head_commit.message }}
