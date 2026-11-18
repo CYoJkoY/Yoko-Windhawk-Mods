@@ -10,6 +10,19 @@ on:
   pull_request:
     branches: [main]
   workflow_dispatch:
+    inputs:
+      mods:
+        description: 'Mod ids to publish, space or comma separated; empty publishes every mod'
+        type: string
+        default: ''
+      open-prs:
+        description: 'Open or refresh the upstream pull requests'
+        type: boolean
+        default: false
+      dry-run:
+        description: 'Report the pending branches without pushing them'
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -346,5 +359,7 @@ jobs:
           token: ${{ secrets.SYNC_PAT }}
           branch-prefix: ${{ env.BRANCH_PREFIX }}
           base-branch: ${{ env.BASE_BRANCH }}
-          mods: ${{ needs.select.outputs.mods }}
+          mods: ${{ github.event_name == 'workflow_dispatch' && inputs.mods || needs.select.outputs.mods }}
+          open-prs: ${{ github.event_name != 'workflow_dispatch' || inputs.open-prs }}
+          dry-run: ${{ github.event_name == 'workflow_dispatch' && inputs.dry-run || 'false' }}
           changelog: ${{ github.event.head_commit.message }}

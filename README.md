@@ -79,9 +79,18 @@ mod owns a branch, one mod can be updated, reverted, or submitted on its own.
 
 The default branch prefix, target, and upstream repositories are workflow
 environment variables; the action also accepts `mods` (an explicit id filter),
-`dry-run`, and `open-prs` for manual runs. `SYNC_PAT` must be able to push to
-the fork and open pull requests upstream; without it, branches are still
-published and the pull request step reports that it was skipped.
+`dry-run`, and `open-prs`.
+
+To publish the branches by hand, run the `Validate mods` workflow from
+`main`. `mods` limits the run to some ids, `dry-run` reports the pending
+branches without pushing, and `open-prs` is off by default so a manual run
+only writes branches in the fork. A push to `main` always opens or refreshes
+the upstream pull requests for the mods it touched.
+
+`SYNC_PAT` needs push access to the fork. Opening the upstream pull request
+needs pull request permission on `ramensoftware/windhawk-mods` as well; with
+only push access, the branches are published and the pull request call fails
+with the reason `gh` returned.
 
 ## Adding a mod
 
