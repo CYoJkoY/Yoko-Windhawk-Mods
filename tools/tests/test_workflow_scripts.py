@@ -5,7 +5,6 @@ from __future__ import annotations
 import os
 import shutil
 import subprocess
-import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -165,6 +164,7 @@ class PublishModBranchesActionTests(unittest.TestCase):
         action = REPO_ROOT / ".github" / "actions" / "publish-mod-branches" / "action.yml"
         cls.branches = extract_run(action, "Publish mod branches")
         cls.pull_requests = extract_run(action, "Open or refresh upstream pull requests")
+        cls.report = extract_run(action, "Report failures")
 
     @classmethod
     def tearDownClass(cls) -> None:
@@ -228,9 +228,26 @@ class PublishModBranchesActionTests(unittest.TestCase):
         path.mkdir(parents=True, exist_ok=True)
         return path
 
-    def status_rows(self, status_file: str) -> list[list[str]]:
-        text = Path(status_file).read_text(encoding="utf-8")
-        return [line.split("\t") for line in text.splitlines() if line]
+    def run_report(
+        self,
+        runner: Path,
+        branch_values: dict[str, str],
+        pr_failed: str = "",
+        branch_outcome: str = "success",
+        pr_outcome: str = "success",
+    ) -> tuple[int, str]:
+        code, _, summary = run_script(
+            self.report,
+            runner,
+            {
+                "BRANCH_FAILED": branch_values.get("failed", ""),
+                "PR_FAILED": pr_failed,
+                "BRANCH_OUTCOME": branch_outcome,
+                "PR_OUTCOME": pr_outcome,
+                "RUNNER_TEMP": runner.as_posix(),
+            },
+        )
+        return code, summary
 
     def test_new_mod_becomes_one_commit_on_the_upstream_tip(self) -> None:
         upstream, target, base_sha = self.make_repositories("new")
@@ -415,10 +432,11 @@ class PublishModBranchesActionTests(unittest.TestCase):
         code, values, summary = run_script(
             self.branches, runner, self.variables(bundle_dir, target, upstream, runner)
         )
-        self.assertNotEqual(code, 0)
+        self.assertEqual(code, 0)
         self.assertEqual(values.get("failed"), "1")
-        self.assertIn("error: version already used", summary)
+        self.assertIn("version already used", summary)
         self.assertEqual(git(target, "branch", "--list", "mods/demo"), "")
+        self.assertNotEqual(self.run_report(runner, values)[0], 0)
 
     def test_dry_run_reports_without_pushing(self) -> None:
         upstream, target, _ = self.make_repositories("dry")
@@ -435,6 +453,43 @@ class PublishModBranchesActionTests(unittest.TestCase):
         self.assertEqual(values.get("pushed"), "1")
         self.assertEqual(git(target, "branch", "--list", "mods/demo"), "")
         self.assertIn("dry run", summary)
+
+    def test_one_failing_mod_does_not_block_the_others(self) -> None:
+        upstream, target, _ = self.make_repositories("partial")
+        bundle_dir = self.make_bundles(
+            "partial",
+            {
+                "demo.wh.cpp": bundle_text("demo", "1.0.0", 1),
+                "other.wh.cpp": bundle_text("other", "2.1.0", 2),
+            },
+        )
+        runner = self.runner_temp("partial")
+        code, values, _ = run_script(
+            self.branches, runner, self.variables(bundle_dir, target, upstream, runner)
+        )
+        self.assertEqual(code, 0)
+        self.assertEqual(values.get("failed"), "1")
+        self.assertEqual(values.get("pushed"), "1")
+        self.assertEqual(git(target, "branch", "--list", "mods/demo"), "")
+        self.assertEqual(git(target, "branch", "--list", "mods/other"), "mods/other")
+
+    def test_report_step_succeeds_when_nothing_failed(self) -> None:
+        code, _ = self.run_report(self.runner_temp("report-ok"), {"failed": "0"}, "0")
+        self.assertEqual(code, 0)
+
+    def test_report_step_fails_after_a_branch_failure(self) -> None:
+        code, _ = self.run_report(self.runner_temp("report-branch"), {"failed": "2"})
+        self.assertNotEqual(code, 0)
+
+    def test_report_step_fails_after_a_pull_request_failure(self) -> None:
+        code, _ = self.run_report(self.runner_temp("report-pr"), {"failed": "0"}, "1")
+        self.assertNotEqual(code, 0)
+
+    def test_report_step_fails_when_a_step_died_before_reporting(self) -> None:
+        code, _ = self.run_report(
+            self.runner_temp("report-crash"), {"failed": ""}, branch_outcome="failure"
+        )
+        self.assertNotEqual(code, 0)
 
     def test_invalid_bundle_name_is_rejected(self) -> None:
         upstream, target, _ = self.make_repositories("invalid")

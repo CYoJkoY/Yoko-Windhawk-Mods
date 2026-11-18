@@ -309,14 +309,12 @@ runs:
         echo "failed=$failed" >> "$GITHUB_OUTPUT"
         echo "status-file=$status_file" >> "$GITHUB_OUTPUT"
 
-        if [ "$failed" -ne 0 ]; then
-          echo "::error::$failed mod branch(es) could not be published"
-          exit 1
-        fi
-
     - name: Open or refresh upstream pull requests
       id: pull-requests
-      if: inputs.open-prs == 'true' && inputs.dry-run != 'true'
+      if: |
+        inputs.open-prs == 'true' &&
+        inputs.dry-run != 'true' &&
+        steps.branches.outputs.status-file != ''
       shell: bash
       env:
         STATUS_FILE: ${{ steps.branches.outputs.status-file }}
@@ -422,7 +420,37 @@ runs:
           echo "- opened: $created / refreshed: $refreshed / failed: $pr_failed"
         } >> "$GITHUB_STEP_SUMMARY"
 
-        if [ "$pr_failed" -ne 0 ]; then
+        echo "pr-failed=$pr_failed" >> "$GITHUB_OUTPUT"
+
+    # One mod must never hide another. Branches and pull requests for the mods
+    # that succeeded are already in place, so the run only fails once every
+    # selected mod had its chance.
+    - name: Report failures
+      if: always()
+      shell: bash
+      env:
+        BRANCH_FAILED: ${{ steps.branches.outputs.failed }}
+        BRANCH_OUTCOME: ${{ steps.branches.outcome }}
+        PR_FAILED: ${{ steps.pull-requests.outputs.pr-failed }}
+        PR_OUTCOME: ${{ steps.pull-requests.outcome }}
+      run: |
+        set -euo pipefail
+
+        branch_failed="${BRANCH_FAILED:-0}"
+        pr_failed="${PR_FAILED:-0}"
+        if [ "${BRANCH_OUTCOME:-}" = "failure" ]; then
+          echo "::error::the branch step stopped before reporting a result"
+        elif [ "$branch_failed" -ne 0 ]; then
+          echo "::error::$branch_failed mod branch(es) could not be published"
+        fi
+        if [ "${PR_OUTCOME:-}" = "failure" ]; then
+          echo "::error::the pull request step stopped before reporting a result"
+        elif [ "$pr_failed" -ne 0 ]; then
           echo "::error::$pr_failed pull request(s) could not be opened or refreshed"
+        fi
+        if [ "${BRANCH_OUTCOME:-}" = "failure" ] || [ "${PR_OUTCOME:-}" = "failure" ]; then
+          exit 1
+        fi
+        if [ "$branch_failed" -ne 0 ] || [ "$pr_failed" -ne 0 ]; then
           exit 1
         fi
