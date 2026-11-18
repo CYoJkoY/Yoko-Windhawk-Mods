@@ -89,6 +89,9 @@ outputs:
   pruned-file:
     description: TSV file of deleted branches consumed by the pull request step
     value: ${{ steps.branches.outputs.pruned-file }}
+  pr-skipped:
+    description: Pull requests skipped because the token cannot write upstream
+    value: ${{ steps.pull-requests.outputs.pr-skipped }}
 
 runs:
   using: composite
@@ -554,6 +557,30 @@ runs:
         created=0
         refreshed=0
         pr_failed=0
+        # A token that pushes to the fork but has no write access to the
+        # upstream repository is a capability limit, not a transient fault. The
+        # branch is already published, so the pull request is reported once and
+        # skipped: repeating the call can only repeat the denial.
+        permission_denial='Resource not accessible by (personal access token|integration)'
+        pr_skipped=0
+        permission_reported=0
+
+        # Report the first denial with its remediation, then keep the remaining
+        # mods quiet so one token limitation does not bury the summary.
+        skip_pull_request() {
+          pr_skipped=$((pr_skipped + 1))
+          if [ "$permission_reported" -eq 0 ]; then
+            permission_reported=1
+            echo "::warning::$1: the token cannot write pull requests in $upstream_repo: $(command_text "$2"); the branch is published, grant that token pull request access upstream to submit it"
+          fi
+        }
+
+        # A permission denial is answered by GitHub before any request exists,
+        # so it is classified instead of retried or failed.
+        is_permission_denial() {
+          [[ "$1" =~ $permission_denial ]]
+        }
+
         {
           echo ""
           echo "### Upstream pull requests"
@@ -582,10 +609,15 @@ runs:
               refreshed=$((refreshed + 1))
               echo "| \`$id\` | \`$head\` | refreshed #$number |" >> "$GITHUB_STEP_SUMMARY"
             else
-              pr_failed=$((pr_failed + 1))
               reason="$(one_line "$edit_error")"
-              echo "::error::${id}: could not update #$number: $(command_text "$reason")"
-              echo "| \`$id\` | \`$head\` | error: #$number: ${reason} |" >> "$GITHUB_STEP_SUMMARY"
+              if is_permission_denial "$reason"; then
+                skip_pull_request "$id" "$reason"
+                echo "| \`$id\` | \`$head\` | skipped #$number: no upstream pull request access |" >> "$GITHUB_STEP_SUMMARY"
+              else
+                pr_failed=$((pr_failed + 1))
+                echo "::error::${id}: could not update #$number: $(command_text "$reason")"
+                echo "| \`$id\` | \`$head\` | error: #$number: ${reason} |" >> "$GITHUB_STEP_SUMMARY"
+              fi
             fi
             continue
           fi
@@ -595,10 +627,15 @@ runs:
             created=$((created + 1))
             echo "| \`$id\` | \`$head\` | opened ${url##*/} |" >> "$GITHUB_STEP_SUMMARY"
           else
-            pr_failed=$((pr_failed + 1))
             reason="$(one_line "$url")"
-            echo "::error::${id}: could not open the pull request: $(command_text "$reason")"
-            echo "| \`$id\` | \`$head\` | error: ${reason} |" >> "$GITHUB_STEP_SUMMARY"
+            if is_permission_denial "$reason"; then
+              skip_pull_request "$id" "$reason"
+              echo "| \`$id\` | \`$head\` | skipped: no upstream pull request access |" >> "$GITHUB_STEP_SUMMARY"
+            else
+              pr_failed=$((pr_failed + 1))
+              echo "::error::${id}: could not open the pull request: $(command_text "$reason")"
+              echo "| \`$id\` | \`$head\` | error: ${reason} |" >> "$GITHUB_STEP_SUMMARY"
+            fi
           fi
         done < "$status_file"
 
@@ -627,21 +664,27 @@ runs:
               closed=$((closed + 1))
               echo "| \`$id\` | \`$head\` | closed #$number |" >> "$GITHUB_STEP_SUMMARY"
             else
-              pr_failed=$((pr_failed + 1))
               reason="$(one_line "$close_error")"
-              echo "::error::${id}: could not close #$number: $(command_text "$reason")"
-              echo "| \`$id\` | \`$head\` | error: #$number: ${reason} |" >> "$GITHUB_STEP_SUMMARY"
+              if is_permission_denial "$reason"; then
+                skip_pull_request "$id" "$reason"
+                echo "| \`$id\` | \`$head\` | skipped #$number: no upstream pull request access |" >> "$GITHUB_STEP_SUMMARY"
+              else
+                pr_failed=$((pr_failed + 1))
+                echo "::error::${id}: could not close #$number: $(command_text "$reason")"
+                echo "| \`$id\` | \`$head\` | error: #$number: ${reason} |" >> "$GITHUB_STEP_SUMMARY"
+              fi
             fi
           done < "$pruned_file"
         fi
 
         {
           echo ""
-          echo "- opened: $created / refreshed: $refreshed / failed: $pr_failed"
+          echo "- opened: $created / refreshed: $refreshed / failed: $pr_failed / skipped: $pr_skipped"
           echo "- closed for removed mods: $closed"
         } >> "$GITHUB_STEP_SUMMARY"
 
         echo "pr-failed=$pr_failed" >> "$GITHUB_OUTPUT"
+        echo "pr-skipped=$pr_skipped" >> "$GITHUB_OUTPUT"
 
     # One mod must never hide another. Branches and pull requests for the mods
     # that succeeded are already in place, so the run only fails once every
@@ -654,6 +697,7 @@ runs:
         BRANCH_OUTCOME: ${{ steps.branches.outcome }}
         PRUNE_FAILED: ${{ steps.branches.outputs.prune-failed }}
         PR_FAILED: ${{ steps.pull-requests.outputs.pr-failed }}
+        PR_SKIPPED: ${{ steps.pull-requests.outputs.pr-skipped }}
         PR_OUTCOME: ${{ steps.pull-requests.outcome }}
       run: |
         set -euo pipefail
@@ -661,6 +705,7 @@ runs:
         branch_failed="${BRANCH_FAILED:-0}"
         prune_failed="${PRUNE_FAILED:-0}"
         pr_failed="${PR_FAILED:-0}"
+        pr_skipped="${PR_SKIPPED:-0}"
         if [ "${BRANCH_OUTCOME:-}" = "failure" ]; then
           echo "::error::the branch step stopped before reporting a result"
         elif [ "$branch_failed" -ne 0 ]; then
@@ -673,6 +718,8 @@ runs:
           echo "::error::the pull request step stopped before reporting a result"
         elif [ "$pr_failed" -ne 0 ]; then
           echo "::error::$pr_failed pull request(s) could not be opened or refreshed"
+        elif [ "$pr_skipped" -ne 0 ]; then
+          echo "::notice::$pr_skipped pull request(s) skipped because the token cannot write upstream; the mod branches are published"
         fi
         if [ "${BRANCH_OUTCOME:-}" = "failure" ] || [ "${PR_OUTCOME:-}" = "failure" ]; then
           exit 1

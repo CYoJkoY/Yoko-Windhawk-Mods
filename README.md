@@ -125,7 +125,12 @@ gh api -X POST repos/CYoJkoY/windhawk-mods/merge-upstream -f branch=main
 
 Opening the upstream pull request needs pull request permission on
 `ramensoftware/windhawk-mods` as well; with only push access, the branches are
-published and the pull request call fails with the reason `gh` returned.
+published and every pull request is skipped. GitHub answers that call with
+`Resource not accessible by personal access token`, which the action reports as
+one `::warning::` and a `skipped` count in the step summary; the run stays
+successful, because the branches are already published and a second call can
+only repeat the denial. Submit those pull requests later with a token that has
+upstream pull request access. Any other `gh` failure still fails the run.
 
 ## Adding a mod
 
