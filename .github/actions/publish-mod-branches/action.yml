@@ -241,6 +241,13 @@ runs:
           git commit-tree "$tree" -p "$base_sha" -m "$subject" -m "$changelog_text"
         }
 
+        # A shell function cannot return a string, and push_branch's stdout
+        # carries progress lines, so the failure reason travels through this
+        # script-scope variable. Declaring it here keeps the dependency in the
+        # open instead of creating a global on first assignment inside the
+        # function.
+        push_error=''
+
         push_branch() {
           local branch="$1" commit="$2" lease="$3" attempt fresh output rejection
           push_error=''
