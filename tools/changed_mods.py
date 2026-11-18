@@ -1,9 +1,12 @@
 #!/usr/bin/env python3
-"""Map changed repository paths to the mods that must be republished.
+"""Map changed repository paths to the mods that must be republished or dropped.
 
 A push that only touches ``mods/<id>/`` republishes that single mod. A push
 that touches a bundle-wide input, such as ``shared/`` or the bundler itself,
 republishes every mod because it can change any bundle.
+
+Paths under ``mods/`` that no longer carry a manifest name a mod that was
+deleted, so the published branch of that mod is removed instead.
 
 Usage:
     git diff --name-only "$BEFORE" "$SHA" > changed.txt
