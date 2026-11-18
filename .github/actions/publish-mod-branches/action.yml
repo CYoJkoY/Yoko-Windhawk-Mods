@@ -151,6 +151,22 @@ runs:
           echo "::error::invalid base branch name: $base_branch"
           exit 1
         fi
+        # The target repository is a fork whose base branch mirrors upstream and
+        # holds no mod file of ours, so every mod must land on a branch of its
+        # own. The prefix is read from the raw input rather than the defaulted
+        # value, because an empty prefix turns `mods/<mod-id>` into `<mod-id>`
+        # and a mod id that spells a branch name would overwrite it: that is how
+        # `main` was once polluted. A prefix that already resolves to the base
+        # branch is refused for the same reason.
+        raw_prefix="${BRANCH_PREFIX-mods/}"
+        if [ -z "$raw_prefix" ] || [ "$raw_prefix" = "$base_branch" ]; then
+          echo "::error::branch prefix '${raw_prefix}' would publish into ${base_branch}; every mod needs its own branch"
+          exit 1
+        fi
+        if [ "$base_branch" = "main" ] && [ "${raw_prefix#main}" != "$raw_prefix" ]; then
+          echo "::error::branch prefix '${raw_prefix}' resolves to the mirror branch main"
+          exit 1
+        fi
 
         # Keep the first line only, using parameter expansion so no pipe reader
         # can close early and trip pipefail.

@@ -123,6 +123,12 @@ keeps the pushed branches free of unrelated workflow commits:
 gh api -X POST repos/CYoJkoY/windhawk-mods/merge-upstream -f branch=main
 ```
 
+The `mirror` job guards that branch on every run. It fails when the fork's `main`
+holds a commit upstream never saw, which is the only way a mod file can reach
+the mirror, and names the offending commits and paths. A fork that merely lags
+behind upstream is reported as a notice instead, because upstream commits
+several times a day and no pull request can cause or fix that lag.
+
 Opening the upstream pull request needs pull request permission on
 `ramensoftware/windhawk-mods` as well; with only push access, the branches are
 published and every pull request is skipped. GitHub answers that call with

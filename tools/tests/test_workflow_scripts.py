@@ -947,6 +947,62 @@ class PublishModBranchesActionTests(unittest.TestCase):
         self.assertNotEqual(code, 0)
         self.assertEqual(values, {})
 
+    def test_empty_branch_prefix_is_rejected(self) -> None:
+        upstream, target, _ = self.make_repositories("mirror-prefix")
+        bundle_dir = self.make_bundles(
+            "mirror-prefix", {"demo.wh.cpp": bundle_text("demo", "1.1.0", 1)}
+        )
+        runner = self.runner_temp("mirror-prefix")
+        code, values, _ = run_script(
+            self.branches,
+            runner,
+            self.variables(bundle_dir, target, upstream, runner, BRANCH_PREFIX=""),
+        )
+        self.assertNotEqual(code, 0)
+        self.assertEqual(values, {})
+        # The mirror branch must stay untouched, and no mod branch is created.
+        self.assertEqual(git(target, "branch", "--list", "mods/*"), "")
+        self.assertEqual(git(target, "branch", "--list", "demo"), "")
+
+    def test_branch_prefix_named_main_is_rejected(self) -> None:
+        upstream, target, _ = self.make_repositories("mirror-name")
+        bundle_dir = self.make_bundles(
+            "mirror-name", {"demo.wh.cpp": bundle_text("demo", "1.1.0", 1)}
+        )
+        runner = self.runner_temp("mirror-name")
+        code, values, _ = run_script(
+            self.branches,
+            runner,
+            self.variables(bundle_dir, target, upstream, runner, BRANCH_PREFIX="main"),
+        )
+        self.assertNotEqual(code, 0)
+        self.assertEqual(values, {})
+        # The mirror branch survives as the only branch, keeping its tip, and
+        # no mod branch was created next to it.
+        mirror = git(target, "branch", "--list", "main").lstrip("* ")
+        self.assertEqual(mirror, "main")
+        self.assertEqual(git(target, "branch", "--list", "mods/*"), "")
+
+    def test_base_branch_is_never_a_publish_target(self) -> None:
+        upstream, target, _ = self.make_repositories("mirror-base")
+        bundle_dir = self.make_bundles(
+            "mirror-base", {"demo.wh.cpp": bundle_text("demo", "1.1.0", 1)}
+        )
+        runner = self.runner_temp("mirror-base")
+        # A mod id that spells the base branch name would publish a bundle into
+        # the mirror when the prefix is empty, which is the pollution this
+        # workflow once caused.
+        code, values, _ = run_script(
+            self.branches,
+            runner,
+            self.variables(
+                bundle_dir, target, upstream, runner, BRANCH_PREFIX="", BASE_BRANCH="demo"
+            ),
+        )
+        self.assertNotEqual(code, 0)
+        self.assertEqual(values, {})
+        self.assertEqual(git(target, "branch", "--list", "demo"), "")
+
     def test_multiline_changelog_keeps_only_the_first_line(self) -> None:
         upstream, target, _ = self.make_repositories("multi")
         bundle_dir = self.make_bundles(
@@ -1436,6 +1492,60 @@ class ValidateModsWorkflowTests(unittest.TestCase):
         build = "\n".join(job_block(self.path, "build"))
         publish_step = build.split("- name: Publish mod branches and pull requests")[-1]
         self.assertIn("github.event_name == 'push'", publish_step)
+
+    def test_mirror_job_compares_the_base_branch_tree_with_upstream(self) -> None:
+        mirror = "\n".join(job_block(self.path, "mirror"))
+        self.assertIn("Compare the base branch with upstream", mirror)
+        self.assertIn("refs/remotes/upstream/${BASE_BRANCH}", mirror)
+        self.assertIn("refs/remotes/target/${BASE_BRANCH}", mirror)
+        self.assertIn("git merge-base --is-ancestor", mirror)
+        self.assertIn("exit 1", mirror)
+
+    def test_mirror_job_fails_only_on_commits_upstream_lacks(self) -> None:
+        mirror = "\n".join(job_block(self.path, "mirror"))
+        self.assertIn("git merge-base --is-ancestor", mirror)
+        self.assertIn('if git merge-base --is-ancestor "$target_sha" "$upstream_sha"; then', mirror)
+        self.assertIn("exit 0", mirror)
+        self.assertIn("git log --oneline", mirror)
+
+    def test_mirror_job_tolerates_a_fork_that_lags_behind(self) -> None:
+        mirror = "\n".join(job_block(self.path, "mirror"))
+        self.assertIn('git rev-list --count "$target_sha".."$upstream_sha"', mirror)
+        self.assertIn("::notice::", mirror)
+        self.assertIn("behind", mirror)
+        # Lag must reach `exit 0` before the failure branch, so a fork that
+        # only misses upstream commits cannot fail the run.
+        self.assertLess(
+            mirror.index("::notice::"),
+            mirror.index("holds commits"),
+        )
+
+    def test_mirror_job_reads_both_sides_without_a_token(self) -> None:
+        mirror = "\n".join(job_block(self.path, "mirror"))
+        self.assertIn("contents: read", mirror)
+        self.assertNotIn("secrets.", mirror)
+
+    def test_mirror_job_reports_the_polluting_paths(self) -> None:
+        mirror = "\n".join(job_block(self.path, "mirror"))
+        self.assertIn("git diff --name-status", mirror)
+        # The reporting lines are diagnostics of an already-decided failure:
+        # they follow the `::error::` line and precede the final `exit 1`.
+        self.assertLess(mirror.index("::error::"), mirror.index("git log --oneline"))
+        self.assertLess(mirror.index("git log --oneline"), mirror.index("git diff --name-status"))
+        self.assertLess(mirror.index("git diff --name-status"), mirror.rindex("exit 1"))
+        # Every tolerated `|| true` is attached to one of those two reporting
+        # lines, never to a fetch or to the comparison itself, so a real git
+        # failure still fails the job.
+        tolerated = [
+            line.strip()
+            for line in mirror.splitlines()
+            if "|| true" in line
+        ]
+        self.assertEqual(len(tolerated), 2)
+        self.assertTrue(tolerated[0].lstrip().startswith("git log --oneline"))
+        # The diff command wraps onto a continuation line, so its `|| true`
+        # lands on that continuation rather than on the command itself.
+        self.assertIn("refs/remotes/target/${BASE_BRANCH}", tolerated[1])
 
 
 class CompileModActionTests(unittest.TestCase):

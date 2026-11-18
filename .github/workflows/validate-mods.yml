@@ -40,6 +40,58 @@ env:
   WINHAWK_VERSIONS: '1.7.3 2.0.0-alpha.8'
 
 jobs:
+  mirror:
+    name: Check the base branch mirrors upstream
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - name: Compare the base branch with upstream
+        env:
+          UPSTREAM_REPO: ${{ env.UPSTREAM_REPO }}
+          BASE_BRANCH: ${{ env.BASE_BRANCH }}
+        run: |
+          set -euo pipefail
+          # The fork's base branch carries no mod of ours: every mod lives on
+          # its own `mods/<mod-id>` branch. Only pollution is a failure here.
+          # Lag is not, because upstream commits several times a day and a fork
+          # that has not pressed Sync fork yet would otherwise turn this job red
+          # for a reason no pull request can cause or fix.
+          git init --quiet "$RUNNER_TEMP/mirror"
+          cd "$RUNNER_TEMP/mirror"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git remote add target "https://github.com/${{ env.TARGET_REPO }}.git"
+          git remote add upstream "https://github.com/${UPSTREAM_REPO}.git"
+          git fetch --quiet --no-tags upstream \
+            "+refs/heads/${BASE_BRANCH}:refs/remotes/upstream/${BASE_BRANCH}"
+          git fetch --quiet --no-tags target \
+            "+refs/heads/${BASE_BRANCH}:refs/remotes/target/${BASE_BRANCH}"
+          upstream_sha="$(git rev-parse "refs/remotes/upstream/${BASE_BRANCH}")"
+          target_sha="$(git rev-parse "refs/remotes/target/${BASE_BRANCH}")"
+          # `git merge-base --is-ancestor` answers the only question that
+          # matters: is every commit already in upstream? A fork on an older
+          # upstream commit answers yes, so lag is allowed. A fork holding a
+          # commit upstream never saw answers no, and that commit is exactly
+          # the pollution this job exists to catch.
+          if git merge-base --is-ancestor "$target_sha" "$upstream_sha"; then
+            ahead="$(git rev-list --count "$target_sha".."$upstream_sha")"
+            if [ "$ahead" -eq 0 ]; then
+              echo "${BASE_BRANCH} mirrors ${UPSTREAM_REPO}:${BASE_BRANCH} at $target_sha"
+            else
+              echo "::notice::${BASE_BRANCH} is $ahead upstream commit(s) behind; sync the fork before publishing"
+            fi
+            exit 0
+          fi
+          echo "::error::${BASE_BRANCH} in ${{ env.TARGET_REPO }} holds commits ${UPSTREAM_REPO} does not have"
+          echo "commits only in the fork:"
+          git log --oneline --no-decorate "refs/remotes/upstream/${BASE_BRANCH}..refs/remotes/target/${BASE_BRANCH}" || true
+          echo "paths only in the fork:"
+          git diff --name-status "refs/remotes/upstream/${BASE_BRANCH}" \
+            "refs/remotes/target/${BASE_BRANCH}" || true
+          exit 1
+
   bundle:
     name: Bundle and test
     runs-on: windows-latest
