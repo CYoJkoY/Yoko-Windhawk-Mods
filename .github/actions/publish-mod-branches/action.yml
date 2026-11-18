@@ -405,10 +405,24 @@ runs:
           title="$(pr_title "$id" "$kind" "${version:-0}")"
           body="$workspace/pr-body.${id}.md"
           write_body "${version:-0}" "$kind" "$body"
-          number="$(gh pr list --repo "$upstream_repo" --head "$head" --state open \
-            --json number --jq '.[0].number // ""')"
+          # A closed pull request still owns the head branch, so creating
+          # another one would be rejected: it is reopened and refreshed. A
+          # merged one is history, and the next change needs its own request.
+          found="$(gh pr list --repo "$upstream_repo" --head "$head" --state all \
+            --json number,state --jq '.[0] // empty | "\(.number) \(.state)"')"
+          number="${found%% *}"
+          state="${found#* }"
+          if [ "$state" = "MERGED" ]; then
+            number=""
+          fi
 
           if [ -n "$number" ]; then
+            if [ "$state" = "CLOSED" ] && ! gh pr reopen "$number" \
+              --repo "$upstream_repo" >/dev/null 2>&1; then
+              pr_failed=$((pr_failed + 1))
+              echo "| \`$id\` | \`$head\` | error: could not reopen #$number |" >> "$GITHUB_STEP_SUMMARY"
+              continue
+            fi
             if gh pr edit "$number" --repo "$upstream_repo" --title "$title" \
               --body-file "$body" >/dev/null 2>&1; then
               refreshed=$((refreshed + 1))

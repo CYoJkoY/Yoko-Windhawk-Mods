@@ -123,7 +123,7 @@ def bundle_text(mod_id: str, version: str, value: int = 0) -> str:
 
 
 def make_gh_stub(directory: Path, existing: str = "") -> tuple[Path, dict[str, str]]:
-    """Fake `gh` that records calls and answers pr list/create/edit."""
+    """Fake `gh` that records calls and answers pr list/create/edit/reopen."""
 
     directory.mkdir(parents=True, exist_ok=True)
     script = directory / "gh"
@@ -136,6 +136,8 @@ def make_gh_stub(directory: Path, existing: str = "") -> tuple[Path, dict[str, s
                 f'  printf \'%s\' "{existing}"',
                 'elif [ "$1" = "pr" ] && [ "$2" = "create" ]; then',
                 '  echo "https://github.com/ramensoftware/windhawk-mods/pull/321"',
+                'elif [ "$1" = "pr" ] && [ "$2" = "reopen" ]; then',
+                "  :",
                 "fi",
                 "exit 0",
                 "",
@@ -644,12 +646,54 @@ class PublishModBranchesActionTests(unittest.TestCase):
         self.assertEqual(code, 0)
 
         code, summary, _, calls = self.run_pull_requests(
-            "pr-edit", runner, variables, values["status-file"], existing="77\n"
+            "pr-edit", runner, variables, values["status-file"], existing="77 OPEN\n"
         )
         self.assertEqual(code, 0, summary)
         self.assertIn("pr edit 77 --repo ramensoftware/windhawk-mods", calls)
+        self.assertNotIn("pr reopen", calls)
         self.assertNotIn("pr create", calls)
         self.assertIn("refreshed #77", summary)
+
+    def test_closed_pull_request_is_reopened_instead_of_duplicated(self) -> None:
+        upstream, target, _ = self.make_repositories("pr-closed")
+        bundle_dir = self.make_bundles(
+            "pr-closed", {"demo.wh.cpp": bundle_text("demo", "1.1.0", 1)}
+        )
+        runner = self.runner_temp("pr-closed")
+        variables = self.variables(
+            bundle_dir, target, upstream, runner, TOKEN="test-token"
+        )
+        code, values, _ = run_script(self.branches, runner, variables)
+        self.assertEqual(code, 0)
+
+        code, summary, _, calls = self.run_pull_requests(
+            "pr-closed", runner, variables, values["status-file"], existing="78 CLOSED"
+        )
+        self.assertEqual(code, 0, summary)
+        self.assertIn("pr reopen 78 --repo ramensoftware/windhawk-mods", calls)
+        self.assertIn("pr edit 78 --repo ramensoftware/windhawk-mods", calls)
+        self.assertNotIn("pr create", calls)
+        self.assertIn("refreshed #78", summary)
+
+    def test_merged_pull_request_does_not_block_the_next_one(self) -> None:
+        upstream, target, _ = self.make_repositories("pr-merged")
+        bundle_dir = self.make_bundles(
+            "pr-merged", {"demo.wh.cpp": bundle_text("demo", "1.2.0", 1)}
+        )
+        runner = self.runner_temp("pr-merged")
+        variables = self.variables(
+            bundle_dir, target, upstream, runner, TOKEN="test-token"
+        )
+        code, values, _ = run_script(self.branches, runner, variables)
+        self.assertEqual(code, 0)
+
+        code, summary, _, calls = self.run_pull_requests(
+            "pr-merged", runner, variables, values["status-file"], existing="79 MERGED"
+        )
+        self.assertEqual(code, 0, summary)
+        self.assertIn("pr create --repo ramensoftware/windhawk-mods", calls)
+        self.assertNotIn("pr edit", calls)
+        self.assertNotIn("pr reopen", calls)
 
     def test_pull_requests_are_skipped_without_a_token(self) -> None:
         upstream, target, _ = self.make_repositories("pr-skip")
