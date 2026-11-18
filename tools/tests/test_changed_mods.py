@@ -20,6 +20,7 @@ from tools.changed_mods import (  # noqa: E402
     SelectionError,
     known_mods,
     main,
+    removed_mods,
     restrict_mods,
     select_mods,
 )
@@ -64,6 +65,26 @@ class SelectModsTests(unittest.TestCase):
         self.assertEqual(
             select_mods(["mods\\a\\src\\main.cpp", "", "  "], ["a"], []), ["a"]
         )
+
+
+class RemovedModsTests(unittest.TestCase):
+    """A mod directory that disappeared leaves a branch to delete."""
+
+    def test_deleted_directory_reports_the_mod(self) -> None:
+        paths = ["mods/gone/mod.json", "mods/gone/src/main.cpp"]
+        self.assertEqual(removed_mods(paths, ["a"]), ["gone"])
+
+    def test_known_mod_is_never_reported(self) -> None:
+        self.assertEqual(removed_mods(["mods/a/src/main.cpp"], ["a"]), [])
+
+    def test_removed_docs_alone_report_nothing(self) -> None:
+        self.assertEqual(removed_mods(["mods/gone/doc/README.md"], ["a"]), [])
+
+    def test_invalid_directory_name_is_ignored(self) -> None:
+        self.assertEqual(removed_mods(["mods/Bad_Name/src/main.cpp"], ["a"]), [])
+
+    def test_unrelated_paths_report_nothing(self) -> None:
+        self.assertEqual(removed_mods(["README.md", "shared/helper.h"], ["a"]), [])
 
 
 class KnownModsTests(unittest.TestCase):
@@ -152,29 +173,61 @@ class MainTests(unittest.TestCase):
         self.write_paths("mods/a/src/main.cpp")
         code, stdout, values = self.run_main()
         self.assertEqual(code, 0)
-        self.assertEqual(json.loads(stdout), {"all": False, "mods": ["a"]})
-        self.assertEqual(values, {"publish_all": "false", "mods": "a", "count": "1"})
+        self.assertEqual(json.loads(stdout), {"all": False, "mods": ["a"], "removed": []})
+        self.assertEqual(
+            values,
+            {"publish_all": "false", "mods": "a", "removed": "", "count": "1"},
+        )
 
     def test_shared_change_writes_every_mod(self) -> None:
         self.write_paths("shared/helper.h")
         code, stdout, values = self.run_main("--trigger", "shared")
         self.assertEqual(code, 0)
-        self.assertEqual(json.loads(stdout), {"all": True, "mods": ["a", "b"]})
-        self.assertEqual(values, {"publish_all": "true", "mods": "a b", "count": "2"})
+        self.assertEqual(
+            json.loads(stdout), {"all": True, "mods": ["a", "b"], "removed": []}
+        )
+        self.assertEqual(
+            values,
+            {"publish_all": "true", "mods": "a b", "removed": "", "count": "2"},
+        )
 
     def test_all_flag_ignores_changed_paths(self) -> None:
         self.write_paths("README.md")
         code, stdout, values = self.run_main("--all")
         self.assertEqual(code, 0)
-        self.assertEqual(json.loads(stdout), {"all": True, "mods": ["a", "b"]})
+        self.assertEqual(
+            json.loads(stdout), {"all": True, "mods": ["a", "b"], "removed": []}
+        )
         self.assertEqual(values.get("count"), "2")
+        self.assertEqual(values.get("removed"), "")
 
     def test_docs_only_change_writes_zero_mods(self) -> None:
         self.write_paths("README.md", "docs/guide.md")
         code, stdout, values = self.run_main()
         self.assertEqual(code, 0)
-        self.assertEqual(json.loads(stdout), {"all": False, "mods": []})
-        self.assertEqual(values, {"publish_all": "false", "mods": "", "count": "0"})
+        self.assertEqual(json.loads(stdout), {"all": False, "mods": [], "removed": []})
+        self.assertEqual(
+            values,
+            {"publish_all": "false", "mods": "", "removed": "", "count": "0"},
+        )
+
+    def test_deleted_mod_writes_no_publish_count_and_one_removal(self) -> None:
+        self.write_paths("mods/gone/mod.json", "mods/gone/src/main.cpp")
+        code, stdout, values = self.run_main()
+        self.assertEqual(code, 0)
+        self.assertEqual(
+            json.loads(stdout), {"all": False, "mods": [], "removed": ["gone"]}
+        )
+        self.assertEqual(
+            values,
+            {"publish_all": "false", "mods": "", "removed": "gone", "count": "0"},
+        )
+
+    def test_all_flag_never_reports_removals(self) -> None:
+        self.write_paths("mods/gone/mod.json")
+        code, _, values = self.run_main("--all")
+        self.assertEqual(code, 0)
+        self.assertEqual(values.get("removed"), "")
 
     def test_missing_paths_file_fails(self) -> None:
         code, _, values = self.run_main()
@@ -186,7 +239,7 @@ class MainTests(unittest.TestCase):
         self.write_paths("shared/helper.h")
         code, stdout, values = self.run_main("--trigger", "shared", "--only", "b")
         self.assertEqual(code, 0)
-        self.assertEqual(json.loads(stdout), {"all": False, "mods": ["b"]})
+        self.assertEqual(json.loads(stdout), {"all": False, "mods": ["b"], "removed": []})
         self.assertEqual(values.get("mods"), "b")
 
     def test_unknown_only_id_fails(self) -> None:

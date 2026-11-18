@@ -1,9 +1,12 @@
 #!/usr/bin/env python3
-"""Map changed repository paths to the mods that must be republished.
+"""Map changed repository paths to the mods that must be republished or dropped.
 
 A push that only touches ``mods/<id>/`` republishes that single mod. A push
 that touches a bundle-wide input, such as ``shared/`` or the bundler itself,
 republishes every mod because it can change any bundle.
+
+Paths under ``mods/`` that no longer carry a manifest name a mod that was
+deleted, so the published branch of that mod is removed instead.
 
 Usage:
     git diff --name-only "$BEFORE" "$SHA" > changed.txt
@@ -22,6 +25,7 @@ from pathlib import Path
 MOD_PATH_RE = re.compile(r"^mods/([^/]+)/")
 DOC_PATH_RE = re.compile(r"^mods/[^/]+/doc/")
 MATRIX_PLACEHOLDER = "-"
+MOD_ID_RE = re.compile(r"^[a-z0-9][a-z0-9-]*$")
 
 
 class SelectionError(Exception):
@@ -92,6 +96,30 @@ def restrict_mods(
     return [mod_id for mod_id in selected if mod_id in wanted]
 
 
+def removed_mods(paths: list[str], mods: list[str]) -> list[str]:
+    """Mod ids that changed paths still name, but no longer carry a manifest.
+
+    Deleting ``mods/<id>/`` leaves its paths in the diff while the id is gone
+    from the working tree. Such a mod has no bundle to publish, so its branch
+    and pull request are removed instead.
+    """
+
+    known = set(mods)
+    removed: set[str] = set()
+    for raw in paths:
+        path = raw.strip().replace("\\", "/")
+        if not path or DOC_PATH_RE.match(path):
+            continue
+        match = MOD_PATH_RE.match(path)
+        if match is None:
+            continue
+        mod_id = match.group(1)
+        if mod_id in known or MOD_ID_RE.match(mod_id) is None:
+            continue
+        removed.add(mod_id)
+    return sorted(removed)
+
+
 def _read_paths(path: Path) -> list[str]:
     try:
         return path.read_text(encoding="utf-8").splitlines()
@@ -150,8 +178,11 @@ def main(argv: list[str] | None = None) -> int:
         mods = known_mods(args.root)
         if args.all:
             selected: list[str] | None = None
+            removed: list[str] = []
         else:
-            selected = select_mods(_read_paths(args.paths), mods, args.trigger)
+            paths = _read_paths(args.paths)
+            selected = select_mods(paths, mods, args.trigger)
+            removed = removed_mods(paths, mods)
         selected = restrict_mods(selected, args.only, mods)
     except SelectionError as error:
         print(f"error: {error}", file=sys.stderr)
@@ -164,6 +195,7 @@ def main(argv: list[str] | None = None) -> int:
             {
                 "all": publish_all,
                 "mods": published,
+                "removed": removed,
             }
         )
     )
@@ -172,6 +204,7 @@ def main(argv: list[str] | None = None) -> int:
             with args.github_output.open("a", encoding="utf-8", newline="\n") as handle:
                 handle.write(f"publish_all={'true' if publish_all else 'false'}\n")
                 handle.write(f"mods={' '.join(published)}\n")
+                handle.write(f"removed={' '.join(removed)}\n")
                 handle.write(f"count={len(published)}\n")
                 if args.matrix:
                     handle.write(f"matrix={json.dumps(published or [MATRIX_PLACEHOLDER])}\n")

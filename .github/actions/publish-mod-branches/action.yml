@@ -39,6 +39,14 @@ inputs:
     description: Space or comma separated mod ids; empty publishes every bundle
     required: false
     default: ''
+  publish:
+    description: '"false" to skip publishing and only prune removed mods'
+    required: false
+    default: 'true'
+  prune-mods:
+    description: Space or comma separated mod ids whose branch and pull request must be removed
+    required: false
+    default: ''
   changelog:
     description: Changelog line for pull requests
     required: false
@@ -72,6 +80,15 @@ outputs:
   status-file:
     description: TSV status file consumed by the pull request step
     value: ${{ steps.branches.outputs.status-file }}
+  pruned:
+    description: Branches deleted for mods that no longer exist
+    value: ${{ steps.branches.outputs.pruned }}
+  prune-failed:
+    description: Branches that could not be deleted
+    value: ${{ steps.branches.outputs.prune-failed }}
+  pruned-file:
+    description: TSV file of deleted branches consumed by the pull request step
+    value: ${{ steps.branches.outputs.pruned-file }}
 
 runs:
   using: composite
@@ -89,6 +106,8 @@ runs:
         BRANCH_PREFIX: ${{ inputs.branch-prefix }}
         BASE_BRANCH: ${{ inputs.base-branch }}
         MOD_FILTER: ${{ inputs.mods }}
+        PUBLISH: ${{ inputs.publish }}
+        PRUNE_MODS: ${{ inputs.prune-mods }}
         CHANGELOG: ${{ inputs.changelog }}
         DRY_RUN: ${{ inputs.dry-run }}
       run: |
@@ -99,6 +118,7 @@ runs:
         upstream_repo="${UPSTREAM_REPO:?upstream repository is required}"
         branch_prefix="${BRANCH_PREFIX:-mods/}"
         base_branch="${BASE_BRANCH:-main}"
+        publish_enabled="${PUBLISH:-true}"
         dry_run="${DRY_RUN:-false}"
         owner="${target_repo%%/*}"
         workspace="${RUNNER_TEMP:-${TMPDIR:-/tmp}}/publish-mod-branches"
@@ -106,16 +126,19 @@ runs:
         target_url="${TARGET_URL:-https://github.com/${target_repo}.git}"
         upstream_url="${UPSTREAM_URL:-https://github.com/${upstream_repo}.git}"
 
-        if [ ! -d "$bundle_dir" ]; then
-          echo "::error::bundle directory not found: $bundle_dir"
-          exit 1
-        fi
-        if [[ "$bundle_dir" != /* ]]; then
-          bundle_dir="$(cd "$bundle_dir" && pwd)"
-        fi
-        if [ -z "$(find "$bundle_dir" -maxdepth 1 -type f -name '*.wh.cpp' -print -quit)" ]; then
-          echo "::error::no .wh.cpp bundles found in $bundle_dir"
-          exit 1
+        # A prune-only run publishes nothing, so it needs no bundle directory.
+        if [ "$publish_enabled" = "true" ]; then
+          if [ ! -d "$bundle_dir" ]; then
+            echo "::error::bundle directory not found: $bundle_dir"
+            exit 1
+          fi
+          if [[ "$bundle_dir" != /* ]]; then
+            bundle_dir="$(cd "$bundle_dir" && pwd)"
+          fi
+          if [ -z "$(find "$bundle_dir" -maxdepth 1 -type f -name '*.wh.cpp' -print -quit)" ]; then
+            echo "::error::no .wh.cpp bundles found in $bundle_dir"
+            exit 1
+          fi
         fi
         if [[ ! "$branch_prefix" =~ ^[A-Za-z0-9][A-Za-z0-9._/-]*$ ]]; then
           echo "::error::invalid branch prefix: $branch_prefix"
@@ -286,6 +309,12 @@ runs:
         } >> "$GITHUB_STEP_SUMMARY"
 
         for file in "$bundle_dir"/*.wh.cpp; do
+          # A publish that is disabled, or a directory without bundles, still
+          # expands the pattern once. Such a path is not a bundle, so it is
+          # skipped instead of being rejected as a malformed id.
+          if [ "$publish_enabled" != "true" ] || [ ! -f "$file" ]; then
+            continue
+          fi
           id="$(basename "$file" .wh.cpp)"
           if [[ ! "$id" =~ ^[a-z0-9][a-z0-9-]*$ ]]; then
             echo "::error::invalid bundle name: $(basename "$file")"
@@ -370,9 +399,77 @@ runs:
             "$id" "$branch" "$version" "$kind" "$commit" >> "$status_file"
         done
 
+        # A deleted mod leaves no bundle, so the publish loop never sees it. Its
+        # branch and pull request are removed here, which keeps one branch per
+        # mod without touching any other mod.
+        pruned=0
+        prune_failed=0
+        pruned_file="$workspace/pruned.tsv"
+        : > "$pruned_file"
+
+        # A deletion is final when the remote refuses it, so only transient
+        # failures are retried, exactly like a push.
+        delete_branch() {
+          local branch="$1" attempt output rejection
+          push_error=''
+          for attempt in 1 2 3; do
+            output=''
+            if output="$(git push --quiet origin --delete "refs/heads/$branch" 2>&1)"; then
+              return 0
+            fi
+            if rejection="$(first_policy_rejection "$output")"; then
+              push_error="$(one_line "$rejection")"
+              return 1
+            fi
+            echo "Deletion of $branch failed (attempt $attempt)"
+            sleep $((attempt * 3))
+          done
+          push_error="$(one_line "$(failure_line "${output:-deletion failed}")")"
+          return 1
+        }
+
+        prune_ids="${PRUNE_MODS//,/ }"
+        if [ -n "${prune_ids// /}" ]; then
+          {
+            echo ""
+            echo "### Remove branches of deleted mods"
+            echo ""
+            echo "| Mod | Branch | Result |"
+            echo "| :--- | :--- | :--- |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          for id in $prune_ids; do
+            if [[ ! "$id" =~ ^[a-z0-9][a-z0-9-]*$ ]]; then
+              prune_failed=$((prune_failed + 1))
+              echo "::error::invalid mod id to remove: $id"
+              continue
+            fi
+            branch="${branch_prefix}${id}"
+            if [ -z "$(git ls-remote --heads origin "refs/heads/$branch")" ]; then
+              echo "| \`$id\` | \`$branch\` | no branch |" >> "$GITHUB_STEP_SUMMARY"
+              continue
+            fi
+            if [ "$dry_run" = "true" ]; then
+              echo "| \`$id\` | \`$branch\` | dry run: would delete |" >> "$GITHUB_STEP_SUMMARY"
+              continue
+            fi
+            if delete_branch "$branch"; then
+              pruned=$((pruned + 1))
+              echo "| \`$id\` | \`$branch\` | deleted |" >> "$GITHUB_STEP_SUMMARY"
+              printf '%s\t%s\n' "$id" "$branch" >> "$pruned_file"
+            else
+              prune_failed=$((prune_failed + 1))
+              reason="${push_error:-deletion failed}"
+              echo "::error::${id}: $(command_text "$reason")"
+              echo "| \`$id\` | \`$branch\` | error: ${reason} |" >> "$GITHUB_STEP_SUMMARY"
+            fi
+          done
+        fi
+
         {
           echo ""
           echo "- pushed: $pushed / unchanged: $unchanged / already upstream: $current / failed: $failed"
+          echo "- removed: $pruned / removal failed: $prune_failed"
         } >> "$GITHUB_STEP_SUMMARY"
 
         echo "pushed=$pushed" >> "$GITHUB_OUTPUT"
@@ -380,6 +477,9 @@ runs:
         echo "current=$current" >> "$GITHUB_OUTPUT"
         echo "failed=$failed" >> "$GITHUB_OUTPUT"
         echo "status-file=$status_file" >> "$GITHUB_OUTPUT"
+        echo "pruned=$pruned" >> "$GITHUB_OUTPUT"
+        echo "prune-failed=$prune_failed" >> "$GITHUB_OUTPUT"
+        echo "pruned-file=$pruned_file" >> "$GITHUB_OUTPUT"
 
     - name: Open or refresh upstream pull requests
       id: pull-requests
@@ -390,6 +490,7 @@ runs:
       shell: bash
       env:
         STATUS_FILE: ${{ steps.branches.outputs.status-file }}
+        PRUNED_FILE: ${{ steps.branches.outputs.pruned-file }}
         TARGET_REPO: ${{ inputs.target-repo }}
         UPSTREAM_REPO: ${{ inputs.upstream-repo }}
         BASE_BRANCH: ${{ inputs.base-branch }}
@@ -400,6 +501,7 @@ runs:
         set -euo pipefail
 
         status_file="${STATUS_FILE:?status file is required}"
+        pruned_file="${PRUNED_FILE:-}"
         upstream_repo="${UPSTREAM_REPO:?upstream repository is required}"
         base_branch="${BASE_BRANCH:-main}"
         owner="${TARGET_REPO%%/*}"
@@ -500,9 +602,43 @@ runs:
           fi
         done < "$status_file"
 
+        # The branch of a deleted mod is already gone, so an open request for
+        # that head cannot be refreshed. Closing it keeps the upstream list
+        # matching the mods the repository still holds.
+        closed=0
+        if [ -n "$pruned_file" ] && [ -s "$pruned_file" ]; then
+          {
+            echo ""
+            echo "### Close pull requests of deleted mods"
+            echo ""
+            echo "| Mod | Head | Result |"
+            echo "| :--- | :--- | :--- |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          while IFS=$'\t' read -r id branch; do
+            head="${owner}:${branch}"
+            number="$(gh pr list --repo "$upstream_repo" --head "$head" --state open \
+              --json number --jq '.[0].number // ""')"
+            if [ -z "$number" ]; then
+              echo "| \`$id\` | \`$head\` | no open pull request |" >> "$GITHUB_STEP_SUMMARY"
+              continue
+            fi
+            if close_error="$(gh pr close "$number" --repo "$upstream_repo" 2>&1 >/dev/null)"; then
+              closed=$((closed + 1))
+              echo "| \`$id\` | \`$head\` | closed #$number |" >> "$GITHUB_STEP_SUMMARY"
+            else
+              pr_failed=$((pr_failed + 1))
+              reason="$(one_line "$close_error")"
+              echo "::error::${id}: could not close #$number: $(command_text "$reason")"
+              echo "| \`$id\` | \`$head\` | error: #$number: ${reason} |" >> "$GITHUB_STEP_SUMMARY"
+            fi
+          done < "$pruned_file"
+        fi
+
         {
           echo ""
           echo "- opened: $created / refreshed: $refreshed / failed: $pr_failed"
+          echo "- closed for removed mods: $closed"
         } >> "$GITHUB_STEP_SUMMARY"
 
         echo "pr-failed=$pr_failed" >> "$GITHUB_OUTPUT"
@@ -516,17 +652,22 @@ runs:
       env:
         BRANCH_FAILED: ${{ steps.branches.outputs.failed }}
         BRANCH_OUTCOME: ${{ steps.branches.outcome }}
+        PRUNE_FAILED: ${{ steps.branches.outputs.prune-failed }}
         PR_FAILED: ${{ steps.pull-requests.outputs.pr-failed }}
         PR_OUTCOME: ${{ steps.pull-requests.outcome }}
       run: |
         set -euo pipefail
 
         branch_failed="${BRANCH_FAILED:-0}"
+        prune_failed="${PRUNE_FAILED:-0}"
         pr_failed="${PR_FAILED:-0}"
         if [ "${BRANCH_OUTCOME:-}" = "failure" ]; then
           echo "::error::the branch step stopped before reporting a result"
         elif [ "$branch_failed" -ne 0 ]; then
           echo "::error::$branch_failed mod branch(es) could not be published"
+        fi
+        if [ "$prune_failed" -ne 0 ]; then
+          echo "::error::$prune_failed deleted mod branch(es) could not be removed"
         fi
         if [ "${PR_OUTCOME:-}" = "failure" ]; then
           echo "::error::the pull request step stopped before reporting a result"
@@ -536,6 +677,6 @@ runs:
         if [ "${BRANCH_OUTCOME:-}" = "failure" ] || [ "${PR_OUTCOME:-}" = "failure" ]; then
           exit 1
         fi
-        if [ "$branch_failed" -ne 0 ] || [ "$pr_failed" -ne 0 ]; then
+        if [ "$branch_failed" -ne 0 ] || [ "$prune_failed" -ne 0 ] || [ "$pr_failed" -ne 0 ]; then
           exit 1
         fi
