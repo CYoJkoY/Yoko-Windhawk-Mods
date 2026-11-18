@@ -42,8 +42,9 @@ stale. `--output <dir>` writes bundles somewhere other than `dist/`.
 one `build` job per selected mod. Each build job compiles exactly one bundle
 with Windhawk 1.7.3 and 2.0.0-alpha.8 through
 `.github/actions/compile-mod`, so x86, x64, and ARM64 builds of one mod are
-independent of every other mod. The job uploads the bundled sources as the
-`mod-bundles` artifact and the DLLs as the `windhawk-dlls-<mod-id>` artifact.
+independent of every other mod. The `bundle` job uploads the bundled sources as
+the `mod-bundles` artifact, and each build job uploads its DLLs as the
+`windhawk-dlls-<mod-id>` artifact.
 
 On a push to `main`, the `bundle` job generates `dist/` in the runner, each
 `build` job validates and publishes its own mod, and the `release` job writes a
@@ -60,12 +61,14 @@ single snapshot cannot become a separate upstream pull request per mod.
 
 ## Publishing one branch per mod
 
-The `select` job maps the changed paths of each push or pull request to mod ids
-with `tools/changed_mods.py`, then emits the id list as the `build` matrix. A
-push that only touches `mods/<mod-id>/` selects that mod; a push that touches
+The `select` job maps the changed paths of each push to mod ids with
+`tools/changed_mods.py`, then emits the id list as the `build` matrix. A push
+that only touches `mods/<mod-id>/` selects that mod; a push that touches
 `shared/` or `tools/bundle.py` selects every mod, as those inputs can change
-any bundle. Because the matrix is expanded per mod, a compile error in one mod
-fails only its own job and leaves the other mods' branches untouched.
+any bundle. Pull requests compile every mod so the pipeline is exercised
+against all bundles, but never publish. Because the matrix is expanded per mod,
+a compile error in one mod fails only its own job; branches for the other
+successful mods are still published.
 
 For each selected mod, `publish-mod-branches` writes one commit on top of the
 current upstream `main` that replaces exactly `mods/<mod-id>.wh.cpp`, then

@@ -129,7 +129,7 @@ def main(argv: list[str] | None = None) -> int:
         nargs="+",
         default=[],
         metavar="MOD_ID",
-        help="limit the selection to these mod ids; repeatable",
+        help="limit the selection to these space separated mod ids",
     )
     parser.add_argument(
         "--matrix",

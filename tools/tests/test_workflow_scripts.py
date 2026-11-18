@@ -1056,8 +1056,13 @@ class ValidateModsWorkflowTests(unittest.TestCase):
 
     def test_release_still_waits_for_every_mod(self) -> None:
         release = "\n".join(job_block(self.path, "release"))
-        self.assertIn("needs: [bundle, build]", release)
+        self.assertIn("needs: [bundle, select, build]", release)
         self.assertIn("needs.build.result == 'success'", release)
+
+    def test_release_rejects_a_failed_selector(self) -> None:
+        release = "\n".join(job_block(self.path, "release"))
+        self.assertIn("needs.select.result == 'success'", release)
+        self.assertIn("needs.select.outputs.count == '0'", release)
 
     def test_bundle_wide_inputs_still_select_every_mod(self) -> None:
         self.assertIn("--trigger shared", self.text)
