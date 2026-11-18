@@ -1104,7 +1104,6 @@ class CompileModActionTests(unittest.TestCase):
     def test_every_version_is_compiled_for_the_one_bundle(self) -> None:
         self.assertIn("for version in $versions; do", self.script)
         self.assertIn('echo "Compiling $BUNDLE with Windhawk $version"', self.script)
-        # The action never globs the bundle directory: it owns exactly one file.
         self.assertNotIn("find dist", self.script)
 
     def test_architectures_are_complete_before_success(self) -> None:

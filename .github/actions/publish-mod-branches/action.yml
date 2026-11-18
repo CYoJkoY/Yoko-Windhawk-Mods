@@ -110,9 +110,6 @@ runs:
           echo "::error::bundle directory not found: $bundle_dir"
           exit 1
         fi
-        # The steps below work inside a scratch repository, so a relative
-        # bundle directory would resolve against that checkout instead of the
-        # caller's workspace. Pin it while the caller's path is still current.
         if [[ "$bundle_dir" != /* ]]; then
           bundle_dir="$(cd "$bundle_dir" && pwd)"
         fi

@@ -92,9 +92,6 @@ jobs:
         with:
           python-version: '3.12'
 
-      # A push that only touches mods/<id>/ builds that mod. A bundle-wide
-      # input builds every mod because it can change any bundle. The matrix
-      # output names the mods, so each one gets its own build and publish job.
       - name: Map changed paths to mods
         id: select
         env:
@@ -116,9 +113,6 @@ jobs:
             echo "Manual run; every mod is built."
             extra=(--all)
           elif [ "$EVENT_NAME" = "pull_request" ]; then
-            # A pull request publishes nothing, so every mod is compiled to
-            # prove the workflow change against the real bundles. Each mod
-            # still owns its own matrix leg.
             echo "Pull request; every mod is compiled."
             extra=(--all)
           elif [ -z "${BEFORE_SHA:-}" ] || [[ "$BEFORE_SHA" =~ ^0+$ ]] ||
@@ -174,8 +168,6 @@ jobs:
         with:
           python-version: '3.12'
 
-      # One job owns one bundle, so a compile failure stays inside this mod
-      # and cannot block the branches of the other mods.
       - name: Compile ${{ matrix.mod }}
         id: compile
         uses: ./.github/actions/compile-mod
@@ -185,8 +177,6 @@ jobs:
           bundle: dist/${{ matrix.mod }}.wh.cpp
           dll-dir: ${{ runner.temp }}/dlls
 
-      # The native harness links against the Windhawk SDK, so it runs once per
-      # portable tree. It covers aleph-canvas only, hence the guard.
       - name: Run native canvas regressions
         if: matrix.mod == 'aleph-canvas'
         env:
@@ -230,9 +220,6 @@ jobs:
     name: Deploy bundles to release branch
     runs-on: ubuntu-latest
     needs: [bundle, select, build]
-    # A docs-only push selects no mod, so the build matrix is skipped; the
-    # bundles are unchanged and the snapshot is still safe to publish. A
-    # failed selection never passes as an empty selection.
     if: |
       always() &&
       github.event_name == 'push' &&

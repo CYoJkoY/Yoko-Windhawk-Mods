@@ -174,8 +174,6 @@ def main(argv: list[str] | None = None) -> int:
                 handle.write(f"mods={' '.join(published)}\n")
                 handle.write(f"count={len(published)}\n")
                 if args.matrix:
-                    # GitHub rejects a matrix that expands to no values, so an
-                    # empty selection still names one entry; the job skips it.
                     handle.write(f"matrix={json.dumps(published or [MATRIX_PLACEHOLDER])}\n")
         except OSError as error:
             print(f"error: cannot write {args.github_output}: {error}", file=sys.stderr)

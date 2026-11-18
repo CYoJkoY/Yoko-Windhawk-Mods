@@ -68,7 +68,6 @@ runs:
           tag_with_v="v${version#v}"
           tag_without_v="${version#v}"
 
-          # Accept release tags with or without the leading "v".
           installer_url="https://github.com/ramensoftware/windhawk/releases/download/${tag_with_v}/windhawk_setup.exe"
           echo "Downloading $installer_url"
           if ! curl --fail --location --retry 3 --retry-delay 1 "$installer_url" -o "$installer_path" 2>/dev/null; then
