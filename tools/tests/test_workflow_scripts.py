@@ -11,6 +11,7 @@ from pathlib import Path
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
+PUBLISH_ACTION = REPO_ROOT / ".github" / "actions" / "publish-mod-branches"
 
 
 def _bash() -> str:
@@ -60,13 +61,13 @@ def extract_run(path: Path, step: str) -> str:
     return "\n".join(body)
 
 
-def run_script(
+def run_script_verbose(
     script: str,
     cwd: Path,
     variables: dict[str, str],
     extra_env: dict[str, str] | None = None,
-) -> tuple[int, dict[str, str], str]:
-    """Run a workflow script with GitHub output files in a temporary root."""
+) -> tuple[subprocess.CompletedProcess[str], dict[str, str], str]:
+    """Run a workflow script and return its process, outputs and summary."""
 
     output = cwd.parent / f"{cwd.name}-output.txt"
     summary = cwd.parent / f"{cwd.name}-summary.md"
@@ -75,6 +76,7 @@ def run_script(
 
     header = ["set -euo pipefail", f"GITHUB_OUTPUT='{output.as_posix()}'"]
     header.append(f"GITHUB_STEP_SUMMARY='{summary.as_posix()}'")
+    header.append(f"GITHUB_ACTION_PATH='{PUBLISH_ACTION.as_posix()}'")
     for key, value in variables.items():
         header.append(f"{key}='{value}'")
 
@@ -92,7 +94,19 @@ def run_script(
         if "=" in line:
             key, value = line.split("=", 1)
             values[key] = value
-    return proc.returncode, values, summary.read_text(encoding="utf-8")
+    return proc, values, summary.read_text(encoding="utf-8")
+
+
+def run_script(
+    script: str,
+    cwd: Path,
+    variables: dict[str, str],
+    extra_env: dict[str, str] | None = None,
+) -> tuple[int, dict[str, str], str]:
+    """Run a workflow script with GitHub output files in a temporary root."""
+
+    proc, values, summary = run_script_verbose(script, cwd, variables, extra_env)
+    return proc.returncode, values, summary
 
 
 def git(cwd: Path, *args: str) -> str:
@@ -122,8 +136,13 @@ def bundle_text(mod_id: str, version: str, value: int = 0) -> str:
     return MOD_TEMPLATE.format(mod_id=mod_id, version=version, value=value)
 
 
-def make_gh_stub(directory: Path, existing: str = "") -> tuple[Path, dict[str, str]]:
-    """Fake `gh` that records calls and answers pr list/create/edit."""
+def make_gh_stub(
+    directory: Path, existing: str = "", edit_failure: str = ""
+) -> tuple[Path, dict[str, str]]:
+    """Fake `gh` that records calls and answers pr list/create/edit.
+
+    `edit_failure` makes `pr edit` fail with that message on stderr.
+    """
 
     directory.mkdir(parents=True, exist_ok=True)
     script = directory / "gh"
@@ -136,6 +155,11 @@ def make_gh_stub(directory: Path, existing: str = "") -> tuple[Path, dict[str, s
                 f'  printf \'%s\' "{existing}"',
                 'elif [ "$1" = "pr" ] && [ "$2" = "create" ]; then',
                 '  echo "https://github.com/ramensoftware/windhawk-mods/pull/321"',
+                'elif [ "$1" = "pr" ] && [ "$2" = "edit" ]; then',
+                f'  if [ -n "{edit_failure}" ]; then',
+                f'    printf \'%s\\n\' "{edit_failure}" >&2',
+                "    exit 1",
+                "  fi",
                 "fi",
                 "exit 0",
                 "",
@@ -161,7 +185,7 @@ class PublishModBranchesActionTests(unittest.TestCase):
     def setUpClass(cls) -> None:
         cls._temp = tempfile.TemporaryDirectory()
         cls.root = Path(cls._temp.name)
-        action = REPO_ROOT / ".github" / "actions" / "publish-mod-branches" / "action.yml"
+        action = PUBLISH_ACTION / "action.yml"
         cls.branches = extract_run(action, "Publish mod branches")
         cls.pull_requests = extract_run(action, "Open or refresh upstream pull requests")
         cls.report = extract_run(action, "Report failures")
@@ -256,10 +280,13 @@ class PublishModBranchesActionTests(unittest.TestCase):
         variables: dict[str, str],
         status_file: str,
         existing: str = "",
+        edit_failure: str = "",
     ) -> tuple[int, str, dict[str, str], str]:
         """Run the pull request step with a stubbed `gh`."""
 
-        log, env = make_gh_stub(self.root / name / "bin", existing=existing)
+        log, env = make_gh_stub(
+            self.root / name / "bin", existing=existing, edit_failure=edit_failure
+        )
         values = {
             "STATUS_FILE": status_file,
             "TARGET_REPO": variables["TARGET_REPO"],
@@ -510,6 +537,123 @@ class PublishModBranchesActionTests(unittest.TestCase):
         code, _ = self.run_report(self.runner_temp("report-ok"), {"failed": "0"}, "0")
         self.assertEqual(code, 0)
 
+    def install_pre_receive(self, target: Path, body: str) -> Path:
+        """Install a hook that records every push attempt in a log file.
+
+        `body` may use `%s` once for the attempt log path.
+        """
+
+        hook = target / "hooks" / "pre-receive"
+        log = target / "push-attempts.log"
+        hook.write_text(
+            "\n".join(
+                [
+                    "#!/usr/bin/env bash",
+                    f'printf \'attempt\\n\' >> "{log.as_posix()}"',
+                    body % log.as_posix() if "%s" in body else body,
+                    "",
+                ]
+            ),
+            encoding="utf-8",
+            newline="\n",
+        )
+        os.chmod(hook, 0o755)
+        return log
+
+    def test_policy_rejection_is_reported_once_with_its_reason(self) -> None:
+        upstream, target, _ = self.make_repositories("policy")
+        log = self.install_pre_receive(
+            target,
+            "echo 'refusing to allow a token to update a workflow file' >&2\nexit 1",
+        )
+        bundle_dir = self.make_bundles(
+            "policy", {"demo.wh.cpp": bundle_text("demo", "1.1.0", 1)}
+        )
+        runner = self.runner_temp("policy")
+        code, values, summary = run_script(
+            self.branches, runner, self.variables(bundle_dir, target, upstream, runner)
+        )
+
+        self.assertEqual(code, 0, summary)
+        self.assertEqual(values.get("failed"), "1")
+        self.assertEqual(values.get("pushed"), "0")
+        self.assertEqual(len(log.read_text(encoding="utf-8").splitlines()), 1)
+        self.assertIn("refusing to allow a token", summary)
+        self.assertNotIn("push failed", summary)
+        self.assertEqual(git(target, "branch", "--list", "mods/demo"), "")
+
+    def test_transient_push_failure_is_retried(self) -> None:
+        upstream, target, _ = self.make_repositories("transient")
+        log = self.install_pre_receive(
+            target,
+            'if [[ "$(wc -l < %s)" -eq 1 ]]; then\n'
+            "  echo 'fatal: the remote end hung up unexpectedly' >&2\n"
+            "  exit 1\n"
+            "fi\n"
+            "exit 0",
+        )
+        bundle_dir = self.make_bundles(
+            "transient", {"demo.wh.cpp": bundle_text("demo", "1.1.0", 1)}
+        )
+        runner = self.runner_temp("transient")
+        code, values, summary = run_script(
+            self.branches, runner, self.variables(bundle_dir, target, upstream, runner)
+        )
+
+        self.assertEqual(code, 0, summary)
+        self.assertEqual(values.get("pushed"), "1")
+        self.assertEqual(values.get("failed"), "0")
+        self.assertEqual(len(log.read_text(encoding="utf-8").splitlines()), 2)
+        self.assertEqual(git(target, "branch", "--list", "mods/demo"), "mods/demo")
+
+    def test_exhausted_retries_report_the_refusal_not_the_remote_url(self) -> None:
+        upstream, target, _ = self.make_repositories("transient-all")
+        log = self.install_pre_receive(target, "exit 1")
+        bundle_dir = self.make_bundles(
+            "transient-all", {"demo.wh.cpp": bundle_text("demo", "1.1.0", 1)}
+        )
+        runner = self.runner_temp("transient-all")
+        code, values, summary = run_script(
+            self.branches, runner, self.variables(bundle_dir, target, upstream, runner)
+        )
+
+        self.assertEqual(code, 0, summary)
+        self.assertEqual(values.get("failed"), "1")
+        self.assertEqual(len(log.read_text(encoding="utf-8").splitlines()), 3)
+        self.assertIn("[remote rejected]", summary)
+        self.assertNotIn(target.as_posix(), summary)
+
+    def test_reported_reason_escapes_workflow_command_percent(self) -> None:
+        upstream, target, _ = self.make_repositories("percent")
+        self.install_pre_receive(
+            target,
+            "echo 'refusing to allow a token 100% without a scope' >&2\nexit 1",
+        )
+        bundle_dir = self.make_bundles(
+            "percent", {"demo.wh.cpp": bundle_text("demo", "1.1.0", 1)}
+        )
+        runner = self.runner_temp("percent")
+        proc, _, summary = run_script_verbose(
+            self.branches, runner, self.variables(bundle_dir, target, upstream, runner)
+        )
+
+        self.assertEqual(proc.returncode, 0, summary)
+        annotation = next(
+            line for line in proc.stdout.splitlines() if line.startswith("::error::")
+        )
+        self.assertIn("100%25", annotation)
+
+    def test_both_steps_share_the_summary_helpers(self) -> None:
+        """A second copy of one_line would drift from the first."""
+
+        for script in (self.branches, self.pull_requests):
+            self.assertIn('source "$GITHUB_ACTION_PATH/summary.sh"', script)
+            self.assertNotIn("one_line() {", script)
+            self.assertNotIn("command_text() {", script)
+        source = (PUBLISH_ACTION / "summary.sh").read_text(encoding="utf-8")
+        self.assertIn("one_line() {", source)
+        self.assertIn("command_text() {", source)
+
     def test_report_step_fails_after_a_branch_failure(self) -> None:
         code, _ = self.run_report(self.runner_temp("report-branch"), {"failed": "2"})
         self.assertNotEqual(code, 0)
@@ -652,6 +796,31 @@ class PublishModBranchesActionTests(unittest.TestCase):
         self.assertNotIn("pr reopen", calls)
         self.assertNotIn("pr create", calls)
         self.assertIn("refreshed #77", summary)
+
+    def test_failed_pull_request_update_reports_the_gh_reason(self) -> None:
+        upstream, target, _ = self.make_repositories("pr-edit-fail")
+        bundle_dir = self.make_bundles(
+            "pr-edit-fail", {"demo.wh.cpp": bundle_text("demo", "1.1.0", 1)}
+        )
+        runner = self.runner_temp("pr-edit-fail")
+        variables = self.variables(
+            bundle_dir, target, upstream, runner, TOKEN="test-token"
+        )
+        code, values, _ = run_script(self.branches, runner, variables)
+        self.assertEqual(code, 0)
+
+        code, summary, outputs, _ = self.run_pull_requests(
+            "pr-edit-fail",
+            runner,
+            variables,
+            values["status-file"],
+            existing="77\n",
+            edit_failure="HTTP 403: Resource not accessible by integration",
+        )
+        self.assertEqual(code, 0, summary)
+        self.assertEqual(outputs.get("pr-failed"), "1")
+        self.assertIn("HTTP 403", summary)
+        self.assertIn("error: #77: HTTP 403", summary)
 
     def test_pull_requests_are_skipped_without_a_token(self) -> None:
         upstream, target, _ = self.make_repositories("pr-skip")
