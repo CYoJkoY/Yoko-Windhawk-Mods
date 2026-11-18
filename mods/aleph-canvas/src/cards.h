@@ -204,6 +204,10 @@ inline bool UpdateCardFromScan(size_t index, const ScannedWindow& window) {
     card.framePx = window.framePx;
     card.title = window.title;
     card.exePath = window.exePath;
+    if (const LayoutEntry* saved = FindLayoutEntry(window.fingerprint);
+        saved != nullptr) {
+        card.pinned = saved->pinned;
+    }
     return changed;
 }
 
@@ -230,6 +234,9 @@ inline bool MergeScan(const std::vector<ScannedWindow>& scanned) {
     std::vector<ScannedWindow> additions;
     bool changed = false;
     for (const ScannedWindow& window : scanned) {
+        if (context.dismissedFingerprints.count(window.fingerprint) != 0) {
+            continue;
+        }
         const int existing = FindCardIndex(window);
         if (existing >= 0) {
             seen[static_cast<size_t>(existing)] = true;
@@ -256,6 +263,9 @@ inline bool MergeScan(const std::vector<ScannedWindow>& scanned) {
             world.right = world.left + static_cast<float>(window.framePx.right - window.framePx.left);
             world.bottom = world.top + static_cast<float>(window.framePx.bottom - window.framePx.top);
             InsertCard(ScannedWindow{window}, world);
+            if (saved != nullptr) {
+                context.cards.back().pinned = saved->pinned;
+            }
             RememberLayoutEntry(window.fingerprint, world);
             changed = true;
         }

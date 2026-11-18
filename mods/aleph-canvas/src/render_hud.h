@@ -1,5 +1,6 @@
 #pragma once
 
+#include "card_chrome.h"
 #include "context.h"
 #include "minimap.h"
 #include "resources.h"
@@ -34,6 +35,89 @@ inline void DrawCardTitle(const Card& card, const RectF& rect, float scale) {
                                  static_cast<UINT32>(card.title.size()),
                                  context.titleFormat, titleRect,
                                  context.hudBrush, D2D1_DRAW_TEXT_OPTIONS_CLIP);
+}
+
+inline void DrawHeaderButtonBackdrop(const RectF& rect, bool highlighted,
+                                     float scale) {
+    if (rect.empty() || !highlighted) {
+        return;
+    }
+    SetHudColor(context.settings.accentColor, 0.22f);
+    context.hudTarget->FillRoundedRectangle(RoundedRect(rect, 4.0f * scale),
+                                            context.hudBrush);
+}
+
+inline void DrawCloseGlyph(const RectF& rect, float scale) {
+    if (rect.empty()) {
+        return;
+    }
+    const float inset = rect.width() * 0.3f;
+    SetHudColor(context.settings.textColor, 0.9f);
+    context.hudTarget->DrawLine(
+        D2D1::Point2F(rect.left + inset, rect.top + inset),
+        D2D1::Point2F(rect.right - inset, rect.bottom - inset),
+        context.hudBrush, 1.2f * scale);
+    context.hudTarget->DrawLine(
+        D2D1::Point2F(rect.right - inset, rect.top + inset),
+        D2D1::Point2F(rect.left + inset, rect.bottom - inset),
+        context.hudBrush, 1.2f * scale);
+}
+
+inline void DrawPinGlyph(const RectF& rect, bool pinned, float scale) {
+    if (rect.empty()) {
+        return;
+    }
+    const float centerX = rect.centerX();
+    const float head = rect.top + rect.height() * 0.24f;
+    const float shoulder = rect.top + rect.height() * 0.58f;
+    const float needle = rect.top + rect.height() * 0.78f;
+    const float halfWidth = rect.width() * 0.22f;
+    const float stroke = (pinned ? 1.6f : 1.1f) * scale;
+    SetHudColor(pinned ? context.settings.accentColor : context.settings.textColor,
+                pinned ? 1.0f : 0.85f);
+    context.hudTarget->DrawLine(D2D1::Point2F(centerX, head),
+                                D2D1::Point2F(centerX - halfWidth, shoulder),
+                                context.hudBrush, stroke);
+    context.hudTarget->DrawLine(D2D1::Point2F(centerX, head),
+                                D2D1::Point2F(centerX + halfWidth, shoulder),
+                                context.hudBrush, stroke);
+    context.hudTarget->DrawLine(
+        D2D1::Point2F(centerX - halfWidth, shoulder),
+        D2D1::Point2F(centerX + halfWidth, shoulder), context.hudBrush, stroke);
+    context.hudTarget->DrawLine(D2D1::Point2F(centerX, shoulder),
+                                D2D1::Point2F(centerX, needle),
+                                context.hudBrush, stroke);
+}
+
+inline void DrawCardHeader(const Card& card, int index, const RectF& header,
+                           float scale) {
+    if (header.empty()) {
+        return;
+    }
+    SetHudColor(context.settings.backgroundColor, 0.9f);
+    context.hudTarget->FillRectangle(
+        D2D1::RectF(header.left, header.top, header.right, header.bottom),
+        context.hudBrush);
+
+    const RectF pin = CardPinButtonRect(header, scale);
+    const RectF close = CardCloseButtonRect(header, scale);
+    RectF title = header;
+    if (!pin.empty()) {
+        title.right = pin.left;
+    }
+    DrawCardTitle(card, title, scale);
+
+    const bool hovered = index == context.hoverCard;
+    DrawHeaderButtonBackdrop(pin, hovered &&
+                                      context.hoverHeaderAction ==
+                                          CardHeaderAction::Pin,
+                             scale);
+    DrawHeaderButtonBackdrop(close, hovered &&
+                                        context.hoverHeaderAction ==
+                                            CardHeaderAction::Close,
+                             scale);
+    DrawPinGlyph(pin, card.pinned, scale);
+    DrawCloseGlyph(close, scale);
 }
 
 inline RectF CardBadgeBounds(const RectF& body, float scale) {
@@ -113,17 +197,13 @@ inline void DrawCard(const Card& card, int index, float scale) {
     const float radius = kCardCornerRadiusPx * scale;
     const bool emphasized = index == context.hoverCard || index == context.selectedCard;
     const RectF body = WorldToScreen(card.world, context.camera);
-    const RectF header{rect.left, rect.top, rect.right, body.top};
+    const RectF header = CardHeaderRect(card);
     DrawCardBody(card, body, scale);
-    SetHudColor(context.settings.backgroundColor, 0.9f);
-    context.hudTarget->FillRectangle(
-        D2D1::RectF(header.left, header.top, header.right, header.bottom),
-        context.hudBrush);
+    DrawCardHeader(card, index, header, scale);
     SetHudColor(emphasized ? context.settings.accentColor : context.settings.gridColor);
     context.hudTarget->DrawRoundedRectangle(
         RoundedRect(rect, radius), context.hudBrush,
         emphasized ? 2.0f * scale : 1.0f * scale);
-    DrawCardTitle(card, header, scale);
 }
 
 inline void DrawMinimapContents(const RectF& map, float scale) {
@@ -225,7 +305,7 @@ inline bool SubmitHudFrame() {
     context.hudTarget->BeginDraw();
     context.hudTarget->Clear(D2D1::ColorF(0, 0.0f));
     const float scale = ChromeScale();
-    for (size_t index = 0; index < context.cards.size(); ++index) {
+    for (const size_t index : CardDrawOrder(context.cards)) {
         DrawCard(context.cards[index], static_cast<int>(index), scale);
     }
     DrawEmptyCanvas(scale);

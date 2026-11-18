@@ -2,6 +2,7 @@
 
 #include "camera_ops.h"
 #include "canvas_visibility.h"
+#include "card_chrome.h"
 #include "cards.h"
 #include "context.h"
 #include "math_utils.h"
@@ -16,13 +17,37 @@ inline POINT CursorInCanvas() {
 }
 
 inline int HitTestCard(Vec2 point) {
-    for (size_t index = context.cards.size(); index-- > 0;) {
-        if (ContainsPoint(CardScreenBounds(context.cards[index]),
-                          point.x, point.y)) {
-            return static_cast<int>(index);
-        }
+    return HitTestCardInOrder(context.cards, point);
+}
+
+inline CardHeaderAction HeaderActionAt(int index, Vec2 point) {
+    if (index < 0 || static_cast<size_t>(index) >= context.cards.size()) {
+        return CardHeaderAction::None;
     }
-    return -1;
+    return HitTestCardHeader(CardHeaderRect(context.cards[static_cast<size_t>(index)]),
+                             point, ChromeScale());
+}
+
+inline void DismissCard(int index) {
+    if (index < 0 || static_cast<size_t>(index) >= context.cards.size()) {
+        return;
+    }
+    context.dismissedFingerprints.insert(
+        context.cards[static_cast<size_t>(index)].fingerprint);
+    RemoveCardAt(static_cast<size_t>(index));
+    context.hoverHeaderAction = CardHeaderAction::None;
+    context.sceneDirty = true;
+}
+
+inline void ToggleCardPin(int index) {
+    if (index < 0 || static_cast<size_t>(index) >= context.cards.size()) {
+        return;
+    }
+    Card& card = context.cards[static_cast<size_t>(index)];
+    card.pinned = !card.pinned;
+    RememberLayoutPin(card.fingerprint, card.world, card.pinned);
+    MarkLayoutDirty(GetTickCount());
+    context.sceneDirty = true;
 }
 
 inline bool PointInMinimap(Vec2 point) {
@@ -100,6 +125,7 @@ inline void UpdatePan(POINT cursor) {
 }
 
 inline void BeginCardDrag(int index, POINT cursor) {
+    context.hoverHeaderAction = CardHeaderAction::None;
     context.camera.snapToTarget();
     context.camera.zoomAnchored = false;
     context.draggedCard = index;
@@ -144,6 +170,7 @@ inline void EndPointerDrag() {
     context.draggedCard = -1;
     context.hasGuideVertical = false;
     context.hasGuideHorizontal = false;
+    context.hoverHeaderAction = CardHeaderAction::None;
     context.sceneDirty = true;
     if (GetCapture() == context.hostWindow) {
         ReleaseCapture();
@@ -177,15 +204,20 @@ inline void HandleMouseMove(POINT cursor) {
     const Vec2 point{static_cast<float>(cursor.x), static_cast<float>(cursor.y)};
     const bool minimapHover = PointInMinimap(point);
     const int hoverCard = minimapHover ? -1 : HitTestCard(point);
-    if (minimapHover != context.minimapHover || hoverCard != context.hoverCard) {
+    const CardHeaderAction hoverAction =
+        hoverCard >= 0 ? HeaderActionAt(hoverCard, point) : CardHeaderAction::None;
+    if (minimapHover != context.minimapHover || hoverCard != context.hoverCard ||
+        hoverAction != context.hoverHeaderAction) {
         context.minimapHover = minimapHover;
         context.hoverCard = hoverCard;
+        context.hoverHeaderAction = hoverAction;
         context.sceneDirty = true;
     }
 }
 
 inline void HandleMouseLeave() {
     context.hoverCard = -1;
+    context.hoverHeaderAction = CardHeaderAction::None;
     context.minimapHover = false;
     context.sceneDirty = true;
 }
@@ -203,6 +235,17 @@ inline void HandleLeftButtonDown(POINT cursor) {
         return;
     }
     const int card = HitTestCard(point);
+    if (card >= 0) {
+        const CardHeaderAction action = HeaderActionAt(card, point);
+        if (action == CardHeaderAction::Close) {
+            DismissCard(card);
+            return;
+        }
+        if (action == CardHeaderAction::Pin) {
+            ToggleCardPin(card);
+            return;
+        }
+    }
     context.selectedCard = card;
     if (card >= 0) {
         BeginCardDrag(card, cursor);

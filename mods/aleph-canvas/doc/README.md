@@ -25,6 +25,19 @@ mod cannot identify which document belongs to which identical window class.
 Visible idle canvases rescan windows at the configured interval; they do not
 redraw continuously. Hidden canvases wait for events and pending layout saves.
 
+## Card controls
+
+Every card reserves a 28 DIP header above the window preview. The header shows
+the window title and two buttons on the right edge.
+
+- Pin raises the card above every unpinned card and is saved with the layout,
+  so a pinned card returns pinned after a restart.
+- Close removes the card from the canvas until the canvas is hidden and shown
+  again. The real window keeps running and is unaffected.
+- Dragging the header's title area still moves the card, and double-clicking
+  the header still dives into the window; the buttons themselves only perform
+  their own action.
+
 ## Manual verification
 
 1. Enable the mod, toggle the canvas, and check that live windows show DWM
@@ -35,7 +48,10 @@ redraw continuously. Hidden canvases wait for events and pending layout saves.
    and confirm saved positions return.
 4. Navigate via the minimap, select with Tab, pan with arrows, fit with Home,
    and activate with Enter or double-click.
-5. Check mixed-DPI displays, a window spanning monitors, 15 or more windows,
+5. Pin two cards and confirm both stay above the rest, restart the tool process
+   and confirm they are still pinned. Close one card, confirm it stays gone,
+   then hide and show the canvas and confirm it returns.
+6. Check mixed-DPI displays, a window spanning monitors, 15 or more windows,
    and repeated enable/disable cycles. Confirm Explorer desktop positions stay
    unchanged throughout.
 

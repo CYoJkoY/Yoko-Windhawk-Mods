@@ -59,10 +59,16 @@ inline LRESULT CALLBACK CanvasWindowProc(HWND window, UINT message,
         case WM_LBUTTONDOWN:
             HandleLeftButtonDown(CursorInCanvas());
             return 0;
-        case WM_LBUTTONDBLCLK:
-            BeginDive(HitTestCard(Vec2{static_cast<float>(CursorInCanvas().x),
-                                      static_cast<float>(CursorInCanvas().y)}));
+        case WM_LBUTTONDBLCLK: {
+            const Vec2 point{static_cast<float>(CursorInCanvas().x),
+                             static_cast<float>(CursorInCanvas().y)};
+            const int index = HitTestCard(point);
+            if (HeaderActionAt(index, point) != CardHeaderAction::None) {
+                return 0;
+            }
+            BeginDive(index);
             return 0;
+        }
         case WM_LBUTTONUP:
             EndPointerDrag();
             return 0;
