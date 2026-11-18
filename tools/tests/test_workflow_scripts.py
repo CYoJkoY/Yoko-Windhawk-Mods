@@ -249,6 +249,39 @@ class PublishModBranchesActionTests(unittest.TestCase):
         )
         return code, summary
 
+    def run_pull_requests(
+        self,
+        name: str,
+        runner: Path,
+        variables: dict[str, str],
+        status_file: str,
+        existing: str = "",
+    ) -> tuple[int, str, dict[str, str], str]:
+        """Run the pull request step with a stubbed `gh`."""
+
+        log, env = make_gh_stub(self.root / name / "bin", existing=existing)
+        values = {
+            "STATUS_FILE": status_file,
+            "TARGET_REPO": variables["TARGET_REPO"],
+            "UPSTREAM_REPO": variables["UPSTREAM_REPO"],
+            "BASE_BRANCH": variables["BASE_BRANCH"],
+            "TOKEN": variables["TOKEN"],
+            "AUTHORSHIP": "The submitter, with AI assistance",
+            "CHANGELOG": variables["CHANGELOG"],
+            "RUNNER_TEMP": variables["RUNNER_TEMP"],
+        }
+        code, outputs, summary = run_script(
+            self.pull_requests, runner, values, extra_env=env
+        )
+        return code, summary, outputs, log.read_text(encoding="utf-8")
+
+    def pull_request_body(self, variables: dict[str, str], mod_id: str) -> str:
+        return (
+            Path(variables["RUNNER_TEMP"])
+            / "publish-mod-branches"
+            / f"pr-body.{mod_id}.md"
+        ).read_text(encoding="utf-8")
+
     def test_new_mod_becomes_one_commit_on_the_upstream_tip(self) -> None:
         upstream, target, base_sha = self.make_repositories("new")
         bundle_dir = self.make_bundles(
@@ -562,29 +595,15 @@ class PublishModBranchesActionTests(unittest.TestCase):
         code, values, _ = run_script(self.branches, runner, variables)
         self.assertEqual(code, 0)
 
-        log, env = make_gh_stub(self.root / "pr-new" / "bin")
-        pr_variables = {
-            "STATUS_FILE": values["status-file"],
-            "TARGET_REPO": variables["TARGET_REPO"],
-            "UPSTREAM_REPO": variables["UPSTREAM_REPO"],
-            "BASE_BRANCH": variables["BASE_BRANCH"],
-            "TOKEN": variables["TOKEN"],
-            "AUTHORSHIP": "The submitter, with AI assistance",
-            "CHANGELOG": variables["CHANGELOG"],
-            "RUNNER_TEMP": variables["RUNNER_TEMP"],
-        }
-        code, _, summary = run_script(
-            self.pull_requests, runner, pr_variables, extra_env=env
+        code, summary, _, calls = self.run_pull_requests(
+            "pr-new", runner, variables, values["status-file"]
         )
         self.assertEqual(code, 0, summary)
-        calls = log.read_text(encoding="utf-8")
         self.assertIn("pr list --repo ramensoftware/windhawk-mods --head CYoJkoY:mods/demo", calls)
         self.assertIn("pr create --repo ramensoftware/windhawk-mods --base main", calls)
         self.assertIn("--head CYoJkoY:mods/demo", calls)
         self.assertIn("--title Update mods/demo.wh.cpp to v1.1.0", calls)
-        body = (
-            Path(pr_variables["RUNNER_TEMP"]) / "publish-mod-branches" / "pr-body.demo.md"
-        ).read_text(encoding="utf-8")
+        body = self.pull_request_body(variables, "demo")
         self.assertTrue(body.startswith("<!-- changelog:start -->"))
         self.assertIn("feat(demo): refresh demo (v1.1.0)", body)
         self.assertIn("<!-- changelog:end -->", body)
@@ -603,28 +622,12 @@ class PublishModBranchesActionTests(unittest.TestCase):
         code, values, _ = run_script(self.branches, runner, variables)
         self.assertEqual(code, 0)
 
-        log, env = make_gh_stub(self.root / "pr-author" / "bin")
-        pr_variables = {
-            "STATUS_FILE": values["status-file"],
-            "TARGET_REPO": variables["TARGET_REPO"],
-            "UPSTREAM_REPO": variables["UPSTREAM_REPO"],
-            "BASE_BRANCH": variables["BASE_BRANCH"],
-            "TOKEN": variables["TOKEN"],
-            "AUTHORSHIP": "The submitter, with AI assistance",
-            "CHANGELOG": variables["CHANGELOG"],
-            "RUNNER_TEMP": variables["RUNNER_TEMP"],
-        }
-        code, _, summary = run_script(
-            self.pull_requests, runner, pr_variables, extra_env=env
+        code, summary, _, calls = self.run_pull_requests(
+            "pr-author", runner, variables, values["status-file"]
         )
         self.assertEqual(code, 0, summary)
-        calls = log.read_text(encoding="utf-8")
         self.assertIn("--title Add mod: fresh-mod", calls)
-        body = (
-            Path(pr_variables["RUNNER_TEMP"])
-            / "publish-mod-branches"
-            / "pr-body.fresh-mod.md"
-        ).read_text(encoding="utf-8")
+        body = self.pull_request_body(variables, "fresh-mod")
         self.assertIn("## Mod authorship", body)
         self.assertIn("- [x] The submitter, with AI assistance", body)
 
@@ -640,22 +643,10 @@ class PublishModBranchesActionTests(unittest.TestCase):
         code, values, _ = run_script(self.branches, runner, variables)
         self.assertEqual(code, 0)
 
-        log, env = make_gh_stub(self.root / "pr-edit" / "bin", existing="77\n")
-        pr_variables = {
-            "STATUS_FILE": values["status-file"],
-            "TARGET_REPO": variables["TARGET_REPO"],
-            "UPSTREAM_REPO": variables["UPSTREAM_REPO"],
-            "BASE_BRANCH": variables["BASE_BRANCH"],
-            "TOKEN": variables["TOKEN"],
-            "AUTHORSHIP": "The submitter, with AI assistance",
-            "CHANGELOG": variables["CHANGELOG"],
-            "RUNNER_TEMP": variables["RUNNER_TEMP"],
-        }
-        code, _, summary = run_script(
-            self.pull_requests, runner, pr_variables, extra_env=env
+        code, summary, _, calls = self.run_pull_requests(
+            "pr-edit", runner, variables, values["status-file"], existing="77\n"
         )
         self.assertEqual(code, 0, summary)
-        calls = log.read_text(encoding="utf-8")
         self.assertIn("pr edit 77 --repo ramensoftware/windhawk-mods", calls)
         self.assertNotIn("pr create", calls)
         self.assertIn("refreshed #77", summary)
@@ -670,20 +661,11 @@ class PublishModBranchesActionTests(unittest.TestCase):
         code, values, _ = run_script(self.branches, runner, variables)
         self.assertEqual(code, 0)
 
-        log, env = make_gh_stub(self.root / "pr-skip" / "bin")
-        pr_variables = {
-            "STATUS_FILE": values["status-file"],
-            "TARGET_REPO": variables["TARGET_REPO"],
-            "UPSTREAM_REPO": variables["UPSTREAM_REPO"],
-            "BASE_BRANCH": variables["BASE_BRANCH"],
-            "TOKEN": "",
-            "AUTHORSHIP": "The submitter, with AI assistance",
-            "CHANGELOG": variables["CHANGELOG"],
-            "RUNNER_TEMP": variables["RUNNER_TEMP"],
-        }
-        code, _, _ = run_script(self.pull_requests, runner, pr_variables, extra_env=env)
+        code, _, _, calls = self.run_pull_requests(
+            "pr-skip", runner, variables | {"TOKEN": ""}, values["status-file"]
+        )
         self.assertEqual(code, 0)
-        self.assertEqual(log.read_text(encoding="utf-8"), "")
+        self.assertEqual(calls, "")
 
 
 class PublishReleaseActionTests(unittest.TestCase):

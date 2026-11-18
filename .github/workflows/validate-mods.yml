@@ -238,9 +238,6 @@ jobs:
     permissions:
       contents: write
     timeout-minutes: 10
-    outputs:
-      published: ${{ steps.publish.outputs.published }}
-      sha: ${{ steps.publish.outputs.sha }}
     steps:
       - name: Checkout validated commit
         uses: actions/checkout@v4
