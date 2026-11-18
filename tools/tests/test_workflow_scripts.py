@@ -241,6 +241,8 @@ class PublishModBranchesActionTests(unittest.TestCase):
             "BRANCH_PREFIX": "mods/",
             "BASE_BRANCH": "main",
             "MOD_FILTER": "",
+            "PUBLISH": "true",
+            "PRUNE_MODS": "",
             "CHANGELOG": "feat(demo): refresh demo",
             "DRY_RUN": "false",
             "RUNNER_TEMP": runner_temp.as_posix(),
@@ -260,12 +262,14 @@ class PublishModBranchesActionTests(unittest.TestCase):
         pr_failed: str = "",
         branch_outcome: str = "success",
         pr_outcome: str = "success",
+        prune_failed: str = "",
     ) -> tuple[int, str]:
         code, _, summary = run_script(
             self.report,
             runner,
             {
                 "BRANCH_FAILED": branch_values.get("failed", ""),
+                "PRUNE_FAILED": prune_failed,
                 "PR_FAILED": pr_failed,
                 "BRANCH_OUTCOME": branch_outcome,
                 "PR_OUTCOME": pr_outcome,
@@ -282,6 +286,7 @@ class PublishModBranchesActionTests(unittest.TestCase):
         status_file: str,
         existing: str = "",
         edit_failure: str = "",
+        pruned_file: str = "",
     ) -> tuple[int, str, dict[str, str], str]:
         """Run the pull request step with a stubbed `gh`."""
 
@@ -290,6 +295,7 @@ class PublishModBranchesActionTests(unittest.TestCase):
         )
         values = {
             "STATUS_FILE": status_file,
+            "PRUNED_FILE": pruned_file,
             "TARGET_REPO": variables["TARGET_REPO"],
             "UPSTREAM_REPO": variables["UPSTREAM_REPO"],
             "BASE_BRANCH": variables["BASE_BRANCH"],
@@ -554,6 +560,211 @@ class PublishModBranchesActionTests(unittest.TestCase):
     def test_report_step_succeeds_when_nothing_failed(self) -> None:
         code, _ = self.run_report(self.runner_temp("report-ok"), {"failed": "0"}, "0")
         self.assertEqual(code, 0)
+
+    def test_deleted_mod_loses_only_its_own_branch(self) -> None:
+        upstream, target, _ = self.make_repositories("prune")
+        bundle_dir = self.make_bundles(
+            "prune",
+            {
+                "demo.wh.cpp": bundle_text("demo", "1.1.0", 1),
+                "other.wh.cpp": bundle_text("other", "2.1.0", 2),
+            },
+        )
+        runner = self.runner_temp("prune")
+        first = run_script(
+            self.branches, runner, self.variables(bundle_dir, target, upstream, runner)
+        )
+        self.assertEqual(first[0], 0, first[2])
+        other_head = git(target, "rev-parse", "mods/other")
+
+        # The mod is gone from the working tree, so no bundle exists for it and
+        # nothing is published; the remaining mods keep their branches.
+        empty_dir = self.root / "prune" / "bundles-empty"
+        empty_dir.mkdir(parents=True)
+        code, values, summary = run_script(
+            self.branches,
+            runner,
+            self.variables(
+                empty_dir,
+                target,
+                upstream,
+                runner,
+                PUBLISH="false",
+                PRUNE_MODS="demo",
+            ),
+        )
+
+        self.assertEqual(code, 0, summary)
+        self.assertEqual(values.get("pushed"), "0")
+        self.assertEqual(values.get("pruned"), "1")
+        self.assertEqual(values.get("prune-failed"), "0")
+        self.assertEqual(git(target, "branch", "--list", "mods/demo"), "")
+        self.assertEqual(git(target, "rev-parse", "mods/other"), other_head)
+        self.assertIn("| `demo` | `mods/demo` | deleted |", summary)
+        self.assertEqual(
+            Path(values["pruned-file"]).read_text(encoding="utf-8").strip(),
+            "demo\tmods/demo",
+        )
+
+    def test_branch_absent_for_a_deleted_mod_is_reported_as_absent(self) -> None:
+        upstream, target, _ = self.make_repositories("prune-absent")
+        empty_dir = self.root / "prune-absent" / "bundles-empty"
+        empty_dir.mkdir(parents=True)
+        runner = self.runner_temp("prune-absent")
+
+        code, values, summary = run_script(
+            self.branches,
+            runner,
+            self.variables(
+                empty_dir,
+                target,
+                upstream,
+                runner,
+                PUBLISH="false",
+                PRUNE_MODS="demo",
+            ),
+        )
+
+        self.assertEqual(code, 0, summary)
+        self.assertEqual(values.get("pruned"), "0")
+        self.assertEqual(values.get("prune-failed"), "0")
+        self.assertIn("no branch", summary)
+
+    def test_prune_run_needs_no_bundle_directory(self) -> None:
+        upstream, target, _ = self.make_repositories("prune-nodir")
+        runner = self.runner_temp("prune-nodir")
+
+        code, values, summary = run_script(
+            self.branches,
+            runner,
+            self.variables(
+                runner / "missing-bundles",
+                target,
+                upstream,
+                runner,
+                PUBLISH="false",
+                PRUNE_MODS="demo",
+            ),
+        )
+
+        self.assertEqual(code, 0, summary)
+        self.assertEqual(values.get("pruned"), "0")
+        self.assertEqual(values.get("prune-failed"), "0")
+        self.assertIn("no branch", summary)
+
+    def test_dry_run_reports_a_removal_without_deleting(self) -> None:
+        upstream, target, _ = self.make_repositories("prune-dry")
+        bundle_dir = self.make_bundles(
+            "prune-dry", {"demo.wh.cpp": bundle_text("demo", "1.1.0", 1)}
+        )
+        runner = self.runner_temp("prune-dry")
+        first = run_script(
+            self.branches, runner, self.variables(bundle_dir, target, upstream, runner)
+        )
+        self.assertEqual(first[0], 0, first[2])
+
+        empty_dir = self.root / "prune-dry" / "bundles-empty"
+        empty_dir.mkdir(parents=True)
+        code, values, summary = run_script(
+            self.branches,
+            runner,
+            self.variables(
+                empty_dir,
+                target,
+                upstream,
+                runner,
+                PUBLISH="false",
+                PRUNE_MODS="demo",
+                DRY_RUN="true",
+            ),
+        )
+
+        self.assertEqual(code, 0, summary)
+        self.assertEqual(values.get("pruned"), "0")
+        self.assertEqual(git(target, "branch", "--list", "mods/demo"), "mods/demo")
+        self.assertIn("would delete", summary)
+
+    def test_rejected_removal_is_reported_without_deleting(self) -> None:
+        upstream, target, _ = self.make_repositories("prune-rejected")
+        bundle_dir = self.make_bundles(
+            "prune-rejected", {"demo.wh.cpp": bundle_text("demo", "1.1.0", 1)}
+        )
+        runner = self.runner_temp("prune-rejected")
+        first = run_script(
+            self.branches, runner, self.variables(bundle_dir, target, upstream, runner)
+        )
+        self.assertEqual(first[0], 0, first[2])
+
+        empty_dir = self.root / "prune-rejected" / "bundles-empty"
+        empty_dir.mkdir(parents=True)
+        self.install_pre_receive(target, "echo 'protected branch hook declined' >&2\nexit 1")
+        code, values, summary = run_script(
+            self.branches,
+            runner,
+            self.variables(
+                empty_dir,
+                target,
+                upstream,
+                runner,
+                PUBLISH="false",
+                PRUNE_MODS="demo",
+            ),
+        )
+
+        self.assertEqual(code, 0, summary)
+        self.assertEqual(values.get("prune-failed"), "1")
+        self.assertEqual(git(target, "branch", "--list", "mods/demo"), "mods/demo")
+        self.assertIn("protected branch hook declined", summary)
+        self.assertNotEqual(
+            self.run_report(runner, values, prune_failed=values.get("prune-failed"))[0], 0
+        )
+
+    def test_publish_false_creates_no_branch(self) -> None:
+        upstream, target, _ = self.make_repositories("publish-off")
+        bundle_dir = self.make_bundles(
+            "publish-off", {"demo.wh.cpp": bundle_text("demo", "1.1.0", 1)}
+        )
+        runner = self.runner_temp("publish-off")
+        code, values, summary = run_script(
+            self.branches,
+            runner,
+            self.variables(bundle_dir, target, upstream, runner, PUBLISH="false"),
+        )
+
+        self.assertEqual(code, 0, summary)
+        self.assertEqual(values.get("pushed"), "0")
+        self.assertEqual(git(target, "branch", "--list", "mods/demo"), "")
+
+    def test_merged_mod_closes_the_open_pull_request(self) -> None:
+        upstream, target, _ = self.make_repositories("prune-pr")
+        variables = self.variables(
+            self.make_bundles(
+                "prune-pr", {"demo.wh.cpp": bundle_text("demo", "1.1.0", 1)}
+            ),
+            target,
+            upstream,
+            self.runner_temp("prune-pr"),
+            TOKEN="test-token",
+        )
+        runner = Path(variables["RUNNER_TEMP"])
+        status = runner / "status.tsv"
+        status.write_text("", encoding="utf-8")
+        pruned = runner / "pruned.tsv"
+        pruned.write_text("demo\tmods/demo\n", encoding="utf-8", newline="\n")
+
+        code, summary, _, calls = self.run_pull_requests(
+            "prune-pr",
+            runner,
+            variables,
+            status.as_posix(),
+            existing="77\n",
+            pruned_file=pruned.as_posix(),
+        )
+
+        self.assertEqual(code, 0, summary)
+        self.assertIn("pr close 77 --repo ramensoftware/windhawk-mods", calls)
+        self.assertNotIn("pr create", calls)
+        self.assertIn("closed #77", summary)
 
     def install_pre_receive(self, target: Path, body: str) -> Path:
         """Install a hook that records every push attempt in a log file.

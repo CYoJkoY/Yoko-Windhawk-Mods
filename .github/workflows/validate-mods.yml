@@ -78,6 +78,7 @@ jobs:
     timeout-minutes: 5
     outputs:
       mods: ${{ steps.select.outputs.mods }}
+      removed: ${{ steps.select.outputs.removed }}
       count: ${{ steps.select.outputs.count }}
       matrix: ${{ steps.select.outputs.matrix || steps.fallback.outputs.matrix }}
     steps:
@@ -212,6 +213,43 @@ jobs:
           branch-prefix: ${{ env.BRANCH_PREFIX }}
           base-branch: ${{ env.BASE_BRANCH }}
           mods: ${{ matrix.mod }}
+          open-prs: ${{ github.event_name != 'workflow_dispatch' || inputs.open-prs }}
+          dry-run: ${{ github.event_name == 'workflow_dispatch' && inputs.dry-run || 'false' }}
+          changelog: ${{ github.event.head_commit.message }}
+
+  prune:
+    name: Remove branches of deleted mods
+    runs-on: ubuntu-latest
+    needs: [select]
+    if: |
+      (github.event_name == 'push' || github.event_name == 'workflow_dispatch') &&
+      github.ref == 'refs/heads/main' &&
+      needs.select.outputs.removed != ''
+    permissions:
+      contents: read
+    timeout-minutes: 10
+    concurrency:
+      group: publish-mod-branches
+      cancel-in-progress: false
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+
+      # A deleted mod has no bundle, so this run only removes what is left of
+      # it and never publishes anything.
+      - name: Remove branches and pull requests
+        uses: ./.github/actions/publish-mod-branches
+        with:
+          bundle-dir: ${{ runner.temp }}/mod-bundles
+          target-repo: ${{ env.TARGET_REPO }}
+          upstream-repo: ${{ env.UPSTREAM_REPO }}
+          token: ${{ secrets.SYNC_PAT }}
+          branch-prefix: ${{ env.BRANCH_PREFIX }}
+          base-branch: ${{ env.BASE_BRANCH }}
+          publish: 'false'
+          prune-mods: ${{ needs.select.outputs.removed }}
           open-prs: ${{ github.event_name != 'workflow_dispatch' || inputs.open-prs }}
           dry-run: ${{ github.event_name == 'workflow_dispatch' && inputs.dry-run || 'false' }}
           changelog: ${{ github.event.head_commit.message }}

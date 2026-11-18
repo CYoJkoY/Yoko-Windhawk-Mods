@@ -85,6 +85,13 @@ inside `<!-- changelog:start -->` / `<!-- changelog:end -->`, and adding the
 authorship section for a mod that does not exist upstream yet. Because every
 mod owns a branch, one mod can be updated, reverted, or submitted on its own.
 
+Deleting `mods/<mod-id>/` removes `mods/<mod-id>` from the fork and closes an
+open upstream pull request for that head, so a deleted mod cannot leave a
+stale branch behind. `tools/changed_mods.py` reports the ids that disappeared,
+the publish step deletes exactly those branches, and the remaining mods are
+left alone. A manual run analyses no deleted paths, so it publishes only and
+never prunes.
+
 The default branch prefix, target, and upstream repositories are workflow
 environment variables; the action also accepts `mods` (an explicit id filter),
 `dry-run`, and `open-prs`.
