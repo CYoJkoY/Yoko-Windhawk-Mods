@@ -40,6 +40,44 @@ env:
   WINHAWK_VERSIONS: '1.7.3 2.0.0-alpha.8'
 
 jobs:
+  mirror:
+    name: Check the base branch mirrors upstream
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - name: Compare the base branch with upstream
+        env:
+          UPSTREAM_REPO: ${{ env.UPSTREAM_REPO }}
+          BASE_BRANCH: ${{ env.BASE_BRANCH }}
+        run: |
+          set -euo pipefail
+          # The fork's base branch carries no mod of ours: every mod lives on
+          # its own `mods/<mod-id>` branch. Comparing the two trees directly
+          # keeps that contract true, because a stray bundle pushed into the
+          # base branch is otherwise invisible until it is merged upstream.
+          git init --quiet "$RUNNER_TEMP/mirror"
+          cd "$RUNNER_TEMP/mirror"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git remote add target "https://github.com/${{ env.TARGET_REPO }}.git"
+          git remote add upstream "https://github.com/${UPSTREAM_REPO}.git"
+          git fetch --quiet --no-tags upstream \
+            "+refs/heads/${BASE_BRANCH}:refs/remotes/upstream/${BASE_BRANCH}"
+          git fetch --quiet --no-tags target \
+            "+refs/heads/${BASE_BRANCH}:refs/remotes/target/${BASE_BRANCH}"
+          upstream_tree="$(git rev-parse "refs/remotes/upstream/${BASE_BRANCH}^{tree}")"
+          target_tree="$(git rev-parse "refs/remotes/target/${BASE_BRANCH}^{tree}")"
+          if [ "$upstream_tree" != "$target_tree" ]; then
+            echo "::error::${BASE_BRANCH} in ${{ env.TARGET_REPO }} is not a mirror of ${UPSTREAM_REPO}:${BASE_BRANCH}"
+            echo "extra paths in the fork:"
+            git diff --name-status "refs/remotes/upstream/${BASE_BRANCH}" \
+              "refs/remotes/target/${BASE_BRANCH}" || true
+            exit 1
+          fi
+          echo "${BASE_BRANCH} mirrors ${UPSTREAM_REPO}:${BASE_BRANCH} at $target_tree"
+
   bundle:
     name: Bundle and test
     runs-on: windows-latest

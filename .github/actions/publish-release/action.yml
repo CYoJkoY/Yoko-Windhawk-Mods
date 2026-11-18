@@ -49,6 +49,12 @@ runs:
           echo "::error::invalid release branch name: $RELEASE_BRANCH"
           exit 1
         fi
+        # The release snapshot is an isolated orphan branch. It must never be
+        # the mirror branch, whose whole purpose is to track upstream exactly.
+        if [ "$RELEASE_BRANCH" = "main" ]; then
+          echo "::error::release branch must not be the mirror branch main"
+          exit 1
+        fi
         if [ ! -d "$BUNDLE_DIR" ]; then
           echo "::error::bundle directory not found: $BUNDLE_DIR"
           exit 1
