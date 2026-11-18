@@ -21,6 +21,7 @@ from pathlib import Path
 
 MOD_PATH_RE = re.compile(r"^mods/([^/]+)/")
 DOC_PATH_RE = re.compile(r"^mods/[^/]+/doc/")
+MATRIX_PLACEHOLDER = "-"
 
 
 class SelectionError(Exception):
@@ -73,6 +74,24 @@ def select_mods(
     return sorted(selected)
 
 
+def restrict_mods(
+    selected: list[str] | None, only: list[str], mods: list[str]
+) -> list[str] | None:
+    """Limit a selection to explicit ids, rejecting ids without a manifest."""
+
+    if not only:
+        return selected
+    known = set(mods)
+    requested = sorted(set(only))
+    unknown = [mod_id for mod_id in requested if mod_id not in known]
+    if unknown:
+        raise SelectionError(f"unknown mod id(s): {' '.join(unknown)}")
+    wanted = set(requested)
+    if selected is None:
+        return sorted(wanted)
+    return [mod_id for mod_id in selected if mod_id in wanted]
+
+
 def _read_paths(path: Path) -> list[str]:
     try:
         return path.read_text(encoding="utf-8").splitlines()
@@ -106,6 +125,21 @@ def main(argv: list[str] | None = None) -> int:
         help="force every mod regardless of the changed paths",
     )
     parser.add_argument(
+        "--only",
+        nargs="+",
+        default=[],
+        metavar="MOD_ID",
+        help="limit the selection to these space separated mod ids",
+    )
+    parser.add_argument(
+        "--matrix",
+        action="store_true",
+        help=(
+            "write a JSON mod list for a GitHub build matrix; an empty "
+            "selection becomes one skipped placeholder entry"
+        ),
+    )
+    parser.add_argument(
         "--github-output",
         type=Path,
         help="append publish_all, mods, and count to a GitHub output file",
@@ -118,26 +152,29 @@ def main(argv: list[str] | None = None) -> int:
             selected: list[str] | None = None
         else:
             selected = select_mods(_read_paths(args.paths), mods, args.trigger)
+        selected = restrict_mods(selected, args.only, mods)
     except SelectionError as error:
         print(f"error: {error}", file=sys.stderr)
         return 1
 
     publish_all = selected is None
+    published = mods if publish_all else selected
     print(
         json.dumps(
             {
                 "all": publish_all,
-                "mods": mods if publish_all else selected,
+                "mods": published,
             }
         )
     )
     if args.github_output is not None:
-        chosen = mods if publish_all else selected
         try:
             with args.github_output.open("a", encoding="utf-8", newline="\n") as handle:
                 handle.write(f"publish_all={'true' if publish_all else 'false'}\n")
-                handle.write(f"mods={' '.join(chosen)}\n")
-                handle.write(f"count={len(chosen)}\n")
+                handle.write(f"mods={' '.join(published)}\n")
+                handle.write(f"count={len(published)}\n")
+                if args.matrix:
+                    handle.write(f"matrix={json.dumps(published or [MATRIX_PLACEHOLDER])}\n")
         except OSError as error:
             print(f"error: cannot write {args.github_output}: {error}", file=sys.stderr)
             return 1

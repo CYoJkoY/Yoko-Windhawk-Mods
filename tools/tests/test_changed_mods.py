@@ -15,7 +15,14 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from tools.changed_mods import SelectionError, known_mods, main, select_mods  # noqa: E402
+from tools.changed_mods import (  # noqa: E402
+    MATRIX_PLACEHOLDER,
+    SelectionError,
+    known_mods,
+    main,
+    restrict_mods,
+    select_mods,
+)
 
 
 class SelectModsTests(unittest.TestCase):
@@ -79,6 +86,26 @@ class KnownModsTests(unittest.TestCase):
     def test_missing_mods_directory_is_an_error(self) -> None:
         with self.assertRaises(SelectionError):
             known_mods(self.root)
+
+
+class RestrictModsTests(unittest.TestCase):
+    """An explicit id list narrows the selection without widening it."""
+
+    def test_explicit_ids_narrow_a_change_selection(self) -> None:
+        self.assertEqual(restrict_mods(["a", "b"], ["b"], ["a", "b"]), ["b"])
+
+    def test_explicit_ids_replace_an_all_selection(self) -> None:
+        self.assertEqual(restrict_mods(None, ["b", "a"], ["a", "b"]), ["a", "b"])
+
+    def test_explicit_ids_keep_an_empty_selection_empty(self) -> None:
+        self.assertEqual(restrict_mods([], ["a"], ["a"]), [])
+
+    def test_missing_ids_leave_the_selection_untouched(self) -> None:
+        self.assertEqual(restrict_mods(["a"], [], ["a"]), ["a"])
+
+    def test_unknown_ids_are_an_error(self) -> None:
+        with self.assertRaises(SelectionError):
+            restrict_mods(None, ["a", "ghost"], ["a"])
 
 
 class MainTests(unittest.TestCase):
@@ -154,6 +181,41 @@ class MainTests(unittest.TestCase):
         self.assertEqual(code, 1)
         self.assertEqual(values, {})
         self.assertIn("cannot read changed paths", self.last_stderr)
+
+    def test_only_limits_a_shared_change(self) -> None:
+        self.write_paths("shared/helper.h")
+        code, stdout, values = self.run_main("--trigger", "shared", "--only", "b")
+        self.assertEqual(code, 0)
+        self.assertEqual(json.loads(stdout), {"all": False, "mods": ["b"]})
+        self.assertEqual(values.get("mods"), "b")
+
+    def test_unknown_only_id_fails(self) -> None:
+        self.write_paths("mods/a/src/main.cpp")
+        code, _, values = self.run_main("--only", "ghost")
+        self.assertEqual(code, 1)
+        self.assertEqual(values, {})
+        self.assertIn("unknown mod id", self.last_stderr)
+
+    def test_matrix_lists_the_selected_mods(self) -> None:
+        self.write_paths("mods/b/src/main.cpp")
+        code, _, values = self.run_main("--matrix")
+        self.assertEqual(code, 0)
+        self.assertEqual(json.loads(values["matrix"]), ["b"])
+
+    def test_matrix_never_expands_to_nothing(self) -> None:
+        """GitHub rejects a matrix with no values, so it gets a placeholder."""
+
+        self.write_paths("README.md")
+        code, _, values = self.run_main("--matrix")
+        self.assertEqual(code, 0)
+        self.assertEqual(values.get("count"), "0")
+        self.assertEqual(json.loads(values["matrix"]), [MATRIX_PLACEHOLDER])
+
+    def test_matrix_is_absent_without_the_flag(self) -> None:
+        self.write_paths("mods/a/src/main.cpp")
+        code, _, values = self.run_main()
+        self.assertEqual(code, 0)
+        self.assertNotIn("matrix", values)
 
 
 if __name__ == "__main__":

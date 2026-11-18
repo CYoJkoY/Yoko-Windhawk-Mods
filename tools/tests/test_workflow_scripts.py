@@ -12,6 +12,7 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 PUBLISH_ACTION = REPO_ROOT / ".github" / "actions" / "publish-mod-branches"
+COMPILE_ACTION = REPO_ROOT / ".github" / "actions" / "compile-mod"
 
 
 def _bash() -> str:
@@ -482,6 +483,23 @@ class PublishModBranchesActionTests(unittest.TestCase):
         self.assertEqual(git(target, "branch", "--list", "mods/demo"), "")
         self.assertEqual(git(target, "branch", "--list", "mods/other"), "mods/other")
         self.assertNotIn("| `demo` |", summary)
+
+    def test_relative_bundle_directory_survives_the_scratch_checkout(self) -> None:
+        """The step changes directory, so a relative bundle dir must be pinned."""
+
+        upstream, target, _ = self.make_repositories("relative")
+        bundle_dir = self.make_bundles(
+            "relative", {"demo.wh.cpp": bundle_text("demo", "1.1.0", 1)}
+        )
+        runner = self.runner_temp("relative")
+        code, values, summary = run_script(
+            self.branches,
+            runner,
+            self.variables(bundle_dir, target, upstream, runner, BUNDLE_DIR="../bundles"),
+        )
+        self.assertEqual(code, 0, summary)
+        self.assertEqual(values.get("pushed"), "1")
+        self.assertEqual(git(target, "branch", "--list", "mods/demo"), "mods/demo")
 
     def test_reused_version_fails_before_pushing(self) -> None:
         upstream, target, _ = self.make_repositories("version")
@@ -997,6 +1015,100 @@ class PublishReleaseActionTests(unittest.TestCase):
         self.assertNotEqual(code, 0)
         self.assertEqual(values, {})
         self.assertEqual(git(origin, "branch", "--list", "release"), "")
+
+
+def job_block(path: Path, job: str) -> list[str]:
+    """Return the lines of one job, from its name to the next job."""
+
+    lines = path.read_text(encoding="utf-8").splitlines()
+    start = lines.index(f"  {job}:")
+    body: list[str] = []
+    for line in lines[start + 1 :]:
+        if line.startswith("  ") and not line.startswith("   ") and line.rstrip().endswith(":"):
+            break
+        body.append(line)
+    return body
+
+
+class ValidateModsWorkflowTests(unittest.TestCase):
+    """Each mod owns its compile and publish, so one mod cannot block another."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.path = REPO_ROOT / ".github" / "workflows" / "validate-mods.yml"
+        cls.text = cls.path.read_text(encoding="utf-8")
+
+    def test_build_runs_one_matrix_entry_per_selected_mod(self) -> None:
+        build = "\n".join(job_block(self.path, "build"))
+        self.assertIn("strategy:", build)
+        self.assertIn("mod: ${{ fromJSON(needs.select.outputs.matrix) }}", build)
+        self.assertIn("fail-fast: false", build)
+
+    def test_build_does_not_wait_for_a_shared_compile_job(self) -> None:
+        build = "\n".join(job_block(self.path, "build"))
+        self.assertIn("needs: [bundle, select]", build)
+        self.assertNotIn("needs: [bundle, compile", build)
+
+    def test_publish_receives_only_its_own_mod(self) -> None:
+        build = "\n".join(job_block(self.path, "build"))
+        self.assertIn("mods: ${{ matrix.mod }}", build)
+        self.assertNotIn("needs.select.outputs.mods", build)
+
+    def test_release_still_waits_for_every_mod(self) -> None:
+        release = "\n".join(job_block(self.path, "release"))
+        self.assertIn("needs: [bundle, select, build]", release)
+        self.assertIn("needs.build.result == 'success'", release)
+
+    def test_release_rejects_a_failed_selector(self) -> None:
+        release = "\n".join(job_block(self.path, "release"))
+        self.assertIn("needs.select.result == 'success'", release)
+        self.assertIn("needs.select.outputs.count == '0'", release)
+
+    def test_bundle_wide_inputs_still_select_every_mod(self) -> None:
+        self.assertIn("--trigger shared", self.text)
+        self.assertIn("--trigger tools/bundle.py", self.text)
+        self.assertIn("--matrix", self.text)
+
+    def test_manual_run_can_name_mods_without_comma_splitting(self) -> None:
+        self.assertIn('read -r -a wanted <<< "$requested"', self.text)
+        self.assertIn('extra=(--all --only "${wanted[@]}")', self.text)
+
+    def test_pull_request_compiles_every_mod_without_publishing(self) -> None:
+        select = "\n".join(job_block(self.path, "select"))
+        self.assertIn('elif [ "$EVENT_NAME" = "pull_request" ]; then', select)
+        build = "\n".join(job_block(self.path, "build"))
+        publish_step = build.split("- name: Publish mod branches and pull requests")[-1]
+        self.assertIn("github.event_name == 'push'", publish_step)
+
+
+class CompileModActionTests(unittest.TestCase):
+    """The compile action owns one bundle and refuses another mod's bundle."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.path = COMPILE_ACTION / "action.yml"
+        cls.script = extract_run(cls.path, "Compile mod with every Windhawk version")
+
+    def test_script_is_valid_bash(self) -> None:
+        with tempfile.TemporaryDirectory() as name:
+            script = Path(name) / "compile.sh"
+            script.write_text(self.script + "\n", encoding="utf-8", newline="\n")
+            proc = subprocess.run(
+                [_bash(), "-n", script.as_posix()], capture_output=True, text=True
+            )
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+
+    def test_bundle_must_belong_to_the_requested_mod(self) -> None:
+        self.assertIn('if [[ "$name" != "$MOD_ID" ]]', self.script)
+
+    def test_every_version_is_compiled_for_the_one_bundle(self) -> None:
+        self.assertIn("for version in $versions; do", self.script)
+        self.assertIn('echo "Compiling $BUNDLE with Windhawk $version"', self.script)
+        self.assertNotIn("find dist", self.script)
+
+    def test_architectures_are_complete_before_success(self) -> None:
+        self.assertIn('for arch in 32 64 arm64; do', self.script)
+        self.assertIn('echo "::error::missing $arch build for $name at $out_dir"', self.script)
 
 
 if __name__ == "__main__":

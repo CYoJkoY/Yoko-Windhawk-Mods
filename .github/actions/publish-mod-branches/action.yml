@@ -110,6 +110,9 @@ runs:
           echo "::error::bundle directory not found: $bundle_dir"
           exit 1
         fi
+        if [[ "$bundle_dir" != /* ]]; then
+          bundle_dir="$(cd "$bundle_dir" && pwd)"
+        fi
         if [ -z "$(find "$bundle_dir" -maxdepth 1 -type f -name '*.wh.cpp' -print -quit)" ]; then
           echo "::error::no .wh.cpp bundles found in $bundle_dir"
           exit 1

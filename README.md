@@ -38,18 +38,22 @@ stale. `--output <dir>` writes bundles somewhere other than `dist/`.
 
 ## Validation
 
-`.github/workflows/validate-mods.yml` runs the bundler tests, checks strict
-metadata, and compiles every bundle with Windhawk 1.7.3 and 2.0.0-alpha.8. It
-uploads the bundled sources as the `mod-bundles` artifact and the compiled x86,
-x64, and ARM64 DLLs as the `windhawk-<version>-dlls` artifacts.
+`.github/workflows/validate-mods.yml` runs the bundler tests and then expands
+one `build` job per selected mod. Each build job compiles exactly one bundle
+with Windhawk 1.7.3 and 2.0.0-alpha.8 through
+`.github/actions/compile-mod`, so x86, x64, and ARM64 builds of one mod are
+independent of every other mod. The `bundle` job uploads the bundled sources as
+the `mod-bundles` artifact, and each build job uploads its DLLs as the
+`windhawk-dlls-<mod-id>` artifact.
 
-On a push to `main`, the `bundle` job generates `dist/` in the runner, the
-`compile` job validates the artifact, and the `publish` job writes a snapshot
-to the `release` branch. The release root contains only `<mod-id>.wh.cpp`
-files and a `.gitignore` that ignores everything else. Each publish replaces
-the whole snapshot, so deleted mods cannot leave stale bundles behind. An
-unchanged snapshot creates no commit. If `main` moves while compilation runs,
-the publish is skipped and the newer push owns the release update.
+On a push to `main`, the `bundle` job generates `dist/` in the runner, each
+`build` job validates and publishes its own mod, and the `release` job writes a
+snapshot to the `release` branch once every build has finished. The release
+root contains only `<mod-id>.wh.cpp` files and a `.gitignore` that ignores
+everything else. Each publish replaces the whole snapshot, so deleted mods
+cannot leave stale bundles behind. An unchanged snapshot creates no commit. If
+`main` moves while compilation runs, the publish is skipped and the newer push
+owns the release update.
 
 The `release` branch is the aggregate snapshot: useful for install links and
 for anyone who tracks one branch. It is not the submission path, because a
@@ -58,9 +62,13 @@ single snapshot cannot become a separate upstream pull request per mod.
 ## Publishing one branch per mod
 
 The `select` job maps the changed paths of each push to mod ids with
-`tools/changed_mods.py`. A push that only touches `mods/<mod-id>/` selects that
-mod; a push that touches `shared/` or `tools/bundle.py` selects every mod, as
-those inputs can change any bundle.
+`tools/changed_mods.py`, then emits the id list as the `build` matrix. A push
+that only touches `mods/<mod-id>/` selects that mod; a push that touches
+`shared/` or `tools/bundle.py` selects every mod, as those inputs can change
+any bundle. Pull requests compile every mod so the pipeline is exercised
+against all bundles, but never publish. Because the matrix is expanded per mod,
+a compile error in one mod fails only its own job; branches for the other
+successful mods are still published.
 
 For each selected mod, `publish-mod-branches` writes one commit on top of the
 current upstream `main` that replaces exactly `mods/<mod-id>.wh.cpp`, then
@@ -86,6 +94,11 @@ To publish the branches by hand, run the `Validate mods` workflow from
 branches without pushing, and `open-prs` is off by default so a manual run
 only writes branches in the fork. A push to `main` always opens or refreshes
 the upstream pull requests for the mods it touched.
+
+`tools/changed_mods.py` also accepts `--only <mod-id>...` to narrow a selection
+and `--matrix` to write the JSON list consumed by the workflow. An empty
+selection writes a placeholder entry, because GitHub cannot expand a matrix
+with no values.
 
 `SYNC_PAT` needs push access to the fork, plus the `workflow` scope while the
 fork's `main` lags behind upstream. A new mod branch is committed on top of the
