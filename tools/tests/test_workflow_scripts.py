@@ -1496,21 +1496,56 @@ class ValidateModsWorkflowTests(unittest.TestCase):
     def test_mirror_job_compares_the_base_branch_tree_with_upstream(self) -> None:
         mirror = "\n".join(job_block(self.path, "mirror"))
         self.assertIn("Compare the base branch with upstream", mirror)
-        self.assertIn("^{tree}", mirror)
         self.assertIn("refs/remotes/upstream/${BASE_BRANCH}", mirror)
         self.assertIn("refs/remotes/target/${BASE_BRANCH}", mirror)
-        self.assertIn('if [ "$upstream_tree" != "$target_tree" ]; then', mirror)
+        self.assertIn("git merge-base --is-ancestor", mirror)
         self.assertIn("exit 1", mirror)
+
+    def test_mirror_job_fails_only_on_commits_upstream_lacks(self) -> None:
+        mirror = "\n".join(job_block(self.path, "mirror"))
+        self.assertIn("git merge-base --is-ancestor", mirror)
+        self.assertIn('if git merge-base --is-ancestor "$target_sha" "$upstream_sha"; then', mirror)
+        self.assertIn("exit 0", mirror)
+        self.assertIn("git log --oneline", mirror)
+
+    def test_mirror_job_tolerates_a_fork_that_lags_behind(self) -> None:
+        mirror = "\n".join(job_block(self.path, "mirror"))
+        self.assertIn('git rev-list --count "$target_sha".."$upstream_sha"', mirror)
+        self.assertIn("::notice::", mirror)
+        self.assertIn("behind", mirror)
+        # Lag must reach `exit 0` before the failure branch, so a fork that
+        # only misses upstream commits cannot fail the run.
+        self.assertLess(
+            mirror.index("::notice::"),
+            mirror.index("holds commits"),
+        )
 
     def test_mirror_job_reads_both_sides_without_a_token(self) -> None:
         mirror = "\n".join(job_block(self.path, "mirror"))
         self.assertIn("contents: read", mirror)
         self.assertNotIn("secrets.", mirror)
 
-    def test_mirror_job_fails_on_any_difference(self) -> None:
+    def test_mirror_job_reports_the_polluting_paths(self) -> None:
         mirror = "\n".join(job_block(self.path, "mirror"))
         self.assertIn("git diff --name-status", mirror)
-        self.assertNotIn("|| true", mirror.split("git diff --name-status")[0])
+        # The reporting lines are diagnostics of an already-decided failure:
+        # they follow the `::error::` line and precede the final `exit 1`.
+        self.assertLess(mirror.index("::error::"), mirror.index("git log --oneline"))
+        self.assertLess(mirror.index("git log --oneline"), mirror.index("git diff --name-status"))
+        self.assertLess(mirror.index("git diff --name-status"), mirror.rindex("exit 1"))
+        # Every tolerated `|| true` is attached to one of those two reporting
+        # lines, never to a fetch or to the comparison itself, so a real git
+        # failure still fails the job.
+        tolerated = [
+            line.strip()
+            for line in mirror.splitlines()
+            if "|| true" in line
+        ]
+        self.assertEqual(len(tolerated), 2)
+        self.assertTrue(tolerated[0].lstrip().startswith("git log --oneline"))
+        # The diff command wraps onto a continuation line, so its `|| true`
+        # lands on that continuation rather than on the command itself.
+        self.assertIn("refs/remotes/target/${BASE_BRANCH}", tolerated[1])
 
 
 class CompileModActionTests(unittest.TestCase):
