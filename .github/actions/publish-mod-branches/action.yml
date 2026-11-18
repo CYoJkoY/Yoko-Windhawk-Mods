@@ -142,6 +142,37 @@ runs:
           git rev-parse --verify --quiet "$1:$2" || true
         }
 
+        # A push rejected by remote policy is the final answer for that mod: a
+        # token scope, a protected branch, or a missing repository. Repeating
+        # it only repeats the denial, so the reason is reported instead. The
+        # generic `remote rejected` wrapper is absent here on purpose, because
+        # it also wraps transient failures that deserve a retry.
+        policy_rejection='refusing to allow|protected branch hook declined|Permission to .* denied|Repository not found|Authentication failed'
+
+        # A remote reason goes into a Markdown table cell, so it must stay one
+        # line of printable ASCII. A backtick would open a code span and a pipe
+        # would split the row, so both become plain text.
+        one_line() {
+          local text
+          text="$(printf '%s\n' "$1" | tr -d '\r' | grep -m1 -v '^[[:space:]]*$' || true)"
+          printf '%s' "${text:-unknown error}" | tr '\n\t' '  ' \
+            | LC_ALL=C tr -cd '\40-\176' | cut -c1-300 \
+            | sed 's/|/\\|/g; s/`/'"'"'/g'
+        }
+
+        # Print the first line that names a policy rejection, and fail when the
+        # push output holds none, so a transient failure still gets retried.
+        first_policy_rejection() {
+          local line
+          while IFS= read -r line; do
+            if [[ "$line" =~ $policy_rejection ]]; then
+              printf '%s' "$line"
+              return 0
+            fi
+          done <<< "$1"
+          return 1
+        }
+
         is_selected() {
           local filter="${MOD_FILTER//,/ }"
           if [ -z "${filter// /}" ]; then
@@ -193,22 +224,29 @@ runs:
         }
 
         push_branch() {
-          local branch="$1" commit="$2" lease="$3" attempt fresh
+          local branch="$1" commit="$2" lease="$3" attempt fresh output rejection
+          push_error=''
           for attempt in 1 2 3; do
+            output=''
             if [ -z "$lease" ]; then
-              if git push --quiet origin "$commit:refs/heads/$branch"; then
+              if output="$(git push --quiet origin "$commit:refs/heads/$branch" 2>&1)"; then
                 return 0
               fi
-            elif git push --quiet origin \
+            elif output="$(git push --quiet origin \
               "--force-with-lease=refs/heads/$branch:$lease" \
-              "$commit:refs/heads/$branch"; then
+              "$commit:refs/heads/$branch" 2>&1)"; then
               return 0
+            fi
+            if rejection="$(first_policy_rejection "$output")"; then
+              push_error="$(one_line "$rejection")"
+              return 1
             fi
             fresh="$(git ls-remote --heads origin "refs/heads/$branch" | awk 'NR==1{print $1}')"
             echo "Push of $branch failed (attempt $attempt), lease becomes ${fresh:-unset}"
             lease="$fresh"
             sleep $((attempt * 3))
           done
+          push_error="$(one_line "${output:-push failed}")"
           return 1
         }
 
@@ -298,7 +336,9 @@ runs:
 
           if ! push_branch "$branch" "$commit" "$head_sha"; then
             failed=$((failed + 1))
-            echo "| \`$id\` | ${version:-?} | \`$branch\` | error: push failed |" >> "$GITHUB_STEP_SUMMARY"
+            reason="${push_error:-push failed}"
+            echo "::error::${id}: ${reason}"
+            echo "| \`$id\` | ${version:-?} | \`$branch\` | error: ${reason} |" >> "$GITHUB_STEP_SUMMARY"
             printf 'failed\t%s\t%s\t%s\t%s\t\n' \
               "$id" "$branch" "$version" "$kind" >> "$status_file"
             continue
@@ -359,6 +399,18 @@ runs:
           changelog_text="Publish the latest build"
         fi
 
+        # A remote reason goes into a Markdown table cell, so it must stay one
+        # line of printable ASCII. A backtick would open a code span and a pipe
+        # would split the row, so both become plain text. `gh` writes a whole
+        # error report, so only the first non-empty line is kept.
+        one_line() {
+          local text
+          text="$(printf '%s\n' "$1" | tr -d '\r' | grep -m1 -v '^[[:space:]]*$' || true)"
+          printf '%s' "${text:-unknown error}" | tr '\n\t' '  ' \
+            | LC_ALL=C tr -cd '\40-\176' | cut -c1-300 \
+            | sed 's/|/\\|/g; s/`/'"'"'/g'
+        }
+
         write_body() {
           local version="$1" kind="$2" body="$3"
           {
@@ -412,13 +464,15 @@ runs:
             --json number --jq '.[0].number // ""')"
 
           if [ -n "$number" ]; then
-            if gh pr edit "$number" --repo "$upstream_repo" --title "$title" \
-              --body-file "$body" >/dev/null 2>&1; then
+            if edit_error="$(gh pr edit "$number" --repo "$upstream_repo" \
+              --title "$title" --body-file "$body" 2>&1 >/dev/null)"; then
               refreshed=$((refreshed + 1))
               echo "| \`$id\` | \`$head\` | refreshed #$number |" >> "$GITHUB_STEP_SUMMARY"
             else
               pr_failed=$((pr_failed + 1))
-              echo "| \`$id\` | \`$head\` | error: could not update #$number |" >> "$GITHUB_STEP_SUMMARY"
+              reason="$(one_line "$edit_error")"
+              echo "::error::${id}: could not update #$number: ${reason}"
+              echo "| \`$id\` | \`$head\` | error: #$number: ${reason} |" >> "$GITHUB_STEP_SUMMARY"
             fi
             continue
           fi
@@ -429,7 +483,9 @@ runs:
             echo "| \`$id\` | \`$head\` | opened ${url##*/} |" >> "$GITHUB_STEP_SUMMARY"
           else
             pr_failed=$((pr_failed + 1))
-            echo "| \`$id\` | \`$head\` | error: ${url} |" >> "$GITHUB_STEP_SUMMARY"
+            reason="$(one_line "$url")"
+            echo "::error::${id}: could not open the pull request: ${reason}"
+            echo "| \`$id\` | \`$head\` | error: ${reason} |" >> "$GITHUB_STEP_SUMMARY"
           fi
         done < "$status_file"
 

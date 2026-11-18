@@ -87,10 +87,24 @@ branches without pushing, and `open-prs` is off by default so a manual run
 only writes branches in the fork. A push to `main` always opens or refreshes
 the upstream pull requests for the mods it touched.
 
-`SYNC_PAT` needs push access to the fork. Opening the upstream pull request
-needs pull request permission on `ramensoftware/windhawk-mods` as well; with
-only push access, the branches are published and the pull request call fails
-with the reason `gh` returned.
+`SYNC_PAT` needs push access to the fork and the `workflow` scope. A new mod
+branch is committed on top of the upstream `main`, so when the fork's `main`
+lags behind upstream the pushed branch has to carry upstream workflow commits
+as well, and GitHub rejects any push that adds or edits a workflow file without
+that scope. The action reports such a rejection with GitHub's own reason
+instead of retrying it, because the same token is denied every time.
+
+Keep the fork's `main` synced with the upstream repository through GitHub's
+**Sync fork** button, or through the API shown below, before publishing. That
+keeps the pushed branches free of unrelated workflow commits:
+
+```powershell
+gh api -X POST repos/CYoJkoY/windhawk-mods/merge-upstream -f branch=main
+```
+
+Opening the upstream pull request needs pull request permission on
+`ramensoftware/windhawk-mods` as well; with only push access, the branches are
+published and the pull request call fails with the reason `gh` returned.
 
 ## Adding a mod
 
