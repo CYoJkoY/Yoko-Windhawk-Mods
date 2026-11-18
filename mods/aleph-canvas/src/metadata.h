@@ -4,7 +4,7 @@
 // @name:zh-CN      Aleph - 无限窗口画布
 // @description     Arrange open windows across a pannable canvas with live DWM previews.
 // @description:zh-CN 在可平移画布上管理已打开的窗口，并显示 DWM 实时预览。
-// @version         1.1.0
+// @version         1.2.0
 // @author          CYoJkoY
 // @github          https://github.com/CYoJkoY
 // @license         MIT
@@ -28,7 +28,7 @@ Drag cards to arrange them without moving the real desktop windows.
 - Middle mouse drag: pan the canvas.
 - Hold Space and drag empty canvas: pan.
 - Drag a card: arrange it; nearby edges snap into alignment.
-- Double-click a card or press Enter: activate the window.
+- Double-click a card or press Enter: focus the window; an other-desktop window is pulled onto this desktop first.
 - Tab / Shift+Tab: select a card; arrow keys pan; Home fits all cards; Escape hides the canvas.
 - Click or drag the minimap: navigate the canvas.
 
@@ -36,10 +36,11 @@ Drag cards to arrange them without moving the real desktop windows.
 
 Card positions are saved in `%LOCALAPPDATA%\\Windhawk\\ModData\\aleph-canvas\\layout.json`.
 Canvas coordinates use physical pixels relative to the virtual desktop origin.
-The mod does not move real application windows. The documented
-`IVirtualDesktopManager` API can identify windows on other desktops, but it
-does not expose the current desktop identifier needed to move one between
-desktops; those cards are activated through the normal foreground-window path.
+Arranging cards never moves real application windows. Activating an
+other-desktop card asks the documented `IVirtualDesktopManager` interface to
+move that window onto the desktop that displays the canvas, then focuses it. A
+window that refuses the move, such as one owned by an elevated process, is
+still brought to the foreground.
 */
 // ==/WindhawkModReadme==
 

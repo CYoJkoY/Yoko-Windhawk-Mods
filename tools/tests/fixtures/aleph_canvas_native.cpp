@@ -1,5 +1,6 @@
 #include "mods/aleph-canvas/src/cards.h"
 #include "mods/aleph-canvas/src/card_chrome.h"
+#include "mods/aleph-canvas/src/desktop_pull.h"
 #include "mods/aleph-canvas/src/math_utils.h"
 #include "mods/aleph-canvas/src/minimap.h"
 #include "mods/aleph-canvas/src/layout_store.h"
@@ -12,6 +13,76 @@
 CanvasContext context;
 
 static constexpr float kTolerance = 0.002f;
+
+static const GUID kCanvasDesktop = {0x11111111, 0x2222, 0x3333,
+                                    {0x44, 0x44, 0x44, 0x44, 0x44, 0x44, 0x44, 0x44}};
+static const GUID kOtherDesktop = {0xAAAAAAAA, 0xBBBB, 0xCCCC,
+                                   {0xDD, 0xDD, 0xDD, 0xDD, 0xDD, 0xDD, 0xDD, 0xDD}};
+
+// Test double for the public interface. Reference counting is irrelevant here,
+// so every answer comes from a field that the case sets before calling the
+// helper.
+struct FakeDesktopManager final : IVirtualDesktopManager {
+    HWND referenceHandle = reinterpret_cast<HWND>(0x1000);
+    HWND windowHandle = reinterpret_cast<HWND>(0x2000);
+    GUID referenceDesktop = kCanvasDesktop;
+    GUID windowDesktop = kOtherDesktop;
+    HRESULT referenceError = S_OK;
+    HRESULT windowError = S_OK;
+    HRESULT moveError = S_OK;
+    unsigned int moveCalls = 0;
+    HWND movedWindow = nullptr;
+    GUID movedTarget = {};
+
+    HRESULT STDMETHODCALLTYPE QueryInterface(REFIID, void** object) override {
+        if (object == nullptr) {
+            return E_POINTER;
+        }
+        *object = nullptr;
+        return E_NOINTERFACE;
+    }
+
+    ULONG STDMETHODCALLTYPE AddRef() override {
+        return 1;
+    }
+
+    ULONG STDMETHODCALLTYPE Release() override {
+        return 1;
+    }
+
+    HRESULT STDMETHODCALLTYPE IsWindowOnCurrentVirtualDesktop(
+        HWND, BOOL* onCurrentDesktop) override {
+        if (onCurrentDesktop == nullptr) {
+            return E_POINTER;
+        }
+        *onCurrentDesktop = TRUE;
+        return S_OK;
+    }
+
+    HRESULT STDMETHODCALLTYPE GetWindowDesktopId(HWND window,
+                                                 GUID* desktopId) override {
+        if (desktopId == nullptr) {
+            return E_POINTER;
+        }
+        if (window == referenceHandle) {
+            *desktopId = referenceDesktop;
+            return referenceError;
+        }
+        if (window == windowHandle) {
+            *desktopId = windowDesktop;
+            return windowError;
+        }
+        return E_INVALIDARG;
+    }
+
+    HRESULT STDMETHODCALLTYPE MoveWindowToDesktop(HWND window,
+                                                  REFGUID desktopId) override {
+        ++moveCalls;
+        movedWindow = window;
+        movedTarget = desktopId;
+        return moveError;
+    }
+};
 
 static void Require(bool condition, const char* message) {
     if (!condition) {
@@ -415,6 +486,76 @@ static void DismissedCards() {
             "clearing the dismissal did not restore the card");
 }
 
+static void DesktopPullMoves() {
+    FakeDesktopManager manager;
+    const DesktopPullOutcome outcome =
+        PullWindowToDesktop(&manager, manager.windowHandle, manager.referenceHandle);
+    Require(outcome.result == DesktopPullResult::Moved,
+            "other-desktop window was not moved");
+    Require(outcome.error == S_OK, "successful move reported an error");
+    Require(manager.moveCalls == 1, "move request was not issued exactly once");
+    Require(manager.movedWindow == manager.windowHandle, "moved the wrong window");
+    Require(IsEqualGUID(manager.movedTarget, kCanvasDesktop) != FALSE,
+            "moved to the wrong desktop");
+}
+
+static void DesktopPullSame() {
+    FakeDesktopManager manager;
+    manager.windowDesktop = kCanvasDesktop;
+    const DesktopPullOutcome outcome =
+        PullWindowToDesktop(&manager, manager.windowHandle, manager.referenceHandle);
+    Require(outcome.result == DesktopPullResult::AlreadyHere,
+            "same-desktop window was not skipped");
+    Require(manager.moveCalls == 0, "same-desktop window was moved");
+}
+
+static void DesktopPullNull() {
+    FakeDesktopManager manager;
+    const DesktopPullOutcome noManager =
+        PullWindowToDesktop(nullptr, manager.windowHandle, manager.referenceHandle);
+    Require(noManager.result == DesktopPullResult::Unavailable,
+            "null manager was accepted");
+    const DesktopPullOutcome noWindow =
+        PullWindowToDesktop(&manager, nullptr, manager.referenceHandle);
+    Require(noWindow.result == DesktopPullResult::Unavailable,
+            "null window was accepted");
+    const DesktopPullOutcome noReference =
+        PullWindowToDesktop(&manager, manager.windowHandle, nullptr);
+    Require(noReference.result == DesktopPullResult::Unavailable,
+            "null reference was accepted");
+    Require(manager.moveCalls == 0, "unusable inputs still moved the window");
+}
+
+static void DesktopPullReferenceFailure() {
+    FakeDesktopManager manager;
+    manager.referenceError = E_FAIL;
+    const DesktopPullOutcome unknownTarget =
+        PullWindowToDesktop(&manager, manager.windowHandle, manager.referenceHandle);
+    Require(unknownTarget.result == DesktopPullResult::Unavailable,
+            "unknown canvas desktop was accepted");
+    Require(manager.moveCalls == 0, "unknown canvas desktop still moved the window");
+
+    FakeDesktopManager unknownSource;
+    unknownSource.windowError = E_FAIL;
+    const DesktopPullOutcome moved = PullWindowToDesktop(
+        &unknownSource, unknownSource.windowHandle, unknownSource.referenceHandle);
+    Require(moved.result == DesktopPullResult::Moved,
+            "unreadable source desktop blocked the move");
+    Require(unknownSource.moveCalls == 1,
+            "unreadable source desktop skipped the move");
+}
+
+static void DesktopPullRejected() {
+    FakeDesktopManager manager;
+    manager.moveError = E_ACCESSDENIED;
+    const DesktopPullOutcome outcome =
+        PullWindowToDesktop(&manager, manager.windowHandle, manager.referenceHandle);
+    Require(outcome.result == DesktopPullResult::Rejected,
+            "refused move was reported as success");
+    Require(outcome.error == E_ACCESSDENIED, "refused move lost its HRESULT");
+    Require(manager.moveCalls == 1, "refused move was not attempted");
+}
+
 struct NativeCase {
     const char* name;
     void (*run)();
@@ -432,6 +573,11 @@ static constexpr NativeCase kCases[] = {
     {"header_chrome", HeaderChrome}, {"pinned_order", PinnedOrder},
     {"pinned_layout_sync", PinnedLayoutSync}, {"pin_persistence", PinPersistence},
     {"dismissed_cards", DismissedCards},
+    {"desktop_pull_moves", DesktopPullMoves},
+    {"desktop_pull_same", DesktopPullSame},
+    {"desktop_pull_null", DesktopPullNull},
+    {"desktop_pull_reference_failure", DesktopPullReferenceFailure},
+    {"desktop_pull_rejected", DesktopPullRejected},
 };
 
 static int RunCase(const char* name) {

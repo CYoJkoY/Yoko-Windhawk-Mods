@@ -29,6 +29,9 @@ struct CanvasContext {
     // click-through layered window drawn above it.
     HWND hostWindow = nullptr;
     HWND hudWindow = nullptr;
+    // Non-owning. The worker thread creates the COM manager before the canvas
+    // loop starts and releases it after the loop returns.
+    IVirtualDesktopManager* desktopManager = nullptr;
     bool visible = false;
     RECT virtualScreen = {};
     int chromeDpi = 96;
