@@ -5,6 +5,7 @@
 #include "platform.h"
 #include "constants.h"
 #include "context.h"
+#include "icon_sources.h"
 #include "math_utils.h"
 #include "text_utils.h"
 #include "types.h"
@@ -268,6 +269,28 @@ inline HICON QueryWindowIcon(HWND window) {
     return icon;
 }
 
+inline HICON QueryShellIconAtSize(int imageIndex, int listSize) {
+    IImageList* images = nullptr;
+    const HRESULT queried =
+        SHGetImageList(listSize, IID_PPV_ARGS(&images));
+    if (FAILED(queried) || images == nullptr) {
+        if (images != nullptr) {
+            images->Release();
+        }
+        return nullptr;
+    }
+    HICON icon = nullptr;
+    const HRESULT result = images->GetIcon(imageIndex, ILD_TRANSPARENT, &icon);
+    images->Release();
+    if (FAILED(result)) {
+        if (icon != nullptr) {
+            DestroyIcon(icon);
+        }
+        return nullptr;
+    }
+    return icon;
+}
+
 inline HICON QueryShellIcon(const std::wstring& exePath) {
     if (exePath.empty()) {
         return nullptr;
@@ -277,25 +300,11 @@ inline HICON QueryShellIcon(const std::wstring& exePath) {
                        SHGFI_SYSICONINDEX) == 0) {
         return nullptr;
     }
-    IImageList* images = nullptr;
-    const HRESULT queried =
-        SHGetImageList(SHIL_EXTRALARGE, IID_PPV_ARGS(&images));
-    if (FAILED(queried) || images == nullptr) {
-        if (images != nullptr) {
-            images->Release();
-        }
-        return nullptr;
-    }
-    HICON icon = nullptr;
-    const HRESULT result = images->GetIcon(info.iIcon, ILD_TRANSPARENT, &icon);
-    images->Release();
-    if (FAILED(result)) {
-        if (icon != nullptr) {
-            DestroyIcon(icon);
-        }
-        return nullptr;
-    }
-    return icon;
+    return QueryFirstAvailableIcon(
+        kShellIconListSizes,
+        [&](int listSize) {
+            return QueryShellIconAtSize(info.iIcon, listSize);
+        });
 }
 
 inline ID2D1Bitmap* CreateHudIconBitmap(IWICBitmapSource* bitmap) {
@@ -367,9 +376,11 @@ inline ID2D1Bitmap* LoadIconBitmap(const std::wstring& exePath,
         return nullptr;
     }
 
-    ID2D1Bitmap* result = CreateIconBitmap(QueryWindowIcon(window));
+    // The shell icon is the largest source, so it wins whenever it exists; the
+    // window icon covers executables the shell cannot resolve.
+    ID2D1Bitmap* result = LoadShellIconBitmap(exePath);
     if (result == nullptr) {
-        result = LoadShellIconBitmap(exePath);
+        result = CreateIconBitmap(QueryWindowIcon(window));
     }
     if (result == nullptr) {
         context.iconRetryTick[key] = GetTickCount();

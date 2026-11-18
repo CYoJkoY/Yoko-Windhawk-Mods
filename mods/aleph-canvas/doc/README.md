@@ -23,6 +23,9 @@ clicked. A window that already sits there is never moved, and a refused request
 still ends in foreground activation, which is what elevated windows require.
 
 Duplicate windows keep their assigned executable/class slots while alive.
+Icon cards draw the largest icon the shell offers - the 256 px jumbo image list
+when available, then the 48 px and 32 px lists, and the window icon only when
+no shell icon resolves.
 After a restart, indistinguishable windows reuse available saved slots; the
 mod cannot identify which document belongs to which identical window class.
 Visible idle canvases rescan windows at the configured interval; they do not

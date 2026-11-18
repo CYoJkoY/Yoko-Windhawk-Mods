@@ -189,6 +189,18 @@ class AlephCanvasNativeTests(unittest.TestCase):
     def test_refused_pull_reports_its_error(self) -> None:
         self.run_case("desktop_pull_rejected")
 
+    def test_shell_icon_candidates_start_at_the_jumbo_list(self) -> None:
+        self.run_case("icon_source_order")
+
+    def test_largest_available_shell_icon_wins(self) -> None:
+        self.run_case("icon_source_largest")
+
+    def test_shell_icon_lookup_falls_back_to_smaller_lists(self) -> None:
+        self.run_case("icon_source_fallback")
+
+    def test_missing_shell_icon_reports_no_source(self) -> None:
+        self.run_case("icon_source_missing")
+
 
 if __name__ == "__main__":
     unittest.main()

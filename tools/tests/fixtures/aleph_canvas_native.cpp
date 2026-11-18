@@ -1,6 +1,7 @@
 #include "mods/aleph-canvas/src/cards.h"
 #include "mods/aleph-canvas/src/card_chrome.h"
 #include "mods/aleph-canvas/src/desktop_pull.h"
+#include "mods/aleph-canvas/src/icon_sources.h"
 #include "mods/aleph-canvas/src/math_utils.h"
 #include "mods/aleph-canvas/src/minimap.h"
 #include "mods/aleph-canvas/src/layout_store.h"
@@ -556,6 +557,52 @@ static void DesktopPullRejected() {
     Require(manager.moveCalls == 1, "refused move was not attempted");
 }
 
+static void IconSourceOrder() {
+    Require(ARRAYSIZE(kShellIconListSizes) == 3,
+            "unexpected icon candidate count");
+    Require(kShellIconListSizes[0] == SHIL_JUMBO, "jumbo is not first");
+    Require(kShellIconListSizes[1] == SHIL_EXTRALARGE,
+            "extra-large is not second");
+    Require(kShellIconListSizes[2] == SHIL_LARGE, "large is not last");
+}
+
+static void IconSourceLargestWins() {
+    int queries = 0;
+    int chosen = -1;
+    const HICON icon = QueryFirstAvailableIcon(
+        kShellIconListSizes, [&](int listSize) {
+            ++queries;
+            chosen = listSize;
+            return reinterpret_cast<HICON>(0x1);
+        });
+    Require(icon != nullptr, "an available icon was dropped");
+    Require(queries == 1, "the lookup continued after the first hit");
+    Require(chosen == SHIL_JUMBO, "a smaller source was queried first");
+}
+
+static void IconSourceFallback() {
+    int queries = 0;
+    const HICON icon = QueryFirstAvailableIcon(
+        kShellIconListSizes, [&](int listSize) {
+            ++queries;
+            return listSize == SHIL_LARGE ? reinterpret_cast<HICON>(0x2)
+                                          : nullptr;
+        });
+    Require(icon == reinterpret_cast<HICON>(0x2), "the fallback was dropped");
+    Require(queries == 3, "the lookup stopped before the last candidate");
+}
+
+static void IconSourceMissing() {
+    int queries = 0;
+    const HICON icon =
+        QueryFirstAvailableIcon(kShellIconListSizes, [&](int) {
+            ++queries;
+            return static_cast<HICON>(nullptr);
+        });
+    Require(icon == nullptr, "a missing icon was reported as found");
+    Require(queries == 3, "the lookup skipped a candidate");
+}
+
 struct NativeCase {
     const char* name;
     void (*run)();
@@ -578,6 +625,10 @@ static constexpr NativeCase kCases[] = {
     {"desktop_pull_null", DesktopPullNull},
     {"desktop_pull_reference_failure", DesktopPullReferenceFailure},
     {"desktop_pull_rejected", DesktopPullRejected},
+    {"icon_source_order", IconSourceOrder},
+    {"icon_source_largest", IconSourceLargestWins},
+    {"icon_source_fallback", IconSourceFallback},
+    {"icon_source_missing", IconSourceMissing},
 };
 
 static int RunCase(const char* name) {
