@@ -138,11 +138,17 @@ def bundle_text(mod_id: str, version: str, value: int = 0) -> str:
 
 
 def make_gh_stub(
-    directory: Path, existing: str = "", edit_failure: str = ""
+    directory: Path,
+    existing: str = "",
+    edit_failure: str = "",
+    create_failure: str = "",
+    close_failure: str = "",
 ) -> tuple[Path, dict[str, str]]:
-    """Fake `gh` that records calls and answers pr list/create/edit.
+    """Fake `gh` that records calls and answers pr list/create/edit/close.
 
-    `edit_failure` makes `pr edit` fail with that message on stderr.
+    `edit_failure` makes `pr edit` fail with that message on stderr,
+    `create_failure` does the same for `pr create`, and `close_failure` for
+    `pr close`.
     """
 
     directory.mkdir(parents=True, exist_ok=True)
@@ -155,10 +161,19 @@ def make_gh_stub(
                 'if [ "$1" = "pr" ] && [ "$2" = "list" ]; then',
                 f'  printf \'%s\' "{existing}"',
                 'elif [ "$1" = "pr" ] && [ "$2" = "create" ]; then',
+                f'  if [ -n "{create_failure}" ]; then',
+                f'    printf \'%s\\n\' "{create_failure}" >&2',
+                "    exit 1",
+                "  fi",
                 '  echo "https://github.com/ramensoftware/windhawk-mods/pull/321"',
                 'elif [ "$1" = "pr" ] && [ "$2" = "edit" ]; then',
                 f'  if [ -n "{edit_failure}" ]; then',
                 f'    printf \'%s\\n\' "{edit_failure}" >&2',
+                "    exit 1",
+                "  fi",
+                'elif [ "$1" = "pr" ] && [ "$2" = "close" ]; then',
+                f'  if [ -n "{close_failure}" ]; then',
+                f'    printf \'%s\\n\' "{close_failure}" >&2',
                 "    exit 1",
                 "  fi",
                 "fi",
@@ -260,6 +275,7 @@ class PublishModBranchesActionTests(unittest.TestCase):
         runner: Path,
         branch_values: dict[str, str],
         pr_failed: str = "",
+        pr_skipped: str = "",
         branch_outcome: str = "success",
         pr_outcome: str = "success",
         prune_failed: str = "",
@@ -271,6 +287,7 @@ class PublishModBranchesActionTests(unittest.TestCase):
                 "BRANCH_FAILED": branch_values.get("failed", ""),
                 "PRUNE_FAILED": prune_failed,
                 "PR_FAILED": pr_failed,
+                "PR_SKIPPED": pr_skipped,
                 "BRANCH_OUTCOME": branch_outcome,
                 "PR_OUTCOME": pr_outcome,
                 "RUNNER_TEMP": runner.as_posix(),
@@ -286,12 +303,18 @@ class PublishModBranchesActionTests(unittest.TestCase):
         status_file: str,
         existing: str = "",
         edit_failure: str = "",
+        create_failure: str = "",
+        close_failure: str = "",
         pruned_file: str = "",
     ) -> tuple[int, str, dict[str, str], str]:
         """Run the pull request step with a stubbed `gh`."""
 
         log, env = make_gh_stub(
-            self.root / name / "bin", existing=existing, edit_failure=edit_failure
+            self.root / name / "bin",
+            existing=existing,
+            edit_failure=edit_failure,
+            create_failure=create_failure,
+            close_failure=close_failure,
         )
         values = {
             "STATUS_FILE": status_file,
@@ -1044,12 +1067,135 @@ class PublishModBranchesActionTests(unittest.TestCase):
             variables,
             values["status-file"],
             existing="77\n",
-            edit_failure="HTTP 403: Resource not accessible by integration",
+            edit_failure="HTTP 422: Validation Failed",
         )
         self.assertEqual(code, 0, summary)
         self.assertEqual(outputs.get("pr-failed"), "1")
-        self.assertIn("HTTP 403", summary)
-        self.assertIn("error: #77: HTTP 403", summary)
+        self.assertIn("HTTP 422", summary)
+        self.assertIn("error: #77: HTTP 422", summary)
+
+    def test_pull_request_permission_denial_is_skipped_not_failed(self) -> None:
+        """A token without upstream write access must not fail the run."""
+
+        upstream, target, _ = self.make_repositories("pr-denied")
+        bundle_dir = self.make_bundles(
+            "pr-denied",
+            {
+                "demo.wh.cpp": bundle_text("demo", "1.1.0", 1),
+                "other.wh.cpp": bundle_text("other", "2.1.0", 1),
+            },
+        )
+        runner = self.runner_temp("pr-denied")
+        variables = self.variables(
+            bundle_dir, target, upstream, runner, TOKEN="test-token"
+        )
+        code, values, _ = run_script(self.branches, runner, variables)
+        self.assertEqual(code, 0)
+
+        denial = (
+            "GraphQL: Resource not accessible by personal access token"
+            " (createPullRequest)"
+        )
+        _, env = make_gh_stub(
+            self.root / "pr-denied" / "bin", create_failure=denial
+        )
+        process, outputs, summary = run_script_verbose(
+            self.pull_requests,
+            runner,
+            {
+                "STATUS_FILE": values["status-file"],
+                "PRUNED_FILE": "",
+                "TARGET_REPO": variables["TARGET_REPO"],
+                "UPSTREAM_REPO": variables["UPSTREAM_REPO"],
+                "BASE_BRANCH": variables["BASE_BRANCH"],
+                "TOKEN": variables["TOKEN"],
+                "AUTHORSHIP": "The submitter, with AI assistance",
+                "CHANGELOG": variables["CHANGELOG"],
+                "RUNNER_TEMP": variables["RUNNER_TEMP"],
+            },
+            extra_env=env,
+        )
+
+        self.assertEqual(process.returncode, 0, summary)
+        self.assertEqual(outputs.get("pr-failed"), "0")
+        self.assertEqual(outputs.get("pr-skipped"), "2")
+        self.assertIn("| skipped: no upstream pull request access |", summary)
+        self.assertIn("opened: 0 / refreshed: 0 / failed: 0 / skipped: 2", summary)
+        self.assertIn("::warning::", process.stdout)
+        self.assertIn("cannot write pull requests in", process.stdout)
+        self.assertNotIn("::error::", process.stdout)
+        self.assertEqual(process.stdout.count("::warning::"), 1, process.stdout)
+        self.assertEqual(process.stderr, "", process.stderr)
+
+    def test_pull_request_edit_permission_denial_is_skipped(self) -> None:
+        upstream, target, _ = self.make_repositories("pr-edit-denied")
+        bundle_dir = self.make_bundles(
+            "pr-edit-denied", {"demo.wh.cpp": bundle_text("demo", "1.1.0", 1)}
+        )
+        runner = self.runner_temp("pr-edit-denied")
+        variables = self.variables(
+            bundle_dir, target, upstream, runner, TOKEN="test-token"
+        )
+        code, values, _ = run_script(self.branches, runner, variables)
+        self.assertEqual(code, 0)
+
+        code, summary, outputs, _ = self.run_pull_requests(
+            "pr-edit-denied",
+            runner,
+            variables,
+            values["status-file"],
+            existing="77\n",
+            edit_failure=(
+                "HTTP 403: Resource not accessible by personal access token"
+            ),
+        )
+        self.assertEqual(code, 0, summary)
+        self.assertEqual(outputs.get("pr-failed"), "0")
+        self.assertEqual(outputs.get("pr-skipped"), "1")
+        self.assertIn("skipped #77: no upstream pull request access", summary)
+        self.assertIn("opened: 0 / refreshed: 0 / failed: 0 / skipped: 1", summary)
+
+    def test_closed_pull_request_permission_denial_is_skipped(self) -> None:
+        upstream, target, _ = self.make_repositories("pr-close-denied")
+        variables = self.variables(
+            self.make_bundles(
+                "pr-close-denied", {"demo.wh.cpp": bundle_text("demo", "1.1.0", 1)}
+            ),
+            target,
+            upstream,
+            self.runner_temp("pr-close-denied"),
+            TOKEN="test-token",
+        )
+        runner = Path(variables["RUNNER_TEMP"])
+        pruned = runner / "pruned.tsv"
+        pruned.write_text("demo\tmods/demo\n", encoding="utf-8", newline="\n")
+        status = runner / "status.tsv"
+        status.write_text("", encoding="utf-8")
+
+        code, summary, outputs, _ = self.run_pull_requests(
+            "pr-close-denied",
+            runner,
+            variables,
+            status.as_posix(),
+            existing="77\n",
+            pruned_file=pruned.as_posix(),
+            close_failure="GraphQL: Resource not accessible by integration",
+        )
+        self.assertEqual(code, 0, summary)
+        self.assertEqual(outputs.get("pr-failed"), "0")
+        self.assertEqual(outputs.get("pr-skipped"), "1")
+
+    def test_skipped_pull_requests_only_warn_in_the_report(self) -> None:
+        code, _ = self.run_report(
+            self.runner_temp("report-skip"), {"failed": "0"}, "0", "3"
+        )
+        self.assertEqual(code, 0)
+
+    def test_report_step_fails_when_pull_requests_failed_and_skipped(self) -> None:
+        code, _ = self.run_report(
+            self.runner_temp("report-both"), {"failed": "0"}, "1", "2"
+        )
+        self.assertNotEqual(code, 0)
 
     def test_pull_requests_are_skipped_without_a_token(self) -> None:
         upstream, target, _ = self.make_repositories("pr-skip")
