@@ -44,6 +44,7 @@ inline void HideCanvasWindows() {
         ShowWindow(context.hostWindow, SW_HIDE);
     }
     ReleaseAllThumbnails();
+    context.dismissedFingerprints.clear();
     context.panning = false;
     context.draggingMinimap = false;
     context.draggedCard = -1;

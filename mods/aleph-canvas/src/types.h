@@ -93,6 +93,12 @@ enum class InitialLayout {
     Desktop,
 };
 
+enum class CardHeaderAction : uint8_t {
+    None,
+    Pin,
+    Close,
+};
+
 // One DWM thumbnail handle. Registration is the only ownership, so moving a
 // card inside the vector never leaks or double-unregisters.
 class Thumbnail {
@@ -149,6 +155,7 @@ struct Card {
     DWORD thumbnailRetryTick = 0;
     RECT thumbnailDestination = {};
     bool thumbnailVisible = false;
+    bool pinned = false;
 };
 
 struct ScannedWindow {
@@ -199,6 +206,7 @@ struct CanvasSettings {
 struct LayoutEntry {
     std::wstring fingerprint;
     RectF world = {};
+    bool pinned = false;
 };
 
 struct LayoutSnapshot {

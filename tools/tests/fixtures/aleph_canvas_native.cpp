@@ -1,4 +1,5 @@
 #include "mods/aleph-canvas/src/cards.h"
+#include "mods/aleph-canvas/src/card_chrome.h"
 #include "mods/aleph-canvas/src/math_utils.h"
 #include "mods/aleph-canvas/src/minimap.h"
 #include "mods/aleph-canvas/src/layout_store.h"
@@ -295,6 +296,125 @@ static void WindowIdentity() {
     Require(!MatchesWindow(card, reused), "reused HWND with another executable matched");
 }
 
+static void HeaderChrome() {
+    Card card;
+    card.world = MakeRectF(120.0f, 160.0f, 640.0f, 480.0f);
+    const RectF bounds = CardScreenBounds(card);
+    const RectF header = CardHeaderRect(card);
+    Near(header.left, bounds.left);
+    Near(header.right, bounds.right);
+    Near(header.top, bounds.top);
+    Near(header.height(), 28.0f * ChromeScale());
+
+    const RectF close = CardCloseButtonRect(header, ChromeScale());
+    const RectF pin = CardPinButtonRect(header, ChromeScale());
+    Require(!close.empty() && !pin.empty(), "buttons missing on a wide header");
+    Require(!RectsOverlap(close, pin), "header buttons overlap");
+    Require(close.right <= header.right && close.left >= header.left,
+            "close button escaped the header");
+    Require(pin.left >= header.left, "pin button escaped the header");
+    Near(close.right, header.right - kCardHeaderButtonInsetPx * ChromeScale());
+    Near(pin.right, close.left - kCardHeaderButtonGapPx * ChromeScale());
+    Near(close.centerY(), header.centerY());
+    Near(pin.centerY(), header.centerY());
+
+    Require(HitTestCardHeader(header, Vec2{close.centerX(), close.centerY()},
+                              ChromeScale()) == CardHeaderAction::Close,
+            "close button did not hit");
+    Require(HitTestCardHeader(header, Vec2{pin.centerX(), pin.centerY()},
+                              ChromeScale()) == CardHeaderAction::Pin,
+            "pin button did not hit");
+    Require(HitTestCardHeader(header, Vec2{header.left + 40.0f, header.centerY()},
+                              ChromeScale()) == CardHeaderAction::None,
+            "title area reported a button");
+    Require(HitTestCardHeader(header,
+                              Vec2{header.centerX(), header.bottom + 4.0f},
+                              ChromeScale()) == CardHeaderAction::None,
+            "point below the header reported a button");
+
+    // A narrow card cannot host both buttons, so none are drawn or hit.
+    Card narrow;
+    narrow.world = MakeRectF(0.0f, 0.0f, 40.0f, 300.0f);
+    const RectF narrowHeader = CardHeaderRect(narrow);
+    Require(CardCloseButtonRect(narrowHeader, ChromeScale()).empty(),
+            "narrow header kept a close button");
+    Require(CardPinButtonRect(narrowHeader, ChromeScale()).empty(),
+            "narrow header kept a pin button");
+
+    // The strip is DPI relative: 28 DIP is 28 px at 96 DPI.
+    context.chromeDpi = 96;
+    const RectF scaled = CardHeaderRect(card);
+    Near(scaled.height(), 28.0f);
+    const RectF scaledClose = CardCloseButtonRect(scaled, ChromeScale());
+    Near(scaledClose.width(), kCardHeaderButtonPx);
+    Near(scaledClose.right, scaled.right - kCardHeaderButtonInsetPx);
+}
+
+static void PinnedOrder() {
+    AddCard(MakeRectF(0.0f, 0.0f, 320.0f, 240.0f));
+    AddCard(MakeRectF(0.0f, 0.0f, 320.0f, 240.0f));
+    AddCard(MakeRectF(0.0f, 0.0f, 320.0f, 240.0f));
+    context.cards[2].pinned = true;
+    context.cards[0].pinned = true;
+
+    const std::vector<size_t> order = CardDrawOrder(context.cards);
+    Require(order.size() == context.cards.size(), "draw order lost a card");
+    Require(order[0] == 1, "unpinned card must be drawn first");
+    Require(order[1] == 0 && order[2] == 2, "pinned cards must be drawn last");
+
+    const RectF bounds = CardScreenBounds(context.cards[1]);
+    const Vec2 center{bounds.centerX(), bounds.centerY()};
+    Require(HitTestCardInOrder(context.cards, center) == 2,
+            "hit test ignored the topmost pinned card");
+}
+
+static void PinnedLayoutSync() {
+    ScannedWindow window = SampleWindow(0x500);
+    window.fingerprint = L"pinned#1";
+    context.layout.entries.push_back(
+        LayoutEntry{window.fingerprint, MakeRectF(0.0f, 0.0f, 640.0f, 480.0f), true});
+    MergeScan(std::vector<ScannedWindow>{window});
+    Require(context.cards.size() == 1, "pinned window was not added");
+    Require(context.cards[0].pinned, "merge dropped the saved pin");
+}
+
+static void PinPersistence() {
+    context.layout = LayoutSnapshot{};
+    context.layout.entries.push_back(
+        LayoutEntry{L"app#1", MakeRectF(10.0f, 20.0f, 300.0f, 200.0f), false});
+    RememberLayoutPin(L"app#1", MakeRectF(10.0f, 20.0f, 300.0f, 200.0f), true);
+    Require(context.layout.entries[0].pinned, "pin was not remembered");
+
+    const std::string serialized = SerializeLayout(context.layout);
+    Require(serialized.find("\"pin\":1") != std::string::npos,
+            "serializer omitted the pin flag");
+    const LayoutSnapshot parsed = ParseLayout(serialized);
+    Require(parsed.entries.size() == 1 && parsed.entries[0].pinned,
+            "pin was lost in the roundtrip");
+    SameRect(parsed.entries[0].world, MakeRectF(10.0f, 20.0f, 300.0f, 200.0f));
+
+    const LayoutSnapshot legacy = ParseLayout(
+        R"({"version":1,"entries":[{"key":"a","x":0,"y":0,"w":1,"h":1}]})");
+    Require(legacy.entries.size() == 1 && !legacy.entries[0].pinned,
+            "legacy layout gained a pin");
+    const LayoutSnapshot invalid = ParseLayout(
+        R"({"version":1,"entries":[{"key":"a","x":0,"y":0,"w":1,"h":1,"pin":2}]})");
+    Require(invalid.entries.empty(), "out-of-range pin accepted");
+}
+
+static void DismissedCards() {
+    ScannedWindow window = SampleWindow(0x600);
+    window.fingerprint = L"dismissed#1";
+    const std::vector<ScannedWindow> scanned{window};
+    context.dismissedFingerprints.insert(window.fingerprint);
+    MergeScan(scanned);
+    Require(context.cards.empty(), "dismissed window returned during a scan");
+    context.dismissedFingerprints.clear();
+    MergeScan(scanned);
+    Require(context.cards.size() == 1,
+            "clearing the dismissal did not restore the card");
+}
+
 struct NativeCase {
     const char* name;
     void (*run)();
@@ -309,6 +429,9 @@ static constexpr NativeCase kCases[] = {
     {"json_finite", JsonFinite}, {"json_order", JsonOrder},
     {"json_roundtrip", JsonRoundtrip}, {"hotkey_suffix", HotkeySuffix},
     {"fingerprint_lifetime", FingerprintLifetime}, {"window_identity", WindowIdentity},
+    {"header_chrome", HeaderChrome}, {"pinned_order", PinnedOrder},
+    {"pinned_layout_sync", PinnedLayoutSync}, {"pin_persistence", PinPersistence},
+    {"dismissed_cards", DismissedCards},
 };
 
 static int RunCase(const char* name) {

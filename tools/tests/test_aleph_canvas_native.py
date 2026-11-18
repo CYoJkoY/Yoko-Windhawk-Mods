@@ -159,6 +159,21 @@ class AlephCanvasNativeTests(unittest.TestCase):
     def test_destroyed_or_reused_window_does_not_match_old_card(self) -> None:
         self.run_case("window_identity")
 
+    def test_header_is_28_dip_with_close_and_pin_buttons(self) -> None:
+        self.run_case("header_chrome")
+
+    def test_pinned_cards_draw_and_hit_test_on_top(self) -> None:
+        self.run_case("pinned_order")
+
+    def test_saved_pin_reaches_the_merged_card(self) -> None:
+        self.run_case("pinned_layout_sync")
+
+    def test_pin_flag_survives_serialization(self) -> None:
+        self.run_case("pin_persistence")
+
+    def test_dismissed_window_stays_off_the_canvas(self) -> None:
+        self.run_case("dismissed_cards")
+
 
 if __name__ == "__main__":
     unittest.main()

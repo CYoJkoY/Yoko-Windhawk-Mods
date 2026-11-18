@@ -56,6 +56,7 @@ struct CanvasContext {
     POINT dragCursor = {};
     int hoverCard = -1;
     int selectedCard = -1;
+    CardHeaderAction hoverHeaderAction = CardHeaderAction::None;
     bool draggingMinimap = false;
     bool minimapHover = false;
     RectF minimapRect = {};
@@ -86,6 +87,7 @@ struct CanvasContext {
     int hudHeight = 0;
     std::unordered_map<std::wstring, ID2D1Bitmap*> iconCache;
     std::unordered_map<std::wstring, DWORD> iconRetryTick;
+    std::unordered_set<std::wstring> dismissedFingerprints;
 
     // Settings and persisted layout.
     CanvasSettings settings{};

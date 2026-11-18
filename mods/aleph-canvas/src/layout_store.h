@@ -97,7 +97,7 @@ static bool FormatLayoutNumbers(const RectF& world, std::string& output) {
     }
     char numbers[192] = {};
     const int written = _snprintf_l(
-        numbers, sizeof(numbers), "\"x\":%.9g,\"y\":%.9g,\"w\":%.9g,\"h\":%.9g}",
+        numbers, sizeof(numbers), "\"x\":%.9g,\"y\":%.9g,\"w\":%.9g,\"h\":%.9g",
         locale, static_cast<double>(world.left),
         static_cast<double>(world.top), static_cast<double>(world.width()),
         static_cast<double>(world.height()));
@@ -128,6 +128,10 @@ static std::string SerializeLayout(const LayoutSnapshot& layout) {
         output += ToUtf8(EscapeJsonText(entry.fingerprint));
         output += "\",";
         output += numbers;
+        if (entry.pinned) {
+            output += ",\"pin\":1";
+        }
+        output += "}";
     }
     output += "]}\n";
     return output;
@@ -499,11 +503,13 @@ struct JsonEntryFields {
     double y = 0.0;
     double width = 0.0;
     double height = 0.0;
+    double pin = 0.0;
     bool hasFingerprint = false;
     bool hasX = false;
     bool hasY = false;
     bool hasWidth = false;
     bool hasHeight = false;
+    bool hasPin = false;
 };
 
 struct JsonEntryCursor {
@@ -554,6 +560,10 @@ static bool ReadJsonEntryField(JsonEntryCursor& cursor,
         return ReadJsonEntryNumber(cursor, cursor.fields.hasHeight,
                                    cursor.fields.height);
     }
+    if (key == "pin") {
+        return ReadJsonEntryNumber(cursor, cursor.fields.hasPin,
+                                   cursor.fields.pin);
+    }
     return SkipJsonValue(cursor.text, cursor.index, 2);
 }
 
@@ -573,6 +583,9 @@ static bool BuildLayoutEntry(const JsonEntryFields& fields, LayoutEntry& entry) 
         !IsLayoutNumberInRange(fields.height)) {
         return false;
     }
+    if (fields.hasPin && fields.pin != 0.0 && fields.pin != 1.0) {
+        return false;
+    }
     const float left = static_cast<float>(fields.x);
     const float top = static_cast<float>(fields.y);
     const float width = static_cast<float>(fields.width);
@@ -585,6 +598,7 @@ static bool BuildLayoutEntry(const JsonEntryFields& fields, LayoutEntry& entry) 
     }
     entry.fingerprint = fields.fingerprint;
     entry.world = world;
+    entry.pinned = fields.hasPin && fields.pin == 1.0;
     return true;
 }
 

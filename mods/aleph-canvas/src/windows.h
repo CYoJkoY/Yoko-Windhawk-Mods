@@ -312,3 +312,19 @@ static void RememberLayoutEntry(const std::wstring& fingerprint,
     }
     context.layout.entries.push_back(LayoutEntry{fingerprint, world});
 }
+
+static void RememberLayoutPin(const std::wstring& fingerprint,
+                              const RectF& world, bool pinned) {
+    for (LayoutEntry& entry : context.layout.entries) {
+        if (entry.fingerprint == fingerprint) {
+            entry.world = world;
+            entry.pinned = pinned;
+            return;
+        }
+    }
+    if (context.layout.entries.size() >=
+        static_cast<size_t>(kMaxLayoutEntries)) {
+        return;
+    }
+    context.layout.entries.push_back(LayoutEntry{fingerprint, world, pinned});
+}
