@@ -484,6 +484,23 @@ class PublishModBranchesActionTests(unittest.TestCase):
         self.assertEqual(git(target, "branch", "--list", "mods/other"), "mods/other")
         self.assertNotIn("| `demo` |", summary)
 
+    def test_relative_bundle_directory_survives_the_scratch_checkout(self) -> None:
+        """The step changes directory, so a relative bundle dir must be pinned."""
+
+        upstream, target, _ = self.make_repositories("relative")
+        bundle_dir = self.make_bundles(
+            "relative", {"demo.wh.cpp": bundle_text("demo", "1.1.0", 1)}
+        )
+        runner = self.runner_temp("relative")
+        code, values, summary = run_script(
+            self.branches,
+            runner,
+            self.variables(bundle_dir, target, upstream, runner, BUNDLE_DIR="../bundles"),
+        )
+        self.assertEqual(code, 0, summary)
+        self.assertEqual(values.get("pushed"), "1")
+        self.assertEqual(git(target, "branch", "--list", "mods/demo"), "mods/demo")
+
     def test_reused_version_fails_before_pushing(self) -> None:
         upstream, target, _ = self.make_repositories("version")
         bundle_dir = self.make_bundles(
