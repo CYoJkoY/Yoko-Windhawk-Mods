@@ -115,6 +115,12 @@ jobs:
           elif [ "$EVENT_NAME" = "workflow_dispatch" ]; then
             echo "Manual run; every mod is built."
             extra=(--all)
+          elif [ "$EVENT_NAME" = "pull_request" ]; then
+            # A pull request publishes nothing, so every mod is compiled to
+            # prove the workflow change against the real bundles. Each mod
+            # still owns its own matrix leg.
+            echo "Pull request; every mod is compiled."
+            extra=(--all)
           elif [ -z "${BEFORE_SHA:-}" ] || [[ "$BEFORE_SHA" =~ ^0+$ ]] ||
             ! git cat-file -e "${BEFORE_SHA}^{commit}" 2>/dev/null; then
             echo "No usable base commit; every mod is built."

@@ -1068,6 +1068,13 @@ class ValidateModsWorkflowTests(unittest.TestCase):
         self.assertIn('read -r -a wanted <<< "$requested"', self.text)
         self.assertIn('extra=(--all --only "${wanted[@]}")', self.text)
 
+    def test_pull_request_compiles_every_mod_without_publishing(self) -> None:
+        select = "\n".join(job_block(self.path, "select"))
+        self.assertIn('elif [ "$EVENT_NAME" = "pull_request" ]; then', select)
+        build = "\n".join(job_block(self.path, "build"))
+        publish_step = build.split("- name: Publish mod branches and pull requests")[-1]
+        self.assertIn("github.event_name == 'push'", publish_step)
+
 
 class CompileModActionTests(unittest.TestCase):
     """The compile action owns one bundle and refuses another mod's bundle."""
