@@ -4,7 +4,7 @@
 // @name:zh-CN      Aleph - 无限窗口画布
 // @description     Arrange open windows across a pannable canvas with live DWM previews.
 // @description:zh-CN 在可平移画布上管理已打开的窗口，并显示 DWM 实时预览。
-// @version         1.2.0
+// @version         1.3.0
 // @author          CYoJkoY
 // @github          https://github.com/CYoJkoY
 // @license         MIT
@@ -36,6 +36,8 @@ Drag cards to arrange them without moving the real desktop windows.
 
 Card positions are saved in `%LOCALAPPDATA%\\Windhawk\\ModData\\aleph-canvas\\layout.json`.
 Canvas coordinates use physical pixels relative to the virtual desktop origin.
+Icon cards ask the shell for the largest available icon (256 px when the jumbo
+image list exists) and fall back to smaller lists, then to the window icon.
 Arranging cards never moves real application windows. Activating an
 other-desktop card asks the documented `IVirtualDesktopManager` interface to
 move that window onto the desktop that displays the canvas, then focuses it. A
