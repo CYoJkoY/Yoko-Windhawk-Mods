@@ -149,23 +149,8 @@ runs:
         # it also wraps transient failures that deserve a retry.
         policy_rejection='refusing to allow|protected branch hook declined|Permission to .* denied|Repository not found|Authentication failed'
 
-        # A remote reason goes into a Markdown table cell, so it must stay one
-        # line of printable ASCII. A backtick would open a code span and a pipe
-        # would split the row, so both become plain text.
-        one_line() {
-          local text
-          text="$(printf '%s\n' "$1" | tr -d '\r' | grep -m1 -v '^[[:space:]]*$' || true)"
-          printf '%s' "${text:-unknown error}" | tr '\n\t' '  ' \
-            | LC_ALL=C tr -cd '\40-\176' | cut -c1-300 \
-            | sed 's/[[:space:]]*$//; s/|/\\|/g; s/`/'"'"'/g'
-        }
-
-        # A workflow command reads its message as an escaped string: a literal
-        # `%` there starts an escape sequence, so the runner would swallow it.
-        # `one_line` already removed line breaks, so only `%` needs encoding.
-        command_text() {
-          printf '%s' "${1//%/%25}"
-        }
+        # shellcheck source=summary.sh
+        source "$GITHUB_ACTION_PATH/summary.sh"
 
         # Print the first line that names a policy rejection, and fail when the
         # push output holds none, so a transient failure still gets retried.
@@ -431,24 +416,8 @@ runs:
           changelog_text="Publish the latest build"
         fi
 
-        # A remote reason goes into a Markdown table cell, so it must stay one
-        # line of printable ASCII. A backtick would open a code span and a pipe
-        # would split the row, so both become plain text. `gh` writes a whole
-        # error report, so only the first non-empty line is kept.
-        one_line() {
-          local text
-          text="$(printf '%s\n' "$1" | tr -d '\r' | grep -m1 -v '^[[:space:]]*$' || true)"
-          printf '%s' "${text:-unknown error}" | tr '\n\t' '  ' \
-            | LC_ALL=C tr -cd '\40-\176' | cut -c1-300 \
-            | sed 's/[[:space:]]*$//; s/|/\\|/g; s/`/'"'"'/g'
-        }
-
-        # A workflow command reads its message as an escaped string: a literal
-        # `%` there starts an escape sequence, so the runner would swallow it.
-        # `one_line` already removed line breaks, so only `%` needs encoding.
-        command_text() {
-          printf '%s' "${1//%/%25}"
-        }
+        # shellcheck source=summary.sh
+        source "$GITHUB_ACTION_PATH/summary.sh"
 
         write_body() {
           local version="$1" kind="$2" body="$3"

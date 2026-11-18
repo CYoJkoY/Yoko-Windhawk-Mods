@@ -11,6 +11,7 @@ from pathlib import Path
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
+PUBLISH_ACTION = REPO_ROOT / ".github" / "actions" / "publish-mod-branches"
 
 
 def _bash() -> str:
@@ -75,6 +76,7 @@ def run_script_verbose(
 
     header = ["set -euo pipefail", f"GITHUB_OUTPUT='{output.as_posix()}'"]
     header.append(f"GITHUB_STEP_SUMMARY='{summary.as_posix()}'")
+    header.append(f"GITHUB_ACTION_PATH='{PUBLISH_ACTION.as_posix()}'")
     for key, value in variables.items():
         header.append(f"{key}='{value}'")
 
@@ -183,7 +185,7 @@ class PublishModBranchesActionTests(unittest.TestCase):
     def setUpClass(cls) -> None:
         cls._temp = tempfile.TemporaryDirectory()
         cls.root = Path(cls._temp.name)
-        action = REPO_ROOT / ".github" / "actions" / "publish-mod-branches" / "action.yml"
+        action = PUBLISH_ACTION / "action.yml"
         cls.branches = extract_run(action, "Publish mod branches")
         cls.pull_requests = extract_run(action, "Open or refresh upstream pull requests")
         cls.report = extract_run(action, "Report failures")
@@ -640,6 +642,17 @@ class PublishModBranchesActionTests(unittest.TestCase):
             line for line in proc.stdout.splitlines() if line.startswith("::error::")
         )
         self.assertIn("100%25", annotation)
+
+    def test_both_steps_share_the_summary_helpers(self) -> None:
+        """A second copy of one_line would drift from the first."""
+
+        for script in (self.branches, self.pull_requests):
+            self.assertIn('source "$GITHUB_ACTION_PATH/summary.sh"', script)
+            self.assertNotIn("one_line() {", script)
+            self.assertNotIn("command_text() {", script)
+        source = (PUBLISH_ACTION / "summary.sh").read_text(encoding="utf-8")
+        self.assertIn("one_line() {", source)
+        self.assertIn("command_text() {", source)
 
     def test_report_step_fails_after_a_branch_failure(self) -> None:
         code, _ = self.run_report(self.runner_temp("report-branch"), {"failed": "2"})
