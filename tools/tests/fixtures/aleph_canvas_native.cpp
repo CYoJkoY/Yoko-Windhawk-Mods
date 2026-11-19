@@ -6,6 +6,7 @@
 #include "mods/aleph-canvas/src/minimap.h"
 #include "mods/aleph-canvas/src/layout_store.h"
 #include "mods/aleph-canvas/src/settings.h"
+#include "mods/aleph-canvas/src/windows.h"
 
 #include <array>
 #include <iostream>
@@ -346,6 +347,41 @@ static void FingerprintLifetime() {
     SameRect(context.cards[static_cast<size_t>(survivorIndex)].world, survivorPosition);
 }
 
+static ScannedWindow SizedWindow(UINT_PTR handle, int size) {
+    ScannedWindow window = SampleWindow(handle);
+    window.framePx = RECT{0, 0, size, size};
+    return window;
+}
+
+static void ScanCandidateSelection() {
+    const ScannedWindow survivor = SizedWindow(0x100, 100);
+    InsertCard(ScannedWindow{survivor}, MakeRectF(0.0f, 0.0f, 100.0f, 100.0f));
+    std::vector<ScannedWindow> windows;
+    windows.push_back(survivor);
+    for (int index = 0; index < 64; ++index) {
+        windows.push_back(SizedWindow(static_cast<UINT_PTR>(0x200 + index),
+                                      640 - index));
+    }
+    SelectScanCandidates(windows);
+    Require(windows.size() == 64, "candidate selection kept too many windows");
+    Require(FindCardIndex(windows.front()) == 0,
+            "candidate selection dropped an existing card");
+    Require(windows[1].hwnd == reinterpret_cast<HWND>(0x200),
+            "candidate selection did not keep the largest new window");
+    const HWND smallestKept = reinterpret_cast<HWND>(0x200 + 62);
+    const HWND smallestRejected = reinterpret_cast<HWND>(0x200 + 63);
+    Require(std::any_of(windows.begin(), windows.end(),
+                        [&](const ScannedWindow& window) {
+                            return window.hwnd == smallestKept;
+                        }),
+            "candidate selection did not keep the expected smallest card");
+    Require(std::none_of(windows.begin(), windows.end(),
+                         [&](const ScannedWindow& window) {
+                             return window.hwnd == smallestRejected;
+                         }),
+            "candidate selection kept the least useful overflow window");
+}
+
 static void WindowIdentity() {
     const ScannedWindow original = SampleWindow(0x100);
     InsertCard(ScannedWindow{original}, MakeRectF(0.0f, 0.0f, 640.0f, 480.0f));
@@ -617,6 +653,7 @@ static constexpr NativeCase kCases[] = {
     {"json_finite", JsonFinite}, {"json_order", JsonOrder},
     {"json_roundtrip", JsonRoundtrip}, {"hotkey_suffix", HotkeySuffix},
     {"fingerprint_lifetime", FingerprintLifetime}, {"window_identity", WindowIdentity},
+    {"scan_candidate_selection", ScanCandidateSelection},
     {"header_chrome", HeaderChrome}, {"pinned_order", PinnedOrder},
     {"pinned_layout_sync", PinnedLayoutSync}, {"pin_persistence", PinPersistence},
     {"dismissed_cards", DismissedCards},

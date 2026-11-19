@@ -282,9 +282,7 @@ static std::vector<ScannedWindow> ScanWindows(IVirtualDesktopManager* manager) {
     CollectPass pass;
     pass.desktopManager = manager;
     EnumWindows(&CollectPass::Thunk, reinterpret_cast<LPARAM>(&pass));
-    if (pass.windows.size() > static_cast<size_t>(kMaxCards)) {
-        pass.windows.resize(static_cast<size_t>(kMaxCards));
-    }
+    SelectScanCandidates(pass.windows);
     AssignFingerprints(pass.windows);
     return std::move(pass.windows);
 }

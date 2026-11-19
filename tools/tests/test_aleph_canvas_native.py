@@ -159,6 +159,9 @@ class AlephCanvasNativeTests(unittest.TestCase):
     def test_destroyed_or_reused_window_does_not_match_old_card(self) -> None:
         self.run_case("window_identity")
 
+    def test_scan_limit_keeps_existing_and_largest_candidates(self) -> None:
+        self.run_case("scan_candidate_selection")
+
     def test_header_is_28_dip_with_close_and_pin_buttons(self) -> None:
         self.run_case("header_chrome")
 
