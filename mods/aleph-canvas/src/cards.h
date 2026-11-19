@@ -18,8 +18,6 @@
 
 #include "types.h"
 
-inline void SelectScanCandidates(std::vector<ScannedWindow>& windows);
-
 #include "windows.h"
 
 inline int VirtualScreenWidth() {
@@ -155,7 +153,7 @@ inline RectF InitialWorldFor(const ScannedWindow& window) {
     return FindFreeSpot(Vec2{static_cast<float>(window.framePx.right -
                                                window.framePx.left),
                              static_cast<float>(window.framePx.bottom -
-                                               window.framePx.top)});
+                                                window.framePx.top)});
 }
 
 inline void RemoveCardAt(size_t index) {
@@ -217,58 +215,6 @@ inline bool UpdateCardFromScan(size_t index, const ScannedWindow& window) {
     return changed;
 }
 
-inline float CardArea(const ScannedWindow& window) {
-    return static_cast<float>(window.framePx.right - window.framePx.left) *
-           static_cast<float>(window.framePx.bottom - window.framePx.top);
-}
-
-static bool MatchesExistingCard(const ScannedWindow& window) {
-    return std::any_of(context.cards.begin(), context.cards.end(),
-                       [&window](const Card& card) {
-                           return MatchesWindow(card, window);
-                       });
-}
-
-// Keep every window already represented on the canvas, then keep the largest
-// new windows before the hard card limit. Existing order preserves Z-order;
-// new candidates fall back to area and identity for deterministic selection.
-inline void SelectScanCandidates(std::vector<ScannedWindow>& windows) {
-    const size_t maximum = static_cast<size_t>(kMaxCards);
-    if (windows.size() <= maximum) {
-        return;
-    }
-    const auto existingEnd = std::stable_partition(
-        windows.begin(), windows.end(), MatchesExistingCard);
-    std::stable_sort(existingEnd, windows.end(),
-                     [](const ScannedWindow& left, const ScannedWindow& right) {
-                         const float leftArea = CardArea(left);
-                         const float rightArea = CardArea(right);
-                         if (leftArea != rightArea) {
-                             return leftArea > rightArea;
-                         }
-                         if (left.exePath != right.exePath) {
-                             return left.exePath < right.exePath;
-                         }
-                         if (left.windowClass != right.windowClass) {
-                             return left.windowClass < right.windowClass;
-                         }
-                         if (left.processId != right.processId) {
-                             return left.processId < right.processId;
-                         }
-                         return left.threadId < right.threadId;
-                     });
-    windows.resize(maximum);
-}
-
-// New cards are packed largest-first so wide windows claim the centre ring
-// before smaller dialogs fill the gaps.
-inline void SortForPacking(std::vector<ScannedWindow>& windows) {
-    std::stable_sort(windows.begin(), windows.end(),
-                     [](const ScannedWindow& left, const ScannedWindow& right) {
-                         return CardArea(left) > CardArea(right);
-                     });
-}
-
 // Merges one scan into the card vector. Existing cards keep their canvas
 // position and thumbnail. New cards take a saved position when the fingerprint
 // matches, otherwise they are packed largest-first so wide windows claim the
@@ -299,7 +245,10 @@ inline bool MergeScan(const std::vector<ScannedWindow>& scanned) {
     }
 
     if (!additions.empty()) {
-        SortForPacking(additions);
+        std::stable_sort(additions.begin(), additions.end(),
+                         [](const ScannedWindow& left, const ScannedWindow& right) {
+                             return CardArea(left) > CardArea(right);
+                         });
         const DWORD now = GetTickCount();
         for (const ScannedWindow& window : additions) {
             const LayoutEntry* saved = FindLayoutEntry(window.fingerprint);

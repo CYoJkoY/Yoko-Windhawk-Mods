@@ -2,6 +2,8 @@
 
 // Restores the 64-bit view after WOW64 file-system redirection.
 
+using Wow64PreviousRedirectionState = void*;
+
 class ScopedWow64RedirectionDisabled {
 public:
     ScopedWow64RedirectionDisabled()
@@ -22,5 +24,5 @@ public:
 
 private:
     bool valid_ = false;
-    void* previous_ = nullptr;
+    Wow64PreviousRedirectionState previous_ = nullptr;
 };

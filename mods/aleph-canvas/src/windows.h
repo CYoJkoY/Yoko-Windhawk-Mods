@@ -8,6 +8,8 @@
 #include "text_utils.h"
 #include "types.h"
 
+#include "cards_layout.h"
+
 static bool IsOwnProcessWindow(HWND window) {
     DWORD pid = 0;
     GetWindowThreadProcessId(window, &pid);
@@ -258,6 +260,44 @@ static bool FingerprintClaimed(const std::vector<ScannedWindow>& windows,
                        [&fingerprint](const ScannedWindow& window) {
                            return window.fingerprint == fingerprint;
                        });
+}
+
+static bool MatchesExistingCard(const ScannedWindow& window) {
+    return std::any_of(context.cards.begin(), context.cards.end(),
+                       [&window](const Card& card) {
+                           return MatchesWindow(card, window);
+                       });
+}
+
+// Keep every window already represented on the canvas, then keep the largest
+// new windows before the hard card limit. Existing order preserves Z-order;
+// new candidates fall back to area and identity for deterministic selection.
+inline void SelectScanCandidates(std::vector<ScannedWindow>& windows) {
+    const size_t maximum = static_cast<size_t>(kMaxCards);
+    if (windows.size() <= maximum) {
+        return;
+    }
+    const auto existingEnd = std::stable_partition(
+        windows.begin(), windows.end(), MatchesExistingCard);
+    std::stable_sort(existingEnd, windows.end(),
+                     [](const ScannedWindow& left, const ScannedWindow& right) {
+                         const float leftArea = CardArea(left);
+                         const float rightArea = CardArea(right);
+                         if (leftArea != rightArea) {
+                             return leftArea > rightArea;
+                         }
+                         if (left.exePath != right.exePath) {
+                             return left.exePath < right.exePath;
+                         }
+                         if (left.windowClass != right.windowClass) {
+                             return left.windowClass < right.windowClass;
+                         }
+                         if (left.processId != right.processId) {
+                             return left.processId < right.processId;
+                         }
+                         return left.threadId < right.threadId;
+                     });
+    windows.resize(maximum);
 }
 
 static bool HasEarlierFingerprintKey(const ScannedWindow& left,
