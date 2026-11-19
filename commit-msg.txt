@@ -1,0 +1,12 @@
+fix(publish): read the existing pull request via the REST endpoint
+
+`gh pr list --head` rejects the `<owner>:<branch>` form, so the lookup
+always returned nothing and every publish fell through to `gh pr create`,
+which then failed as a duplicate. Reading
+`repos/<repo>/pulls?head=<owner>:<branch>&state=open` accepts that exact
+form and stays scoped to the fork.
+
+The stub now answers `gh api` and makes `gh pr list` fail, so a test
+guards against the lookup reverting to the rejected form.
+
+Refs: #96
