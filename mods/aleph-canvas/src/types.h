@@ -179,7 +179,7 @@ inline bool MatchesWindow(const Card& card, const ScannedWindow& window) {
 }
 
 struct CanvasSettings {
-    std::wstring toggleHotkey = L"Ctrl+Alt+Q";
+    std::wstring toggleHotkey = L"Ctrl+Alt+F12";
     bool openOnStart = false;
     int animationMs = 140;
     int rescanIntervalMs = 400;
