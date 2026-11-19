@@ -23,7 +23,8 @@ Drag cards to arrange them without moving the real desktop windows.
 
 ## Controls
 
-- `Ctrl+Alt+F12`: toggle the canvas (configurable).
+- `Ctrl+Alt+F12`: toggle the canvas (configurable). If the hotkey does
+  nothing, another program may already use it; pick a different combination.
 - Mouse wheel: zoom around the pointer.
 - Middle mouse drag: pan the canvas.
 - Hold Space and drag empty canvas: pan.
@@ -42,8 +43,8 @@ image list exists) and fall back to smaller lists, then to the window icon.
 Arranging cards never moves real application windows. Activating an
 other-desktop card asks the documented `IVirtualDesktopManager` interface to
 move that window onto the desktop that displays the canvas, then focuses it. A
-window that refuses the move, such as one owned by an elevated process, is
-still brought to the foreground.
+window that refuses the move is reported in the Windhawk log; foreground
+activation then follows the normal rules for the current process.
 */
 // ==/WindhawkModReadme==
 
@@ -53,8 +54,8 @@ still brought to the foreground.
     - toggle_hotkey: Ctrl+Alt+F12
       $name: Toggle hotkey
       $name:zh-CN: 显示/隐藏快捷键
-      $description: Global hotkey used to show or hide the canvas. Use modifiers such as Ctrl, Alt, Shift, or Win plus one key. Avoid AltGr combinations.
-      $description:zh-CN: 用于显示或隐藏画布的全局快捷键。可组合 Ctrl、Alt、Shift 或 Win 与一个按键；避免使用 AltGr 组合。
+      $description: Global hotkey used to show or hide the canvas. Use modifiers such as Ctrl, Alt, Shift, or Win plus one key. Avoid AltGr combinations. If it does nothing, another program may already use the combination.
+      $description:zh-CN: 用于显示或隐藏画布的全局快捷键。可组合 Ctrl、Alt、Shift 或 Win 与一个按键；避免使用 AltGr 组合。若快捷键无效，可能是其他程序已占用该组合。
     - open_on_start: false
       $name: Open on startup
       $name:zh-CN: 启动时打开
@@ -686,6 +687,7 @@ struct LayoutEntry {
     std::wstring fingerprint;
     RectF world = {};
     bool pinned = false;
+    DWORD lastSeenTick = 0;
 };
 
 struct LayoutSnapshot {
@@ -1873,6 +1875,7 @@ static bool BuildLayoutEntry(const JsonEntryFields& fields, LayoutEntry& entry) 
     entry.fingerprint = fields.fingerprint;
     entry.world = world;
     entry.pinned = fields.hasPin && fields.pin == 1.0;
+    entry.lastSeenTick = 0;
     return true;
 }
 
@@ -2098,6 +2101,15 @@ static void FlushLayoutIfDue(DWORD now) {
 
 // Cross-version top-level window enumeration and filtering.
 
+
+
+// Shared geometry helpers for scan candidate selection and card packing.
+
+
+inline float CardArea(const ScannedWindow& window) {
+    return static_cast<float>(window.framePx.right - window.framePx.left) *
+           static_cast<float>(window.framePx.bottom - window.framePx.top);
+}
 
 static bool IsOwnProcessWindow(HWND window) {
     DWORD pid = 0;
@@ -2351,21 +2363,87 @@ static bool FingerprintClaimed(const std::vector<ScannedWindow>& windows,
                        });
 }
 
+static bool MatchesExistingCard(const ScannedWindow& window) {
+    return std::any_of(context.cards.begin(), context.cards.end(),
+                       [&window](const Card& card) {
+                           return MatchesWindow(card, window);
+                       });
+}
+
+// Keep every window already represented on the canvas, then keep the largest
+// new windows before the hard card limit. Existing order preserves Z-order;
+// new candidates fall back to area and identity for deterministic selection.
+inline void SelectScanCandidates(std::vector<ScannedWindow>& windows) {
+    const size_t maximum = static_cast<size_t>(kMaxCards);
+    if (windows.size() <= maximum) {
+        return;
+    }
+    const auto existingEnd = std::stable_partition(
+        windows.begin(), windows.end(), MatchesExistingCard);
+    std::stable_sort(existingEnd, windows.end(),
+                     [](const ScannedWindow& left, const ScannedWindow& right) {
+                         const float leftArea = CardArea(left);
+                         const float rightArea = CardArea(right);
+                         if (leftArea != rightArea) {
+                             return leftArea > rightArea;
+                         }
+                         if (left.exePath != right.exePath) {
+                             return left.exePath < right.exePath;
+                         }
+                         if (left.windowClass != right.windowClass) {
+                             return left.windowClass < right.windowClass;
+                         }
+                         if (left.processId != right.processId) {
+                             return left.processId < right.processId;
+                         }
+                         return left.threadId < right.threadId;
+                     });
+    windows.resize(maximum);
+}
+
+static bool HasEarlierFingerprintKey(const ScannedWindow& left,
+                                     const ScannedWindow& right) {
+    if (left.exePath != right.exePath) {
+        return left.exePath < right.exePath;
+    }
+    if (left.windowClass != right.windowClass) {
+        return left.windowClass < right.windowClass;
+    }
+    if (left.title != right.title) {
+        return left.title < right.title;
+    }
+    if (left.processId != right.processId) {
+        return left.processId < right.processId;
+    }
+    if (left.threadId != right.threadId) {
+        return left.threadId < right.threadId;
+    }
+    return left.hwnd < right.hwnd;
+}
+
 static void AssignFingerprints(std::vector<ScannedWindow>& windows) {
     for (ScannedWindow& window : windows) {
         window.fingerprint = ExistingFingerprint(window);
     }
+    std::vector<ScannedWindow*> newWindows;
+    newWindows.reserve(windows.size());
     for (ScannedWindow& window : windows) {
-        if (!window.fingerprint.empty()) {
-            continue;
+        if (window.fingerprint.empty()) {
+            newWindows.push_back(&window);
         }
+    }
+    std::sort(newWindows.begin(), newWindows.end(),
+              [](const ScannedWindow* left, const ScannedWindow* right) {
+                  return HasEarlierFingerprintKey(*left, *right);
+              });
+    for (ScannedWindow* window : newWindows) {
         const std::wstring base =
-            ExecutableName(window.exePath) + L"|" + window.windowClass + L"#";
+            ExecutableName(window->exePath) + L"|" + window->windowClass + L"#";
         unsigned int ordinal = 0;
         while (FingerprintClaimed(windows, base + std::to_wstring(ordinal))) {
             ++ordinal;
         }
-        window.fingerprint = base + std::to_wstring(ordinal);
+        window->fingerprint = base + std::to_wstring(ordinal);
     }
 }
 
@@ -2373,9 +2451,7 @@ static std::vector<ScannedWindow> ScanWindows(IVirtualDesktopManager* manager) {
     CollectPass pass;
     pass.desktopManager = manager;
     EnumWindows(&CollectPass::Thunk, reinterpret_cast<LPARAM>(&pass));
-    if (pass.windows.size() > static_cast<size_t>(kMaxCards)) {
-        pass.windows.resize(static_cast<size_t>(kMaxCards));
-    }
+    SelectScanCandidates(pass.windows);
     AssignFingerprints(pass.windows);
     return std::move(pass.windows);
 }
@@ -2389,19 +2465,12 @@ static const LayoutEntry* FindLayoutEntry(const std::wstring& fingerprint) {
     return nullptr;
 }
 
+static void RememberLayoutPin(const std::wstring& fingerprint,
+                              const RectF& world, bool pinned);
+
 static void RememberLayoutEntry(const std::wstring& fingerprint,
                                 const RectF& world) {
-    for (LayoutEntry& entry : context.layout.entries) {
-        if (entry.fingerprint == fingerprint) {
-            entry.world = world;
-            return;
-        }
-    }
-    if (context.layout.entries.size() >=
-        static_cast<size_t>(kMaxLayoutEntries)) {
-        return;
-    }
-    context.layout.entries.push_back(LayoutEntry{fingerprint, world});
+    RememberLayoutPin(fingerprint, world, false);
 }
 
 static void RememberLayoutPin(const std::wstring& fingerprint,
@@ -2410,14 +2479,28 @@ static void RememberLayoutPin(const std::wstring& fingerprint,
         if (entry.fingerprint == fingerprint) {
             entry.world = world;
             entry.pinned = pinned;
+            entry.lastSeenTick = GetTickCount();
             return;
         }
     }
     if (context.layout.entries.size() >=
         static_cast<size_t>(kMaxLayoutEntries)) {
+        const auto oldest = std::min_element(
+            context.layout.entries.begin(), context.layout.entries.end(),
+            [](const LayoutEntry& left, const LayoutEntry& right) {
+                if (left.pinned != right.pinned) {
+                    return right.pinned;
+                }
+                return left.lastSeenTick < right.lastSeenTick;
+            });
+        if (oldest == context.layout.entries.end()) {
+            return;
+        }
+        *oldest = LayoutEntry{fingerprint, world, pinned, GetTickCount()};
         return;
     }
-    context.layout.entries.push_back(LayoutEntry{fingerprint, world, pinned});
+    context.layout.entries.push_back(
+        LayoutEntry{fingerprint, world, pinned, GetTickCount()});
 }
 
 // Card creation, packing and snapping.
@@ -2428,6 +2511,8 @@ static void RememberLayoutPin(const std::wstring& fingerprint,
 // arrangement untouched and works for elevated windows the mod cannot move.
 // The one deliberate move lives in interaction.h: activating an other-desktop
 // card pulls that window onto the desktop that displays the canvas.
+
+
 
 
 inline int VirtualScreenWidth() {
@@ -2563,7 +2648,7 @@ inline RectF InitialWorldFor(const ScannedWindow& window) {
     return FindFreeSpot(Vec2{static_cast<float>(window.framePx.right -
                                                window.framePx.left),
                              static_cast<float>(window.framePx.bottom -
-                                               window.framePx.top)});
+                                                window.framePx.top)});
 }
 
 inline void RemoveCardAt(size_t index) {
@@ -2625,20 +2710,6 @@ inline bool UpdateCardFromScan(size_t index, const ScannedWindow& window) {
     return changed;
 }
 
-inline float CardArea(const ScannedWindow& window) {
-    return static_cast<float>(window.framePx.right - window.framePx.left) *
-           static_cast<float>(window.framePx.bottom - window.framePx.top);
-}
-
-// Fewer cards is the first limit to hit, so drop the least useful candidates
-// instead of truncating the Z-ordered list.
-inline void SortForPacking(std::vector<ScannedWindow>& windows) {
-    std::stable_sort(windows.begin(), windows.end(),
-                     [](const ScannedWindow& left, const ScannedWindow& right) {
-                         return CardArea(left) > CardArea(right);
-                     });
-}
-
 // Merges one scan into the card vector. Existing cards keep their canvas
 // position and thumbnail. New cards take a saved position when the fingerprint
 // matches, otherwise they are packed largest-first so wide windows claim the
@@ -2669,7 +2740,10 @@ inline bool MergeScan(const std::vector<ScannedWindow>& scanned) {
     }
 
     if (!additions.empty()) {
-        SortForPacking(additions);
+        std::stable_sort(additions.begin(), additions.end(),
+                         [](const ScannedWindow& left, const ScannedWindow& right) {
+                             return CardArea(left) > CardArea(right);
+                         });
         const DWORD now = GetTickCount();
         for (const ScannedWindow& window : additions) {
             const LayoutEntry* saved = FindLayoutEntry(window.fingerprint);
@@ -2764,6 +2838,33 @@ inline SnapResult ComputeSnap(const RectF& moving, int ignoreIndex) {
 
 // Direct2D, DirectWrite, WIC and shared GDI surfaces.
 
+
+// Restores the 64-bit view after WOW64 file-system redirection.
+
+using Wow64PreviousRedirectionState = void*;
+
+class ScopedWow64RedirectionDisabled {
+public:
+    ScopedWow64RedirectionDisabled()
+        : valid_(Wow64DisableWow64FsRedirection(&previous_) != FALSE) {
+    }
+
+    ~ScopedWow64RedirectionDisabled() {
+        if (valid_) {
+            Wow64RevertWow64FsRedirection(previous_);
+        }
+    }
+
+    ScopedWow64RedirectionDisabled(const ScopedWow64RedirectionDisabled&) = delete;
+    ScopedWow64RedirectionDisabled& operator=(
+        const ScopedWow64RedirectionDisabled&) = delete;
+
+    bool valid() const { return valid_; }
+
+private:
+    bool valid_ = false;
+    Wow64PreviousRedirectionState previous_ = nullptr;
+};
 
 // Icon source selection for icon cards.
 //
@@ -3082,9 +3183,15 @@ inline HICON QueryShellIcon(const std::wstring& exePath) {
         return nullptr;
     }
     SHFILEINFOW info = {};
-    if (SHGetFileInfoW(exePath.c_str(), 0, &info, sizeof(info),
-                       SHGFI_SYSICONINDEX) == 0) {
-        return nullptr;
+    {
+        ScopedWow64RedirectionDisabled disabled;
+        if (!disabled.valid()) {
+            return nullptr;
+        }
+        if (SHGetFileInfoW(exePath.c_str(), 0, &info, sizeof(info),
+                           SHGFI_SYSICONINDEX) == 0) {
+            return nullptr;
+        }
     }
     return QueryFirstAvailableIcon(
         kShellIconListSizes,
@@ -4485,6 +4592,12 @@ inline LRESULT CALLBACK CanvasWindowProc(HWND window, UINT message,
             return 0;
         case WM_KEYDOWN:
             HandleKeyDown(wParam);
+            return 0;
+        case WM_ACTIVATE:
+            if (LOWORD(wParam) == WA_INACTIVE && context.visible &&
+                !context.diving) {
+                HideCanvasWindows();
+            }
             return 0;
         case WM_DISPLAYCHANGE:
         case WM_DPICHANGED:
