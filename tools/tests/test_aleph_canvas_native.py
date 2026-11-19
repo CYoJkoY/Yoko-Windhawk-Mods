@@ -177,6 +177,9 @@ class AlephCanvasNativeTests(unittest.TestCase):
     def test_pin_flag_survives_serialization(self) -> None:
         self.run_case("pin_persistence")
 
+    def test_layout_cap_evicts_the_oldest_unpinned_entry(self) -> None:
+        self.run_case("layout_entry_eviction")
+
     def test_dismissed_window_stays_off_the_canvas(self) -> None:
         self.run_case("dismissed_cards")
 

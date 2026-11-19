@@ -521,6 +521,34 @@ static void PinPersistence() {
     Require(invalid.entries.empty(), "out-of-range pin accepted");
 }
 
+static void LayoutEntryEviction() {
+    context.layout = LayoutSnapshot{};
+    context.layout.entries.reserve(kMaxLayoutEntries);
+    for (int index = 0; index < kMaxLayoutEntries; ++index) {
+        const std::wstring fingerprint = L"old#" + std::to_wstring(index);
+        context.layout.entries.push_back(
+            LayoutEntry{fingerprint, MakeRectF(0.0f, 0.0f, 1.0f, 1.0f),
+                        false, static_cast<DWORD>(index)});
+    }
+    RememberLayoutEntry(L"refreshed", MakeRectF(2.0f, 0.0f, 1.0f, 1.0f));
+    Require(context.layout.entries.size() == kMaxLayoutEntries,
+            "layout cap was not enforced");
+    Require(FindLayoutEntry(L"refreshed") != nullptr,
+            "refreshed layout entry was not retained");
+    Require(FindLayoutEntry(L"old#0") == nullptr,
+            "oldest unpinned layout entry was not evicted");
+    RememberLayoutPin(L"new", MakeRectF(3.0f, 0.0f, 1.0f, 1.0f), true);
+    Require(context.layout.entries.size() == kMaxLayoutEntries,
+            "pinned eviction changed the layout cap");
+    Require(FindLayoutEntry(L"new") != nullptr,
+            "new pinned layout entry was not retained");
+    Require(FindLayoutEntry(L"old#1") == nullptr,
+            "oldest unpinned entry survived a pinned insert");
+    const std::string serialized = SerializeLayout(context.layout);
+    Require(serialized.find("\"version\":1") != std::string::npos,
+            "layout schema version changed");
+}
+
 static void DismissedCards() {
     ScannedWindow window = SampleWindow(0x600);
     window.fingerprint = L"dismissed#1";
@@ -668,6 +696,7 @@ static constexpr NativeCase kCases[] = {
     {"scan_candidate_selection", ScanCandidateSelection},
     {"header_chrome", HeaderChrome}, {"pinned_order", PinnedOrder},
     {"pinned_layout_sync", PinnedLayoutSync}, {"pin_persistence", PinPersistence},
+    {"layout_entry_eviction", LayoutEntryEviction},
     {"dismissed_cards", DismissedCards},
     {"desktop_pull_moves", DesktopPullMoves},
     {"desktop_pull_same", DesktopPullSame},

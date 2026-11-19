@@ -599,6 +599,7 @@ static bool BuildLayoutEntry(const JsonEntryFields& fields, LayoutEntry& entry) 
     entry.fingerprint = fields.fingerprint;
     entry.world = world;
     entry.pinned = fields.hasPin && fields.pin == 1.0;
+    entry.lastSeenTick = 0;
     return true;
 }
 

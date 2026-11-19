@@ -324,19 +324,12 @@ static const LayoutEntry* FindLayoutEntry(const std::wstring& fingerprint) {
     return nullptr;
 }
 
+static void RememberLayoutPin(const std::wstring& fingerprint,
+                              const RectF& world, bool pinned);
+
 static void RememberLayoutEntry(const std::wstring& fingerprint,
                                 const RectF& world) {
-    for (LayoutEntry& entry : context.layout.entries) {
-        if (entry.fingerprint == fingerprint) {
-            entry.world = world;
-            return;
-        }
-    }
-    if (context.layout.entries.size() >=
-        static_cast<size_t>(kMaxLayoutEntries)) {
-        return;
-    }
-    context.layout.entries.push_back(LayoutEntry{fingerprint, world});
+    RememberLayoutPin(fingerprint, world, false);
 }
 
 static void RememberLayoutPin(const std::wstring& fingerprint,
@@ -345,12 +338,26 @@ static void RememberLayoutPin(const std::wstring& fingerprint,
         if (entry.fingerprint == fingerprint) {
             entry.world = world;
             entry.pinned = pinned;
+            entry.lastSeenTick = GetTickCount();
             return;
         }
     }
     if (context.layout.entries.size() >=
         static_cast<size_t>(kMaxLayoutEntries)) {
+        const auto oldest = std::min_element(
+            context.layout.entries.begin(), context.layout.entries.end(),
+            [](const LayoutEntry& left, const LayoutEntry& right) {
+                if (left.pinned != right.pinned) {
+                    return right.pinned;
+                }
+                return left.lastSeenTick < right.lastSeenTick;
+            });
+        if (oldest == context.layout.entries.end()) {
+            return;
+        }
+        *oldest = LayoutEntry{fingerprint, world, pinned, GetTickCount()};
         return;
     }
-    context.layout.entries.push_back(LayoutEntry{fingerprint, world, pinned});
+    context.layout.entries.push_back(
+        LayoutEntry{fingerprint, world, pinned, GetTickCount()});
 }
