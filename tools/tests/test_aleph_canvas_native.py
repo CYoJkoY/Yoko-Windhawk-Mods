@@ -210,6 +210,9 @@ class AlephCanvasNativeTests(unittest.TestCase):
     def test_missing_shell_icon_reports_no_source(self) -> None:
         self.run_case("icon_source_missing")
 
+    def test_wow64_icon_lookup_guard_cannot_be_copied(self) -> None:
+        self.run_case("wow64_icon_lookup_guard")
+
 
 if __name__ == "__main__":
     unittest.main()

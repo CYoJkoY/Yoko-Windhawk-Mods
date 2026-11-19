@@ -5,12 +5,14 @@
 #include "mods/aleph-canvas/src/math_utils.h"
 #include "mods/aleph-canvas/src/minimap.h"
 #include "mods/aleph-canvas/src/layout_store.h"
+#include "mods/aleph-canvas/src/resources.h"
 #include "mods/aleph-canvas/src/settings.h"
 #include "mods/aleph-canvas/src/windows.h"
 
 #include <array>
 #include <iostream>
 #include <stdexcept>
+#include <type_traits>
 
 CanvasContext context;
 
@@ -678,6 +680,12 @@ static void IconSourceMissing() {
     Require(queries == 3, "the lookup skipped a candidate");
 }
 
+static void Wow64IconLookupGuard() {
+    ScopedWow64RedirectionDisabled disabled;
+    Require(!std::is_copy_constructible_v<ScopedWow64RedirectionDisabled>,
+            "WOW64 restore state must not be copied");
+}
+
 struct NativeCase {
     const char* name;
     void (*run)();
@@ -707,6 +715,7 @@ static constexpr NativeCase kCases[] = {
     {"icon_source_largest", IconSourceLargestWins},
     {"icon_source_fallback", IconSourceFallback},
     {"icon_source_missing", IconSourceMissing},
+    {"wow64_icon_lookup_guard", Wow64IconLookupGuard},
 };
 
 static int RunCase(const char* name) {
