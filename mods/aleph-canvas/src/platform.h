@@ -4,6 +4,7 @@
 
 #include <windows.h>
 #include <windowsx.h>
+#include <sddl.h>
 #include <windhawk_api.h>
 #include <windhawk_utils.h>
 #include <d2d1.h>

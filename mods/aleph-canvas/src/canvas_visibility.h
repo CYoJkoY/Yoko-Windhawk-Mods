@@ -32,8 +32,45 @@ inline void PlaceCanvasWindows() {
     context.scanRequested = true;
 }
 
+inline void CALLBACK OnWindowDestroyed(HWINEVENTHOOK, DWORD, HWND window,
+                                       LONG objectId, LONG childId, DWORD,
+                                       DWORD) {
+    if (objectId != OBJID_WINDOW || childId != CHILDID_SELF) {
+        return;
+    }
+    for (Card& card : context.cards) {
+        if (card.hwnd == window) {
+            card.destroyed = true;
+            card.thumbnail.reset();
+            context.scanRequested = true;
+            context.sceneDirty = true;
+        }
+    }
+}
+
+inline void InstallDestroyHook() {
+    if (context.destroyHook != nullptr) {
+        return;
+    }
+    context.destroyHook = SetWinEventHook(
+        EVENT_OBJECT_DESTROY, EVENT_OBJECT_DESTROY, nullptr, OnWindowDestroyed,
+        0, 0, WINEVENT_OUTOFCONTEXT | WINEVENT_SKIPOWNPROCESS);
+    if (context.destroyHook == nullptr) {
+        Wh_Log(L"Aleph: SetWinEventHook failed: %lu", GetLastError());
+    }
+}
+
+inline void UninstallDestroyHook() {
+    if (context.destroyHook == nullptr) {
+        return;
+    }
+    UnhookWinEvent(context.destroyHook);
+    context.destroyHook = nullptr;
+}
+
 inline void HideCanvasWindows() {
     context.visible = false;
+    UninstallDestroyHook();
     if (GetCapture() == context.hostWindow) {
         ReleaseCapture();
     }
@@ -78,6 +115,7 @@ inline void ShowCanvasWindows() {
     SetForegroundWindow(context.hostWindow);
     SetFocus(context.hostWindow);
     context.sceneDirty = true;
+    InstallDestroyHook();
 }
 
 inline void ToggleCanvas() {
