@@ -845,10 +845,6 @@ private:
 
 #include <windows.h>
 
-#include <cstddef>
-#include <cstdint>
-#include <utility>
-
 namespace yoko::win32 {
 
 inline constexpr float kMinimumDpiScale = 0.5f;
@@ -973,6 +969,20 @@ inline float DpiScaleForDpi(UINT dpi) {
     }
     return scale;
 }
+
+}  // namespace yoko::win32
+
+// PE entry-point lookup for mods that use the pasted tool-mod launcher.
+//
+// This file is inlined by tools/bundle.py, so it must stay self-contained and
+// must never include another repository header.
+
+#include <windows.h>
+
+#include <cstddef>
+#include <cstdint>
+
+namespace yoko::win32 {
 
 // Reads bytes from this process through the documented API instead of
 // dereferencing a pointer that may not be mapped.
