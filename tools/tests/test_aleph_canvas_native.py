@@ -156,8 +156,14 @@ class AlephCanvasNativeTests(unittest.TestCase):
     def test_duplicate_window_fingerprints_survive_close_and_reopen(self) -> None:
         self.run_case("fingerprint_lifetime")
 
+    def test_fingerprint_ordinals_do_not_depend_on_scan_order(self) -> None:
+        self.run_case("fingerprint_ordinals")
+
     def test_destroyed_or_reused_window_does_not_match_old_card(self) -> None:
         self.run_case("window_identity")
+
+    def test_scan_limit_keeps_existing_and_largest_candidates(self) -> None:
+        self.run_case("scan_candidate_selection")
 
     def test_header_is_28_dip_with_close_and_pin_buttons(self) -> None:
         self.run_case("header_chrome")
@@ -170,6 +176,9 @@ class AlephCanvasNativeTests(unittest.TestCase):
 
     def test_pin_flag_survives_serialization(self) -> None:
         self.run_case("pin_persistence")
+
+    def test_layout_cap_evicts_the_oldest_unpinned_entry(self) -> None:
+        self.run_case("layout_entry_eviction")
 
     def test_dismissed_window_stays_off_the_canvas(self) -> None:
         self.run_case("dismissed_cards")
@@ -200,6 +209,9 @@ class AlephCanvasNativeTests(unittest.TestCase):
 
     def test_missing_shell_icon_reports_no_source(self) -> None:
         self.run_case("icon_source_missing")
+
+    def test_wow64_icon_lookup_guard_cannot_be_copied(self) -> None:
+        self.run_case("wow64_icon_lookup_guard")
 
 
 if __name__ == "__main__":

@@ -87,6 +87,12 @@ inline LRESULT CALLBACK CanvasWindowProc(HWND window, UINT message,
         case WM_KEYDOWN:
             HandleKeyDown(wParam);
             return 0;
+        case WM_ACTIVATE:
+            if (LOWORD(wParam) == WA_INACTIVE && context.visible &&
+                !context.diving) {
+                HideCanvasWindows();
+            }
+            return 0;
         case WM_DISPLAYCHANGE:
         case WM_DPICHANGED:
             RefreshCanvasGeometry();

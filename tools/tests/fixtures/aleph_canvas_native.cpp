@@ -5,11 +5,14 @@
 #include "mods/aleph-canvas/src/math_utils.h"
 #include "mods/aleph-canvas/src/minimap.h"
 #include "mods/aleph-canvas/src/layout_store.h"
+#include "mods/aleph-canvas/src/resources.h"
 #include "mods/aleph-canvas/src/settings.h"
+#include "mods/aleph-canvas/src/windows.h"
 
 #include <array>
 #include <iostream>
 #include <stdexcept>
+#include <type_traits>
 
 CanvasContext context;
 
@@ -346,6 +349,52 @@ static void FingerprintLifetime() {
     SameRect(context.cards[static_cast<size_t>(survivorIndex)].world, survivorPosition);
 }
 
+static ScannedWindow SizedWindow(UINT_PTR handle, int size) {
+    ScannedWindow window = SampleWindow(handle);
+    window.framePx = RECT{0, 0, size, size};
+    return window;
+}
+
+static void ScanCandidateSelection() {
+    const ScannedWindow survivor = SizedWindow(0x100, 100);
+    InsertCard(ScannedWindow{survivor}, MakeRectF(0.0f, 0.0f, 100.0f, 100.0f));
+    std::vector<ScannedWindow> windows;
+    windows.push_back(survivor);
+    for (int index = 0; index < 64; ++index) {
+        windows.push_back(SizedWindow(static_cast<UINT_PTR>(0x200 + index),
+                                      640 - index));
+    }
+    SelectScanCandidates(windows);
+    Require(windows.size() == 64, "candidate selection kept too many windows");
+    Require(FindCardIndex(windows.front()) == 0,
+            "candidate selection dropped an existing card");
+    Require(windows[1].hwnd == reinterpret_cast<HWND>(0x200),
+            "candidate selection did not keep the largest new window");
+    const HWND smallestKept = reinterpret_cast<HWND>(0x200 + 62);
+    const HWND smallestRejected = reinterpret_cast<HWND>(0x200 + 63);
+    Require(std::any_of(windows.begin(), windows.end(),
+                        [&](const ScannedWindow& window) {
+                            return window.hwnd == smallestKept;
+                        }),
+            "candidate selection did not keep the expected smallest card");
+    Require(std::none_of(windows.begin(), windows.end(),
+                         [&](const ScannedWindow& window) {
+                             return window.hwnd == smallestRejected;
+                         }),
+            "candidate selection kept the least useful overflow window");
+}
+
+static void FingerprintOrdinalStability() {
+    std::vector<ScannedWindow> reversed{SampleWindow(0x200), SampleWindow(0x100)};
+    std::vector<ScannedWindow> ordered{SampleWindow(0x100), SampleWindow(0x200)};
+    AssignFingerprints(reversed);
+    AssignFingerprints(ordered);
+    Require(reversed[0].fingerprint == ordered[1].fingerprint,
+            "ordinal assignment depended on scan order");
+    Require(reversed[1].fingerprint == ordered[0].fingerprint,
+            "ordinal assignment was not stable");
+}
+
 static void WindowIdentity() {
     const ScannedWindow original = SampleWindow(0x100);
     InsertCard(ScannedWindow{original}, MakeRectF(0.0f, 0.0f, 640.0f, 480.0f));
@@ -472,6 +521,34 @@ static void PinPersistence() {
     const LayoutSnapshot invalid = ParseLayout(
         R"({"version":1,"entries":[{"key":"a","x":0,"y":0,"w":1,"h":1,"pin":2}]})");
     Require(invalid.entries.empty(), "out-of-range pin accepted");
+}
+
+static void LayoutEntryEviction() {
+    context.layout = LayoutSnapshot{};
+    context.layout.entries.reserve(kMaxLayoutEntries);
+    for (int index = 0; index < kMaxLayoutEntries; ++index) {
+        const std::wstring fingerprint = L"old#" + std::to_wstring(index);
+        context.layout.entries.push_back(
+            LayoutEntry{fingerprint, MakeRectF(0.0f, 0.0f, 1.0f, 1.0f),
+                        false, static_cast<DWORD>(index)});
+    }
+    RememberLayoutEntry(L"refreshed", MakeRectF(2.0f, 0.0f, 1.0f, 1.0f));
+    Require(context.layout.entries.size() == kMaxLayoutEntries,
+            "layout cap was not enforced");
+    Require(FindLayoutEntry(L"refreshed") != nullptr,
+            "refreshed layout entry was not retained");
+    Require(FindLayoutEntry(L"old#0") == nullptr,
+            "oldest unpinned layout entry was not evicted");
+    RememberLayoutPin(L"new", MakeRectF(3.0f, 0.0f, 1.0f, 1.0f), true);
+    Require(context.layout.entries.size() == kMaxLayoutEntries,
+            "pinned eviction changed the layout cap");
+    Require(FindLayoutEntry(L"new") != nullptr,
+            "new pinned layout entry was not retained");
+    Require(FindLayoutEntry(L"old#1") == nullptr,
+            "oldest unpinned entry survived a pinned insert");
+    const std::string serialized = SerializeLayout(context.layout);
+    Require(serialized.find("\"version\":1") != std::string::npos,
+            "layout schema version changed");
 }
 
 static void DismissedCards() {
@@ -603,6 +680,12 @@ static void IconSourceMissing() {
     Require(queries == 3, "the lookup skipped a candidate");
 }
 
+static void Wow64IconLookupGuard() {
+    ScopedWow64RedirectionDisabled disabled;
+    Require(!std::is_copy_constructible_v<ScopedWow64RedirectionDisabled>,
+            "WOW64 restore state must not be copied");
+}
+
 struct NativeCase {
     const char* name;
     void (*run)();
@@ -617,8 +700,11 @@ static constexpr NativeCase kCases[] = {
     {"json_finite", JsonFinite}, {"json_order", JsonOrder},
     {"json_roundtrip", JsonRoundtrip}, {"hotkey_suffix", HotkeySuffix},
     {"fingerprint_lifetime", FingerprintLifetime}, {"window_identity", WindowIdentity},
+    {"fingerprint_ordinals", FingerprintOrdinalStability},
+    {"scan_candidate_selection", ScanCandidateSelection},
     {"header_chrome", HeaderChrome}, {"pinned_order", PinnedOrder},
     {"pinned_layout_sync", PinnedLayoutSync}, {"pin_persistence", PinPersistence},
+    {"layout_entry_eviction", LayoutEntryEviction},
     {"dismissed_cards", DismissedCards},
     {"desktop_pull_moves", DesktopPullMoves},
     {"desktop_pull_same", DesktopPullSame},
@@ -629,6 +715,7 @@ static constexpr NativeCase kCases[] = {
     {"icon_source_largest", IconSourceLargestWins},
     {"icon_source_fallback", IconSourceFallback},
     {"icon_source_missing", IconSourceMissing},
+    {"wow64_icon_lookup_guard", Wow64IconLookupGuard},
 };
 
 static int RunCase(const char* name) {

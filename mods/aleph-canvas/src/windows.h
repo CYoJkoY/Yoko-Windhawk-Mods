@@ -8,6 +8,8 @@
 #include "text_utils.h"
 #include "types.h"
 
+#include "cards_layout.h"
+
 static bool IsOwnProcessWindow(HWND window) {
     DWORD pid = 0;
     GetWindowThreadProcessId(window, &pid);
@@ -260,21 +262,87 @@ static bool FingerprintClaimed(const std::vector<ScannedWindow>& windows,
                        });
 }
 
+static bool MatchesExistingCard(const ScannedWindow& window) {
+    return std::any_of(context.cards.begin(), context.cards.end(),
+                       [&window](const Card& card) {
+                           return MatchesWindow(card, window);
+                       });
+}
+
+// Keep every window already represented on the canvas, then keep the largest
+// new windows before the hard card limit. Existing order preserves Z-order;
+// new candidates fall back to area and identity for deterministic selection.
+inline void SelectScanCandidates(std::vector<ScannedWindow>& windows) {
+    const size_t maximum = static_cast<size_t>(kMaxCards);
+    if (windows.size() <= maximum) {
+        return;
+    }
+    const auto existingEnd = std::stable_partition(
+        windows.begin(), windows.end(), MatchesExistingCard);
+    std::stable_sort(existingEnd, windows.end(),
+                     [](const ScannedWindow& left, const ScannedWindow& right) {
+                         const float leftArea = CardArea(left);
+                         const float rightArea = CardArea(right);
+                         if (leftArea != rightArea) {
+                             return leftArea > rightArea;
+                         }
+                         if (left.exePath != right.exePath) {
+                             return left.exePath < right.exePath;
+                         }
+                         if (left.windowClass != right.windowClass) {
+                             return left.windowClass < right.windowClass;
+                         }
+                         if (left.processId != right.processId) {
+                             return left.processId < right.processId;
+                         }
+                         return left.threadId < right.threadId;
+                     });
+    windows.resize(maximum);
+}
+
+static bool HasEarlierFingerprintKey(const ScannedWindow& left,
+                                     const ScannedWindow& right) {
+    if (left.exePath != right.exePath) {
+        return left.exePath < right.exePath;
+    }
+    if (left.windowClass != right.windowClass) {
+        return left.windowClass < right.windowClass;
+    }
+    if (left.title != right.title) {
+        return left.title < right.title;
+    }
+    if (left.processId != right.processId) {
+        return left.processId < right.processId;
+    }
+    if (left.threadId != right.threadId) {
+        return left.threadId < right.threadId;
+    }
+    return left.hwnd < right.hwnd;
+}
+
 static void AssignFingerprints(std::vector<ScannedWindow>& windows) {
     for (ScannedWindow& window : windows) {
         window.fingerprint = ExistingFingerprint(window);
     }
+    std::vector<ScannedWindow*> newWindows;
+    newWindows.reserve(windows.size());
     for (ScannedWindow& window : windows) {
-        if (!window.fingerprint.empty()) {
-            continue;
+        if (window.fingerprint.empty()) {
+            newWindows.push_back(&window);
         }
+    }
+    std::sort(newWindows.begin(), newWindows.end(),
+              [](const ScannedWindow* left, const ScannedWindow* right) {
+                  return HasEarlierFingerprintKey(*left, *right);
+              });
+    for (ScannedWindow* window : newWindows) {
         const std::wstring base =
-            ExecutableName(window.exePath) + L"|" + window.windowClass + L"#";
+            ExecutableName(window->exePath) + L"|" + window->windowClass + L"#";
         unsigned int ordinal = 0;
         while (FingerprintClaimed(windows, base + std::to_wstring(ordinal))) {
             ++ordinal;
         }
-        window.fingerprint = base + std::to_wstring(ordinal);
+        window->fingerprint = base + std::to_wstring(ordinal);
     }
 }
 
@@ -282,9 +350,7 @@ static std::vector<ScannedWindow> ScanWindows(IVirtualDesktopManager* manager) {
     CollectPass pass;
     pass.desktopManager = manager;
     EnumWindows(&CollectPass::Thunk, reinterpret_cast<LPARAM>(&pass));
-    if (pass.windows.size() > static_cast<size_t>(kMaxCards)) {
-        pass.windows.resize(static_cast<size_t>(kMaxCards));
-    }
+    SelectScanCandidates(pass.windows);
     AssignFingerprints(pass.windows);
     return std::move(pass.windows);
 }
@@ -298,19 +364,12 @@ static const LayoutEntry* FindLayoutEntry(const std::wstring& fingerprint) {
     return nullptr;
 }
 
+static void RememberLayoutPin(const std::wstring& fingerprint,
+                              const RectF& world, bool pinned);
+
 static void RememberLayoutEntry(const std::wstring& fingerprint,
                                 const RectF& world) {
-    for (LayoutEntry& entry : context.layout.entries) {
-        if (entry.fingerprint == fingerprint) {
-            entry.world = world;
-            return;
-        }
-    }
-    if (context.layout.entries.size() >=
-        static_cast<size_t>(kMaxLayoutEntries)) {
-        return;
-    }
-    context.layout.entries.push_back(LayoutEntry{fingerprint, world});
+    RememberLayoutPin(fingerprint, world, false);
 }
 
 static void RememberLayoutPin(const std::wstring& fingerprint,
@@ -319,12 +378,26 @@ static void RememberLayoutPin(const std::wstring& fingerprint,
         if (entry.fingerprint == fingerprint) {
             entry.world = world;
             entry.pinned = pinned;
+            entry.lastSeenTick = GetTickCount();
             return;
         }
     }
     if (context.layout.entries.size() >=
         static_cast<size_t>(kMaxLayoutEntries)) {
+        const auto oldest = std::min_element(
+            context.layout.entries.begin(), context.layout.entries.end(),
+            [](const LayoutEntry& left, const LayoutEntry& right) {
+                if (left.pinned != right.pinned) {
+                    return right.pinned;
+                }
+                return left.lastSeenTick < right.lastSeenTick;
+            });
+        if (oldest == context.layout.entries.end()) {
+            return;
+        }
+        *oldest = LayoutEntry{fingerprint, world, pinned, GetTickCount()};
         return;
     }
-    context.layout.entries.push_back(LayoutEntry{fingerprint, world, pinned});
+    context.layout.entries.push_back(
+        LayoutEntry{fingerprint, world, pinned, GetTickCount()});
 }

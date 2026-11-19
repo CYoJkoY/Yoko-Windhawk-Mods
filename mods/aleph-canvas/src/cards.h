@@ -15,7 +15,9 @@
 #include "layout_store.h"
 #include "math_utils.h"
 #include "text_utils.h"
+
 #include "types.h"
+
 #include "windows.h"
 
 inline int VirtualScreenWidth() {
@@ -151,7 +153,7 @@ inline RectF InitialWorldFor(const ScannedWindow& window) {
     return FindFreeSpot(Vec2{static_cast<float>(window.framePx.right -
                                                window.framePx.left),
                              static_cast<float>(window.framePx.bottom -
-                                               window.framePx.top)});
+                                                window.framePx.top)});
 }
 
 inline void RemoveCardAt(size_t index) {
@@ -213,20 +215,6 @@ inline bool UpdateCardFromScan(size_t index, const ScannedWindow& window) {
     return changed;
 }
 
-inline float CardArea(const ScannedWindow& window) {
-    return static_cast<float>(window.framePx.right - window.framePx.left) *
-           static_cast<float>(window.framePx.bottom - window.framePx.top);
-}
-
-// Fewer cards is the first limit to hit, so drop the least useful candidates
-// instead of truncating the Z-ordered list.
-inline void SortForPacking(std::vector<ScannedWindow>& windows) {
-    std::stable_sort(windows.begin(), windows.end(),
-                     [](const ScannedWindow& left, const ScannedWindow& right) {
-                         return CardArea(left) > CardArea(right);
-                     });
-}
-
 // Merges one scan into the card vector. Existing cards keep their canvas
 // position and thumbnail. New cards take a saved position when the fingerprint
 // matches, otherwise they are packed largest-first so wide windows claim the
@@ -257,7 +245,10 @@ inline bool MergeScan(const std::vector<ScannedWindow>& scanned) {
     }
 
     if (!additions.empty()) {
-        SortForPacking(additions);
+        std::stable_sort(additions.begin(), additions.end(),
+                         [](const ScannedWindow& left, const ScannedWindow& right) {
+                             return CardArea(left) > CardArea(right);
+                         });
         const DWORD now = GetTickCount();
         for (const ScannedWindow& window : additions) {
             const LayoutEntry* saved = FindLayoutEntry(window.fingerprint);
