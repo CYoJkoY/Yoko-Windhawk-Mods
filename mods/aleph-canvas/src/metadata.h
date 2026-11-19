@@ -4,13 +4,12 @@
 // @name:zh-CN      Aleph - 无限窗口画布
 // @description     Arrange open windows across a pannable canvas with live DWM previews.
 // @description:zh-CN 在可平移画布上管理已打开的窗口，并显示 DWM 实时预览。
-// @version         1.3.1
+// @version         1.4.0
 // @author          CYoJkoY
 // @github          https://github.com/CYoJkoY
 // @license         MIT
 // @include         windhawk.exe
 // @include         windhawk-mod.exe
-// @include         windhawk-mod-uiaccess.exe
 // @compilerOptions -ladvapi32 -ld2d1 -ldwmapi -ldwrite -lgdi32 -lole32 -lshell32 -lshcore -luuid -lwindowscodecs
 // ==/WindhawkMod==
 
@@ -24,7 +23,7 @@ Drag cards to arrange them without moving the real desktop windows.
 
 ## Controls
 
-- `Ctrl+Alt+Q`: toggle the canvas (configurable).
+- `Ctrl+Alt+F12`: toggle the canvas (configurable).
 - Mouse wheel: zoom around the pointer.
 - Middle mouse drag: pan the canvas.
 - Hold Space and drag empty canvas: pan.
@@ -35,7 +34,8 @@ Drag cards to arrange them without moving the real desktop windows.
 
 ## Notes
 
-Card positions are saved in `%LOCALAPPDATA%\\Windhawk\\ModData\\aleph-canvas\\layout.json`.
+Card positions are saved in the Windhawk mod storage directory as
+`layout-<user-SID>.json`.
 Canvas coordinates use physical pixels relative to the virtual desktop origin.
 Icon cards ask the shell for the largest available icon (256 px when the jumbo
 image list exists) and fall back to smaller lists, then to the window icon.
@@ -50,12 +50,12 @@ still brought to the foreground.
 // ==WindhawkModSettings==
 /*
 - Behavior:
-    - toggle_hotkey: Ctrl+Alt+Q
+    - toggle_hotkey: Ctrl+Alt+F12
       $name: Toggle hotkey
       $name:zh-CN: 显示/隐藏快捷键
-      $description: Global hotkey used to show or hide the canvas. Use modifiers such as Ctrl, Alt, Shift, or Win plus one key.
-      $description:zh-CN: 用于显示或隐藏画布的全局快捷键。可组合 Ctrl、Alt、Shift 或 Win 与一个按键。
-    - open_on_start: 0
+      $description: Global hotkey used to show or hide the canvas. Use modifiers such as Ctrl, Alt, Shift, or Win plus one key. Avoid AltGr combinations.
+      $description:zh-CN: 用于显示或隐藏画布的全局快捷键。可组合 Ctrl、Alt、Shift 或 Win 与一个按键；避免使用 AltGr 组合。
+    - open_on_start: false
       $name: Open on startup
       $name:zh-CN: 启动时打开
       $description: Open the canvas when its Windhawk tool process starts.
@@ -74,7 +74,7 @@ still brought to the foreground.
   $name:zh-CN: 行为
 
 - Canvas:
-    - show_grid: 1
+    - show_grid: true
       $name: Show grid
       $name:zh-CN: 显示网格
       $description: Draw a coordinate grid behind window cards.
@@ -94,12 +94,12 @@ still brought to the foreground.
       $name:zh-CN: 磁吸距离
       $description: Screen-pixel distance for aligning card edges and centers. Range 0-48.
       $description:zh-CN: 卡片边缘和中心轴触发对齐的屏幕像素距离。范围 0-48。
-    - include_other_desktops: 1
+    - include_other_desktops: true
       $name: Include other virtual desktops
       $name:zh-CN: 包含其他虚拟桌面
       $description: Show eligible windows cloaked on another virtual desktop as icon cards.
       $description:zh-CN: 将其他虚拟桌面上符合条件的隐藏窗口显示为图标卡片。
-    - save_layout: 1
+    - save_layout: true
       $name: Save card positions
       $name:zh-CN: 保存卡片位置
       $description: Persist card positions between runs.
@@ -129,7 +129,7 @@ still brought to the foreground.
       $name:zh-CN: 最大缩放
       $description: Maximum canvas zoom percentage. Range 20-250 and at least five points above the minimum.
       $description:zh-CN: 画布最大缩放百分比。范围 20-250，且至少比最小值高 5。
-    - minimap_enabled: 1
+    - minimap_enabled: true
       $name: Show minimap
       $name:zh-CN: 显示小地图
       $description: Show the interactive overview map in the lower-right corner.

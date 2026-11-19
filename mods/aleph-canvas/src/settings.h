@@ -165,7 +165,7 @@ static void LoadSettings() {
     settings.toggleHotkey =
         hotkeyText != nullptr && *hotkeyText != L'\0'
             ? TrimText(hotkeyText)
-            : L"Ctrl+Alt+Q";
+            : L"Ctrl+Alt+F12";
 
     settings.openOnStart =
         yoko::GetClampedIntSetting(L"Behavior.open_on_start", 0, 1) != 0;
@@ -224,18 +224,54 @@ static void LoadSettings() {
 }
 
 static std::wstring LayoutDirectory() {
-    WCHAR localAppData[MAX_PATH] = {};
-    const DWORD length =
-        GetEnvironmentVariableW(L"LOCALAPPDATA", localAppData, MAX_PATH);
-    if (length == 0 || length >= MAX_PATH) {
+    WCHAR path[MAX_PATH] = {};
+    const size_t length = Wh_GetModStoragePath(path, ARRAYSIZE(path));
+    if (length == 0) {
         return std::wstring();
     }
-    return std::wstring(localAppData) +
-           L"\\Windhawk\\ModData\\aleph-canvas";
+    return std::wstring(path, length);
+}
+
+static bool CurrentUserSid(std::wstring& sid) {
+    HANDLE tokenHandle = nullptr;
+    if (!OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &tokenHandle)) {
+        return false;
+    }
+    yoko::win32::UniqueHandle token(tokenHandle);
+    DWORD length = 0;
+    const bool queryFailed = !GetTokenInformation(token.get(), TokenUser,
+                                                  nullptr, 0, &length);
+    if (queryFailed && GetLastError() != ERROR_INSUFFICIENT_BUFFER) {
+        return false;
+    }
+    std::vector<BYTE> tokenData(length);
+    if (!GetTokenInformation(token.get(), TokenUser, tokenData.data(), length,
+                             &length)) {
+        return false;
+    }
+    const auto* user = reinterpret_cast<const TOKEN_USER*>(tokenData.data());
+    LPWSTR sidText = nullptr;
+    if (!ConvertSidToStringSidW(user->User.Sid, &sidText)) {
+        return false;
+    }
+    sid = sidText;
+    LocalFree(sidText);
+    return true;
+}
+
+static std::wstring LayoutFileName() {
+    std::wstring sid;
+    if (!CurrentUserSid(sid)) {
+        Wh_Log(L"Aleph: cannot resolve the current user SID");
+        return L"layout.json";
+    }
+    return L"layout-" + sid + L".json";
 }
 
 static std::wstring LayoutFilePath() {
     const std::wstring directory = LayoutDirectory();
-    return directory.empty() ? std::wstring()
-                             : directory + L"\\layout.json";
+    if (directory.empty()) {
+        return std::wstring();
+    }
+    return directory + L"\\" + LayoutFileName();
 }
