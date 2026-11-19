@@ -30,7 +30,8 @@ no shell icon resolves.
 After a restart, indistinguishable windows reuse available saved slots; the
 mod cannot identify which document belongs to which identical window class.
 Visible idle canvases rescan windows at the configured interval; they do not
-redraw continuously. Hidden canvases wait for events and pending layout saves.
+redraw continuously. The canvas also hides when another window takes input
+focus. Hidden canvases wait for events and pending layout saves.
 
 ## Card controls
 
