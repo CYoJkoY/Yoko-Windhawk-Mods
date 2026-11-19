@@ -31,3 +31,4 @@
 #include "../../../shared/windhawk_utils.h"
 #include "../../../shared/pattern_scan.h"
 #include "../../../shared/win32_helpers.h"
+#include "../../../shared/pe_entry_point.h"
