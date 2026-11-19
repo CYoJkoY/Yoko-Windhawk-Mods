@@ -23,7 +23,8 @@ Drag cards to arrange them without moving the real desktop windows.
 
 ## Controls
 
-- `Ctrl+Alt+F12`: toggle the canvas (configurable).
+- `Ctrl+Alt+F12`: toggle the canvas (configurable). If the hotkey does
+  nothing, another program may already use it; pick a different combination.
 - Mouse wheel: zoom around the pointer.
 - Middle mouse drag: pan the canvas.
 - Hold Space and drag empty canvas: pan.
@@ -42,8 +43,8 @@ image list exists) and fall back to smaller lists, then to the window icon.
 Arranging cards never moves real application windows. Activating an
 other-desktop card asks the documented `IVirtualDesktopManager` interface to
 move that window onto the desktop that displays the canvas, then focuses it. A
-window that refuses the move, such as one owned by an elevated process, is
-still brought to the foreground.
+window that refuses the move is reported in the Windhawk log; foreground
+activation then follows the normal rules for the current process.
 */
 // ==/WindhawkModReadme==
 
@@ -53,8 +54,8 @@ still brought to the foreground.
     - toggle_hotkey: Ctrl+Alt+F12
       $name: Toggle hotkey
       $name:zh-CN: 显示/隐藏快捷键
-      $description: Global hotkey used to show or hide the canvas. Use modifiers such as Ctrl, Alt, Shift, or Win plus one key. Avoid AltGr combinations.
-      $description:zh-CN: 用于显示或隐藏画布的全局快捷键。可组合 Ctrl、Alt、Shift 或 Win 与一个按键；避免使用 AltGr 组合。
+      $description: Global hotkey used to show or hide the canvas. Use modifiers such as Ctrl, Alt, Shift, or Win plus one key. Avoid AltGr combinations. If it does nothing, another program may already use the combination.
+      $description:zh-CN: 用于显示或隐藏画布的全局快捷键。可组合 Ctrl、Alt、Shift 或 Win 与一个按键；避免使用 AltGr 组合。若快捷键无效，可能是其他程序已占用该组合。
     - open_on_start: false
       $name: Open on startup
       $name:zh-CN: 启动时打开

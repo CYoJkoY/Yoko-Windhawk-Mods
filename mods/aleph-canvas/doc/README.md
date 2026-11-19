@@ -6,10 +6,6 @@ a transparent layered HUD for card chrome, labels, status badges, guides, and
 the minimap. No Explorer implementation details or private virtual-desktop
 interfaces are used.
 
-The process carries UIAccess, because activating a window the canvas selected
-means setting the foreground window, which a normal process may not do to a
-window owned by a higher integrity level.
-
 ## Coordinate and window policy
 
 Canvas coordinates are physical pixels relative to the virtual-screen origin.
@@ -23,8 +19,9 @@ The public `IVirtualDesktopManager` interface both identifies windows on other
 desktops and moves them. Activating an other-desktop card therefore asks
 `MoveWindowToDesktop` for the desktop that `GetWindowDesktopId` reports for the
 canvas host window, which is the desktop showing the canvas the user just
-clicked. A window that already sits there is never moved, and a refused request
-still ends in foreground activation, which is what elevated windows require.
+clicked. A window that already sits there is never moved. A refused request is
+reported in the Windhawk log; foreground activation then follows the normal
+rules for the current process and may still fail for a higher-integrity target.
 
 Duplicate windows keep their assigned executable/class slots while alive.
 Icon cards draw the largest icon the shell offers - the 256 px jumbo image list
