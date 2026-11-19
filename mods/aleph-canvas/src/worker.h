@@ -171,21 +171,6 @@ inline bool RegisterCanvasHotkey() {
     return true;
 }
 
-inline void CALLBACK OnWindowDestroyed(HWINEVENTHOOK, DWORD, HWND window,
-                                       LONG objectId, LONG childId, DWORD, DWORD) {
-    if (objectId != OBJID_WINDOW || childId != CHILDID_SELF) {
-        return;
-    }
-    for (Card& card : context.cards) {
-        if (card.hwnd == window) {
-            card.destroyed = true;
-            card.thumbnail.reset();
-            context.scanRequested = true;
-            context.sceneDirty = true;
-        }
-    }
-}
-
 inline void ScanAndMerge(IVirtualDesktopManager* desktopManager, DWORD now) {
     if (!context.visible || context.diving ||
         (!context.scanRequested && now - context.lastRescanTick <
@@ -238,10 +223,6 @@ inline void ProcessCanvasMessage(const MSG& message) {
 }
 
 inline void CleanupCanvas(HINSTANCE instance) {
-    if (context.destroyHook != nullptr) {
-        UnhookWinEvent(context.destroyHook);
-        context.destroyHook = nullptr;
-    }
     UnregisterHotKey(nullptr, context.hotkeyId);
     context.hotkeyRegistered = false;
     HideCanvasWindows();
@@ -350,19 +331,7 @@ inline DWORD WINAPI CanvasWorkerThread(LPVOID) {
         return 1;
     }
     if (!RegisterCanvasHotkey()) {
-        CleanupCanvas(instance);
-        CoUninitialize();
-        if (previousDpi != nullptr) SetThreadDpiAwarenessContext(previousDpi);
-        return 1;
-    }
-    context.destroyHook = SetWinEventHook(
-        EVENT_OBJECT_DESTROY, EVENT_OBJECT_DESTROY, nullptr, OnWindowDestroyed,
-        0, 0, WINEVENT_OUTOFCONTEXT | WINEVENT_SKIPOWNPROCESS);
-    if (context.destroyHook == nullptr) {
-        CleanupCanvas(instance);
-        CoUninitialize();
-        if (previousDpi != nullptr) SetThreadDpiAwarenessContext(previousDpi);
-        return 1;
+        Wh_Log(L"Aleph: the toggle hotkey is unavailable");
     }
     IVirtualDesktopManager* desktopManager = nullptr;
     CoCreateInstance(CLSID_VirtualDesktopManager, nullptr, CLSCTX_INPROC_SERVER,
