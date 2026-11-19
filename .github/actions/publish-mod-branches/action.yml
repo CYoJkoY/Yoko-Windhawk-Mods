@@ -597,6 +597,17 @@ runs:
           [[ "$1" =~ $permission_denial ]]
         }
 
+        # `gh pr list --head` documents the `<owner>:<branch>` form as
+        # unsupported, so an existing request is read from the REST endpoint,
+        # which takes that exact form and stays scoped to the fork. Only an
+        # open request blocks a new one: GitHub accepts a fresh pull request
+        # for a branch whose previous request was closed or merged, and
+        # reopening a declined one is the maintainer's call, not ours.
+        open_pull_request_number() {
+          gh api "repos/${upstream_repo}/pulls?head=$1&state=open" \
+            --jq '.[0].number // ""'
+        }
+
         {
           echo ""
           echo "### Upstream pull requests"
@@ -613,11 +624,7 @@ runs:
           title="$(pr_title "$id" "$kind" "${version:-0}")"
           body="$workspace/pr-body.${id}.md"
           write_body "${version:-0}" "$kind" "$body"
-          # Only an open request blocks a new one: GitHub accepts a fresh pull
-          # request for a branch whose previous request was closed or merged,
-          # and reopening a declined one is the maintainer's call, not ours.
-          number="$(gh pr list --repo "$upstream_repo" --head "$head" --state open \
-            --json number --jq '.[0].number // ""')"
+          number="$(open_pull_request_number "$head")"
 
           if [ -n "$number" ]; then
             if edit_error="$(gh pr edit "$number" --repo "$upstream_repo" \
@@ -670,8 +677,7 @@ runs:
 
           while IFS=$'\t' read -r id branch; do
             head="${owner}:${branch}"
-            number="$(gh pr list --repo "$upstream_repo" --head "$head" --state open \
-              --json number --jq '.[0].number // ""')"
+            number="$(open_pull_request_number "$head")"
             if [ -z "$number" ]; then
               echo "| \`$id\` | \`$head\` | no open pull request |" >> "$GITHUB_STEP_SUMMARY"
               continue

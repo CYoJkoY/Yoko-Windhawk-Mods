@@ -144,7 +144,7 @@ def make_gh_stub(
     create_failure: str = "",
     close_failure: str = "",
 ) -> tuple[Path, dict[str, str]]:
-    """Fake `gh` that records calls and answers pr list/create/edit/close.
+    """Fake `gh` that records calls and answers the pull request lookup.
 
     `edit_failure` makes `pr edit` fail with that message on stderr,
     `create_failure` does the same for `pr create`, and `close_failure` for
@@ -158,8 +158,11 @@ def make_gh_stub(
             [
                 "#!/usr/bin/env bash",
                 'printf \'%s\\n\' "$*" >> "$GH_LOG"',
-                'if [ "$1" = "pr" ] && [ "$2" = "list" ]; then',
+                'if [ "$1" = "api" ]; then',
                 f'  printf \'%s\' "{existing}"',
+                'elif [ "$1" = "pr" ] && [ "$2" = "list" ]; then',
+                '  echo "pr list --head rejects the owner:branch form" >&2',
+                "  exit 1",
                 'elif [ "$1" = "pr" ] && [ "$2" = "create" ]; then',
                 f'  if [ -n "{create_failure}" ]; then',
                 f'    printf \'%s\\n\' "{create_failure}" >&2',
@@ -1051,8 +1054,14 @@ class PublishModBranchesActionTests(unittest.TestCase):
             "pr-new", runner, variables, values["status-file"]
         )
         self.assertEqual(code, 0, summary)
-        self.assertIn("pr list --repo ramensoftware/windhawk-mods --head CYoJkoY:mods/demo", calls)
-        self.assertIn("--state open", calls)
+        # `gh pr list --head` does not accept the `<owner>:<branch>` form the
+        # head uses, so the lookup goes to the REST endpoint that does. A stub
+        # that still answers `pr list` would hide a regression to it.
+        self.assertIn(
+            "api repos/ramensoftware/windhawk-mods/pulls?head=CYoJkoY:mods/demo&state=open",
+            calls,
+        )
+        self.assertNotIn("pr list", calls)
         self.assertIn("pr create --repo ramensoftware/windhawk-mods --base main", calls)
         self.assertIn("--head CYoJkoY:mods/demo", calls)
         self.assertIn("--title Update mods/demo.wh.cpp to v1.1.0", calls)
