@@ -4,13 +4,12 @@
 // @name:zh-CN      Aleph - 无限窗口画布
 // @description     Arrange open windows across a pannable canvas with live DWM previews.
 // @description:zh-CN 在可平移画布上管理已打开的窗口，并显示 DWM 实时预览。
-// @version         1.3.1
+// @version         1.4.0
 // @author          CYoJkoY
 // @github          https://github.com/CYoJkoY
 // @license         MIT
 // @include         windhawk.exe
 // @include         windhawk-mod.exe
-// @include         windhawk-mod-uiaccess.exe
 // @compilerOptions -ladvapi32 -ld2d1 -ldwmapi -ldwrite -lgdi32 -lole32 -lshell32 -lshcore -luuid -lwindowscodecs
 // ==/WindhawkMod==
 
@@ -24,7 +23,7 @@ Drag cards to arrange them without moving the real desktop windows.
 
 ## Controls
 
-- `Ctrl+Alt+Q`: toggle the canvas (configurable).
+- `Ctrl+Alt+F12`: toggle the canvas (configurable).
 - Mouse wheel: zoom around the pointer.
 - Middle mouse drag: pan the canvas.
 - Hold Space and drag empty canvas: pan.
@@ -35,7 +34,8 @@ Drag cards to arrange them without moving the real desktop windows.
 
 ## Notes
 
-Card positions are saved in `%LOCALAPPDATA%\\Windhawk\\ModData\\aleph-canvas\\layout.json`.
+Card positions are saved in the Windhawk mod storage directory as
+`layout-<user-SID>.json`.
 Canvas coordinates use physical pixels relative to the virtual desktop origin.
 Icon cards ask the shell for the largest available icon (256 px when the jumbo
 image list exists) and fall back to smaller lists, then to the window icon.
@@ -50,12 +50,12 @@ still brought to the foreground.
 // ==WindhawkModSettings==
 /*
 - Behavior:
-    - toggle_hotkey: Ctrl+Alt+Q
+    - toggle_hotkey: Ctrl+Alt+F12
       $name: Toggle hotkey
       $name:zh-CN: 显示/隐藏快捷键
-      $description: Global hotkey used to show or hide the canvas. Use modifiers such as Ctrl, Alt, Shift, or Win plus one key.
-      $description:zh-CN: 用于显示或隐藏画布的全局快捷键。可组合 Ctrl、Alt、Shift 或 Win 与一个按键。
-    - open_on_start: 0
+      $description: Global hotkey used to show or hide the canvas. Use modifiers such as Ctrl, Alt, Shift, or Win plus one key. Avoid AltGr combinations.
+      $description:zh-CN: 用于显示或隐藏画布的全局快捷键。可组合 Ctrl、Alt、Shift 或 Win 与一个按键；避免使用 AltGr 组合。
+    - open_on_start: false
       $name: Open on startup
       $name:zh-CN: 启动时打开
       $description: Open the canvas when its Windhawk tool process starts.
@@ -74,7 +74,7 @@ still brought to the foreground.
   $name:zh-CN: 行为
 
 - Canvas:
-    - show_grid: 1
+    - show_grid: true
       $name: Show grid
       $name:zh-CN: 显示网格
       $description: Draw a coordinate grid behind window cards.
@@ -94,12 +94,12 @@ still brought to the foreground.
       $name:zh-CN: 磁吸距离
       $description: Screen-pixel distance for aligning card edges and centers. Range 0-48.
       $description:zh-CN: 卡片边缘和中心轴触发对齐的屏幕像素距离。范围 0-48。
-    - include_other_desktops: 1
+    - include_other_desktops: true
       $name: Include other virtual desktops
       $name:zh-CN: 包含其他虚拟桌面
       $description: Show eligible windows cloaked on another virtual desktop as icon cards.
       $description:zh-CN: 将其他虚拟桌面上符合条件的隐藏窗口显示为图标卡片。
-    - save_layout: 1
+    - save_layout: true
       $name: Save card positions
       $name:zh-CN: 保存卡片位置
       $description: Persist card positions between runs.
@@ -129,7 +129,7 @@ still brought to the foreground.
       $name:zh-CN: 最大缩放
       $description: Maximum canvas zoom percentage. Range 20-250 and at least five points above the minimum.
       $description:zh-CN: 画布最大缩放百分比。范围 20-250，且至少比最小值高 5。
-    - minimap_enabled: 1
+    - minimap_enabled: true
       $name: Show minimap
       $name:zh-CN: 显示小地图
       $description: Show the interactive overview map in the lower-right corner.
@@ -183,22 +183,12 @@ still brought to the foreground.
 */
 // ==/WindhawkModSettings==
 
-#if defined(__has_include)
-#if __has_include(<windhawk_tool_mod.h>)
-#include <windhawk_tool_mod.h>
-#define ALEPH_OFFICIAL_TOOL_HOST 1
-#endif
-#endif
-
-#ifndef ALEPH_OFFICIAL_TOOL_HOST
-#define ALEPH_OFFICIAL_TOOL_HOST 0
-#endif
-
 
 // System includes plus the shared Windhawk and Win32 helper headers.
 
 #include <windows.h>
 #include <windowsx.h>
+#include <sddl.h>
 #include <windhawk_api.h>
 #include <windhawk_utils.h>
 #include <d2d1.h>
@@ -809,7 +799,7 @@ inline bool MatchesWindow(const Card& card, const ScannedWindow& window) {
 }
 
 struct CanvasSettings {
-    std::wstring toggleHotkey = L"Ctrl+Alt+Q";
+    std::wstring toggleHotkey = L"Ctrl+Alt+F12";
     bool openOnStart = false;
     int animationMs = 140;
     int rescanIntervalMs = 400;
@@ -1323,7 +1313,7 @@ static void LoadSettings() {
     settings.toggleHotkey =
         hotkeyText != nullptr && *hotkeyText != L'\0'
             ? TrimText(hotkeyText)
-            : L"Ctrl+Alt+Q";
+            : L"Ctrl+Alt+F12";
 
     settings.openOnStart =
         yoko::GetClampedIntSetting(L"Behavior.open_on_start", 0, 1) != 0;
@@ -1382,20 +1372,56 @@ static void LoadSettings() {
 }
 
 static std::wstring LayoutDirectory() {
-    WCHAR localAppData[MAX_PATH] = {};
-    const DWORD length =
-        GetEnvironmentVariableW(L"LOCALAPPDATA", localAppData, MAX_PATH);
-    if (length == 0 || length >= MAX_PATH) {
+    WCHAR path[MAX_PATH] = {};
+    const size_t length = Wh_GetModStoragePath(path, ARRAYSIZE(path));
+    if (length == 0) {
         return std::wstring();
     }
-    return std::wstring(localAppData) +
-           L"\\Windhawk\\ModData\\aleph-canvas";
+    return std::wstring(path, length);
+}
+
+static bool CurrentUserSid(std::wstring& sid) {
+    HANDLE tokenHandle = nullptr;
+    if (!OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &tokenHandle)) {
+        return false;
+    }
+    yoko::win32::UniqueHandle token(tokenHandle);
+    DWORD length = 0;
+    const bool queryFailed = !GetTokenInformation(token.get(), TokenUser,
+                                                  nullptr, 0, &length);
+    if (queryFailed && GetLastError() != ERROR_INSUFFICIENT_BUFFER) {
+        return false;
+    }
+    std::vector<BYTE> tokenData(length);
+    if (!GetTokenInformation(token.get(), TokenUser, tokenData.data(), length,
+                             &length)) {
+        return false;
+    }
+    const auto* user = reinterpret_cast<const TOKEN_USER*>(tokenData.data());
+    LPWSTR sidText = nullptr;
+    if (!ConvertSidToStringSidW(user->User.Sid, &sidText)) {
+        return false;
+    }
+    sid = sidText;
+    LocalFree(sidText);
+    return true;
+}
+
+static std::wstring LayoutFileName() {
+    std::wstring sid;
+    if (!CurrentUserSid(sid)) {
+        Wh_Log(L"Aleph: cannot resolve the current user SID");
+        return L"layout.json";
+    }
+    return L"layout-" + sid + L".json";
 }
 
 static std::wstring LayoutFilePath() {
     const std::wstring directory = LayoutDirectory();
-    return directory.empty() ? std::wstring()
-                             : directory + L"\\layout.json";
+    if (directory.empty()) {
+        return std::wstring();
+    }
+    return directory + L"\\" + LayoutFileName();
 }
 
 // Crash-safe JSON persistence for card positions.
@@ -4068,8 +4094,45 @@ inline void PlaceCanvasWindows() {
     context.scanRequested = true;
 }
 
+inline void CALLBACK OnWindowDestroyed(HWINEVENTHOOK, DWORD, HWND window,
+                                       LONG objectId, LONG childId, DWORD,
+                                       DWORD) {
+    if (objectId != OBJID_WINDOW || childId != CHILDID_SELF) {
+        return;
+    }
+    for (Card& card : context.cards) {
+        if (card.hwnd == window) {
+            card.destroyed = true;
+            card.thumbnail.reset();
+            context.scanRequested = true;
+            context.sceneDirty = true;
+        }
+    }
+}
+
+inline void InstallDestroyHook() {
+    if (context.destroyHook != nullptr) {
+        return;
+    }
+    context.destroyHook = SetWinEventHook(
+        EVENT_OBJECT_DESTROY, EVENT_OBJECT_DESTROY, nullptr, OnWindowDestroyed,
+        0, 0, WINEVENT_OUTOFCONTEXT | WINEVENT_SKIPOWNPROCESS);
+    if (context.destroyHook == nullptr) {
+        Wh_Log(L"Aleph: SetWinEventHook failed: %lu", GetLastError());
+    }
+}
+
+inline void UninstallDestroyHook() {
+    if (context.destroyHook == nullptr) {
+        return;
+    }
+    UnhookWinEvent(context.destroyHook);
+    context.destroyHook = nullptr;
+}
+
 inline void HideCanvasWindows() {
     context.visible = false;
+    UninstallDestroyHook();
     if (GetCapture() == context.hostWindow) {
         ReleaseCapture();
     }
@@ -4114,6 +4177,7 @@ inline void ShowCanvasWindows() {
     SetForegroundWindow(context.hostWindow);
     SetFocus(context.hostWindow);
     context.sceneDirty = true;
+    InstallDestroyHook();
 }
 
 inline void ToggleCanvas() {
@@ -4651,21 +4715,6 @@ inline bool RegisterCanvasHotkey() {
     return true;
 }
 
-inline void CALLBACK OnWindowDestroyed(HWINEVENTHOOK, DWORD, HWND window,
-                                       LONG objectId, LONG childId, DWORD, DWORD) {
-    if (objectId != OBJID_WINDOW || childId != CHILDID_SELF) {
-        return;
-    }
-    for (Card& card : context.cards) {
-        if (card.hwnd == window) {
-            card.destroyed = true;
-            card.thumbnail.reset();
-            context.scanRequested = true;
-            context.sceneDirty = true;
-        }
-    }
-}
-
 inline void ScanAndMerge(IVirtualDesktopManager* desktopManager, DWORD now) {
     if (!context.visible || context.diving ||
         (!context.scanRequested && now - context.lastRescanTick <
@@ -4718,10 +4767,6 @@ inline void ProcessCanvasMessage(const MSG& message) {
 }
 
 inline void CleanupCanvas(HINSTANCE instance) {
-    if (context.destroyHook != nullptr) {
-        UnhookWinEvent(context.destroyHook);
-        context.destroyHook = nullptr;
-    }
     UnregisterHotKey(nullptr, context.hotkeyId);
     context.hotkeyRegistered = false;
     HideCanvasWindows();
@@ -4830,19 +4875,7 @@ inline DWORD WINAPI CanvasWorkerThread(LPVOID) {
         return 1;
     }
     if (!RegisterCanvasHotkey()) {
-        CleanupCanvas(instance);
-        CoUninitialize();
-        if (previousDpi != nullptr) SetThreadDpiAwarenessContext(previousDpi);
-        return 1;
-    }
-    context.destroyHook = SetWinEventHook(
-        EVENT_OBJECT_DESTROY, EVENT_OBJECT_DESTROY, nullptr, OnWindowDestroyed,
-        0, 0, WINEVENT_OUTOFCONTEXT | WINEVENT_SKIPOWNPROCESS);
-    if (context.destroyHook == nullptr) {
-        CleanupCanvas(instance);
-        CoUninitialize();
-        if (previousDpi != nullptr) SetThreadDpiAwarenessContext(previousDpi);
-        return 1;
+        Wh_Log(L"Aleph: the toggle hotkey is unavailable");
     }
     IVirtualDesktopManager* desktopManager = nullptr;
     CoCreateInstance(CLSID_VirtualDesktopManager, nullptr, CLSCTX_INPROC_SERVER,
@@ -4929,98 +4962,105 @@ void WhTool_ModSettingsChanged() {
 }
 
 ////////////////////////////////////////////////////////////////////////////////
-// Windhawk tool mod process launcher boilerplate, patterned after cursor-tail.
-
-#if !ALEPH_OFFICIAL_TOOL_HOST
+// Windhawk tool mod implementation for mods which don't need to inject to other
+// processes or hook other functions. Context:
+// https://github.com/ramensoftware/windhawk/wiki/Mods-as-tools:-Running-mods-in-a-dedicated-process
+//
+// The mod will load and run in a dedicated windhawk.exe process.
+//
+// Paste the code below as part of the mod code, and use these callbacks:
+// * WhTool_ModInit
+// * WhTool_ModSettingsChanged
+// * WhTool_ModUninit
+//
+// Currently, other callbacks are not supported.
 
 void WINAPI EntryPoint_Hook() {
-    Wh_Log(L">>");
+    Wh_Log(L">");
     ExitThread(0);
 }
 
 BOOL Wh_ModInit() {
-    DWORD sessionId = 0;
-    if (ProcessIdToSessionId(GetCurrentProcessId(), &sessionId) && sessionId == 0) {
+    DWORD sessionId;
+    if (ProcessIdToSessionId(GetCurrentProcessId(), &sessionId) &&
+        sessionId == 0) {
         return FALSE;
     }
-    bool excluded = false;
-    bool toolProcess = false;
-    bool currentToolProcess = false;
-    int argc = 0;
-    LPWSTR* argv = CommandLineToArgvW(GetCommandLineW(), &argc);
-    if (argv == nullptr) {
+
+    bool isExcluded = false;
+    bool isToolModProcess = false;
+    bool isCurrentToolModProcess = false;
+    int argc;
+    LPWSTR* argv = CommandLineToArgvW(GetCommandLine(), &argc);
+    if (!argv) {
+        Wh_Log(L"CommandLineToArgvW failed");
         return FALSE;
     }
-    for (int index = 1; index < argc; ++index) {
-        if (wcsncmp(argv[index], L"-x-", 3) == 0) {
-            excluded = true;
+
+    for (int i = 1; i < argc; i++) {
+        if (wcscmp(argv[i], L"-service") == 0 ||
+            wcscmp(argv[i], L"-service-start") == 0 ||
+            wcscmp(argv[i], L"-service-stop") == 0) {
+            isExcluded = true;
             break;
         }
-        const WCHAR* const excludeFlags[] = {
-            L"-service",
-            L"-service-start",
-            L"-service-stop",
-            L"-run-ui",
-            L"-run-ui-as-admin",
-            L"-run-ui-in-safe-mode",
-            L"-service-start-and-run-ui",
-            L"-check-for-updates",
-            L"-new-updates-found",
-            L"-app-settings-changed",
-            L"-exit",
-            L"-restart",
-            L"-restart-bg",
-        };
-        for (const WCHAR* const flag : excludeFlags) {
-            if (wcscmp(argv[index], flag) == 0) {
-                excluded = true;
-                break;
+    }
+
+    for (int i = 1; i < argc - 1; i++) {
+        if (wcscmp(argv[i], L"-tool-mod") == 0) {
+            isToolModProcess = true;
+            if (wcscmp(argv[i + 1], WH_MOD_ID) == 0) {
+                isCurrentToolModProcess = true;
             }
-        }
-        if (excluded) {
             break;
         }
     }
-    for (int index = 1; index < argc - 1; ++index) {
-        if (wcscmp(argv[index], L"-tool-mod") != 0) {
-            continue;
-        }
-        toolProcess = true;
-        currentToolProcess = wcscmp(argv[index + 1], WH_MOD_ID) == 0;
-        break;
-    }
+
     LocalFree(argv);
-    if (excluded) {
+
+    if (isExcluded) {
         return FALSE;
     }
-    if (currentToolProcess) {
+
+    if (isCurrentToolModProcess) {
         context.toolModProcessMutex =
-            CreateMutexW(nullptr, TRUE, L"windhawk-tool-mod_" WH_MOD_ID);
-        if (context.toolModProcessMutex == nullptr ||
-            GetLastError() == ERROR_ALREADY_EXISTS) {
-            if (context.toolModProcessMutex != nullptr) {
-                CloseHandle(context.toolModProcessMutex);
-                context.toolModProcessMutex = nullptr;
-            }
+            CreateMutex(nullptr, TRUE, L"windhawk-tool-mod_" WH_MOD_ID);
+        if (!context.toolModProcessMutex) {
+            Wh_Log(L"CreateMutex failed");
             ExitProcess(1);
         }
+
+        if (GetLastError() == ERROR_ALREADY_EXISTS) {
+            Wh_Log(L"Tool mod already running (%s)", WH_MOD_ID);
+            CloseHandle(context.toolModProcessMutex);
+            context.toolModProcessMutex = nullptr;
+            ExitProcess(1);
+        }
+
         if (!WhTool_ModInit()) {
             ExitProcess(1);
         }
+
         void* entryPoint = nullptr;
-        if (!yoko::win32::FindModuleEntryPoint(GetModuleHandleW(nullptr),
-                                               &entryPoint) ||
-            !Wh_SetFunctionHook(entryPoint,
-                                reinterpret_cast<void*>(EntryPoint_Hook),
-                                nullptr)) {
+        if (!yoko::win32::FindModuleEntryPoint(GetModuleHandle(nullptr),
+                                               &entryPoint)) {
+            Wh_Log(L"Unable to resolve the process entry point");
+            WhTool_ModUninit();
+            ExitProcess(1);
+        }
+
+        if (!Wh_SetFunctionHook(entryPoint, (void*)EntryPoint_Hook, nullptr)) {
+            Wh_Log(L"Wh_SetFunctionHook failed for the process entry point");
             WhTool_ModUninit();
             ExitProcess(1);
         }
         return TRUE;
     }
-    if (toolProcess) {
+
+    if (isToolModProcess) {
         return FALSE;
     }
+
     context.isToolModProcessLauncher = true;
     return TRUE;
 }
@@ -5029,59 +5069,75 @@ void Wh_ModAfterInit() {
     if (!context.isToolModProcessLauncher) {
         return;
     }
-    WCHAR path[MAX_PATH] = {};
-    const DWORD length = GetModuleFileNameW(nullptr, path, ARRAYSIZE(path));
-    if (length == 0 || length >= ARRAYSIZE(path)) {
+
+    WCHAR currentProcessPath[MAX_PATH];
+    switch (GetModuleFileName(nullptr, currentProcessPath,
+                              ARRAYSIZE(currentProcessPath))) {
+        case 0:
+        case ARRAYSIZE(currentProcessPath):
+            Wh_Log(L"GetModuleFileName failed");
+            return;
+    }
+
+    WCHAR
+    commandLine[MAX_PATH + 2 +
+                (sizeof(L" -tool-mod \"" WH_MOD_ID "\"") / sizeof(WCHAR)) - 1];
+    swprintf_s(commandLine, L"\"%s\" -tool-mod \"%s\"", currentProcessPath,
+               WH_MOD_ID);
+
+    HMODULE kernelModule = GetModuleHandle(L"kernelbase.dll");
+    if (!kernelModule) {
+        kernelModule = GetModuleHandle(L"kernel32.dll");
+        if (!kernelModule) {
+            Wh_Log(L"No kernelbase.dll/kernel32.dll");
+            return;
+        }
+    }
+
+    using CreateProcessInternalW_t = BOOL(WINAPI*)(
+        HANDLE hUserToken, LPCWSTR lpApplicationName, LPWSTR lpCommandLine,
+        LPSECURITY_ATTRIBUTES lpProcessAttributes,
+        LPSECURITY_ATTRIBUTES lpThreadAttributes, WINBOOL bInheritHandles,
+        DWORD dwCreationFlags, LPVOID lpEnvironment, LPCWSTR lpCurrentDirectory,
+        LPSTARTUPINFOW lpStartupInfo,
+        LPPROCESS_INFORMATION lpProcessInformation,
+        PHANDLE hRestrictedUserToken);
+    CreateProcessInternalW_t pCreateProcessInternalW =
+        (CreateProcessInternalW_t)GetProcAddress(kernelModule,
+                                                 "CreateProcessInternalW");
+    if (!pCreateProcessInternalW) {
+        Wh_Log(L"No CreateProcessInternalW");
         return;
     }
-    WCHAR commandLine[MAX_PATH + 96] = {};
-    if (swprintf_s(commandLine, L"\"%s\" -tool-mod \"%s\"", path,
-                   WH_MOD_ID) < 0) {
+
+    STARTUPINFO si = {};
+    si.cb = sizeof(STARTUPINFO);
+    si.dwFlags = STARTF_FORCEOFFFEEDBACK;
+    PROCESS_INFORMATION pi = {};
+    if (!pCreateProcessInternalW(nullptr, currentProcessPath, commandLine,
+                                 nullptr, nullptr, FALSE, NORMAL_PRIORITY_CLASS,
+                                 nullptr, nullptr, &si, &pi, nullptr)) {
+        Wh_Log(L"CreateProcess failed");
         return;
     }
-    HMODULE kernel = GetModuleHandleW(L"kernelbase.dll");
-    if (kernel == nullptr) {
-        kernel = GetModuleHandleW(L"kernel32.dll");
-    }
-    if (kernel == nullptr) {
-        return;
-    }
-    using CreateProcessInternalWFn = BOOL(WINAPI*)(
-        HANDLE, LPCWSTR, LPWSTR, LPSECURITY_ATTRIBUTES, LPSECURITY_ATTRIBUTES,
-        WINBOOL, DWORD, LPVOID, LPCWSTR, LPSTARTUPINFOW,
-        LPPROCESS_INFORMATION, PHANDLE);
-    const auto createProcess = reinterpret_cast<CreateProcessInternalWFn>(
-        GetProcAddress(kernel, "CreateProcessInternalW"));
-    if (createProcess == nullptr) {
-        return;
-    }
-    STARTUPINFOW startup = {};
-    startup.cb = sizeof(startup);
-    startup.dwFlags = STARTF_FORCEOFFFEEDBACK;
-    PROCESS_INFORMATION process = {};
-    if (!createProcess(nullptr, path, commandLine, nullptr, nullptr, FALSE,
-                       NORMAL_PRIORITY_CLASS, nullptr, nullptr, &startup,
-                       &process, nullptr)) {
-        return;
-    }
-    CloseHandle(process.hProcess);
-    CloseHandle(process.hThread);
+
+    yoko::win32::UniqueHandle processHandle(pi.hProcess);
+    yoko::win32::UniqueHandle threadHandle(pi.hThread);
 }
 
 void Wh_ModSettingsChanged() {
-    if (!context.isToolModProcessLauncher) {
-        WhTool_ModSettingsChanged();
+    if (context.isToolModProcessLauncher) {
+        return;
     }
+
+    WhTool_ModSettingsChanged();
 }
 
 void Wh_ModUninit() {
-    if (!context.isToolModProcessLauncher) {
-        WhTool_ModUninit();
-        if (context.toolModProcessMutex != nullptr) {
-            CloseHandle(context.toolModProcessMutex);
-            context.toolModProcessMutex = nullptr;
-        }
-        ExitProcess(0);
+    if (context.isToolModProcessLauncher) {
+        return;
     }
+
+    WhTool_ModUninit();
+    ExitProcess(0);
 }
-#endif
