@@ -6,6 +6,10 @@ a transparent layered HUD for card chrome, labels, status badges, guides, and
 the minimap. No Explorer implementation details or private virtual-desktop
 interfaces are used.
 
+The process carries UIAccess, because activating a window the canvas selected
+means setting the foreground window, which a normal process may not do to a
+window owned by a higher integrity level.
+
 ## Coordinate and window policy
 
 Canvas coordinates are physical pixels relative to the virtual-screen origin.

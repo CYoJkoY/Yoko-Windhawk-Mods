@@ -4,11 +4,12 @@
 // @name:zh-CN      Aleph - 无限窗口画布
 // @description     Arrange open windows across a pannable canvas with live DWM previews.
 // @description:zh-CN 在可平移画布上管理已打开的窗口，并显示 DWM 实时预览。
-// @version         1.3.0
+// @version         1.3.1
 // @author          CYoJkoY
 // @github          https://github.com/CYoJkoY
 // @license         MIT
 // @include         windhawk.exe
+// @include         windhawk-mod.exe
 // @include         windhawk-mod-uiaccess.exe
 // @compilerOptions -ladvapi32 -ld2d1 -ldwmapi -ldwrite -lgdi32 -lole32 -lshell32 -lshcore -luuid -lwindowscodecs
 // ==/WindhawkMod==
