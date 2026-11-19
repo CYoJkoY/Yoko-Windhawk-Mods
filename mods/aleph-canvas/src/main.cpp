@@ -94,6 +94,9 @@ void WhTool_ModSettingsChanged() {
 //
 // Currently, other callbacks are not supported.
 
+bool g_isToolModProcessLauncher;
+HANDLE g_toolModProcessMutex;
+
 void WINAPI EntryPoint_Hook() {
     Wh_Log(L">");
     ExitThread(0);
@@ -142,17 +145,15 @@ BOOL Wh_ModInit() {
     }
 
     if (isCurrentToolModProcess) {
-        context.toolModProcessMutex =
+        g_toolModProcessMutex =
             CreateMutex(nullptr, TRUE, L"windhawk-tool-mod_" WH_MOD_ID);
-        if (!context.toolModProcessMutex) {
+        if (!g_toolModProcessMutex) {
             Wh_Log(L"CreateMutex failed");
             ExitProcess(1);
         }
 
         if (GetLastError() == ERROR_ALREADY_EXISTS) {
             Wh_Log(L"Tool mod already running (%s)", WH_MOD_ID);
-            CloseHandle(context.toolModProcessMutex);
-            context.toolModProcessMutex = nullptr;
             ExitProcess(1);
         }
 
@@ -160,19 +161,15 @@ BOOL Wh_ModInit() {
             ExitProcess(1);
         }
 
-        void* entryPoint = nullptr;
-        if (!yoko::win32::FindModuleEntryPoint(GetModuleHandle(nullptr),
-                                               &entryPoint)) {
-            Wh_Log(L"Unable to resolve the process entry point");
-            WhTool_ModUninit();
-            ExitProcess(1);
-        }
+        IMAGE_DOS_HEADER* dosHeader =
+            (IMAGE_DOS_HEADER*)GetModuleHandle(nullptr);
+        IMAGE_NT_HEADERS* ntHeaders =
+            (IMAGE_NT_HEADERS*)((BYTE*)dosHeader + dosHeader->e_lfanew);
 
-        if (!Wh_SetFunctionHook(entryPoint, (void*)EntryPoint_Hook, nullptr)) {
-            Wh_Log(L"Wh_SetFunctionHook failed for the process entry point");
-            WhTool_ModUninit();
-            ExitProcess(1);
-        }
+        DWORD entryPointRVA = ntHeaders->OptionalHeader.AddressOfEntryPoint;
+        void* entryPoint = (BYTE*)dosHeader + entryPointRVA;
+
+        Wh_SetFunctionHook(entryPoint, (void*)EntryPoint_Hook, nullptr);
         return TRUE;
     }
 
@@ -180,12 +177,12 @@ BOOL Wh_ModInit() {
         return FALSE;
     }
 
-    context.isToolModProcessLauncher = true;
+    g_isToolModProcessLauncher = true;
     return TRUE;
 }
 
 void Wh_ModAfterInit() {
-    if (!context.isToolModProcessLauncher) {
+    if (!g_isToolModProcessLauncher) {
         return;
     }
 
@@ -229,10 +226,11 @@ void Wh_ModAfterInit() {
         return;
     }
 
-    STARTUPINFO si = {};
-    si.cb = sizeof(STARTUPINFO);
-    si.dwFlags = STARTF_FORCEOFFFEEDBACK;
-    PROCESS_INFORMATION pi = {};
+    STARTUPINFO si{
+        .cb = sizeof(STARTUPINFO),
+        .dwFlags = STARTF_FORCEOFFFEEDBACK,
+    };
+    PROCESS_INFORMATION pi;
     if (!pCreateProcessInternalW(nullptr, currentProcessPath, commandLine,
                                  nullptr, nullptr, FALSE, NORMAL_PRIORITY_CLASS,
                                  nullptr, nullptr, &si, &pi, nullptr)) {
@@ -240,12 +238,12 @@ void Wh_ModAfterInit() {
         return;
     }
 
-    yoko::win32::UniqueHandle processHandle(pi.hProcess);
-    yoko::win32::UniqueHandle threadHandle(pi.hThread);
+    CloseHandle(pi.hProcess);
+    CloseHandle(pi.hThread);
 }
 
 void Wh_ModSettingsChanged() {
-    if (context.isToolModProcessLauncher) {
+    if (g_isToolModProcessLauncher) {
         return;
     }
 
@@ -253,7 +251,7 @@ void Wh_ModSettingsChanged() {
 }
 
 void Wh_ModUninit() {
-    if (context.isToolModProcessLauncher) {
+    if (g_isToolModProcessLauncher) {
         return;
     }
 
