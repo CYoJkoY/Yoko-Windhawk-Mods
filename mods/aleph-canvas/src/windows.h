@@ -260,21 +260,49 @@ static bool FingerprintClaimed(const std::vector<ScannedWindow>& windows,
                        });
 }
 
+static bool HasEarlierFingerprintKey(const ScannedWindow& left,
+                                     const ScannedWindow& right) {
+    if (left.exePath != right.exePath) {
+        return left.exePath < right.exePath;
+    }
+    if (left.windowClass != right.windowClass) {
+        return left.windowClass < right.windowClass;
+    }
+    if (left.title != right.title) {
+        return left.title < right.title;
+    }
+    if (left.processId != right.processId) {
+        return left.processId < right.processId;
+    }
+    if (left.threadId != right.threadId) {
+        return left.threadId < right.threadId;
+    }
+    return left.hwnd < right.hwnd;
+}
+
 static void AssignFingerprints(std::vector<ScannedWindow>& windows) {
     for (ScannedWindow& window : windows) {
         window.fingerprint = ExistingFingerprint(window);
     }
+    std::vector<ScannedWindow*> newWindows;
+    newWindows.reserve(windows.size());
     for (ScannedWindow& window : windows) {
-        if (!window.fingerprint.empty()) {
-            continue;
+        if (window.fingerprint.empty()) {
+            newWindows.push_back(&window);
         }
+    }
+    std::sort(newWindows.begin(), newWindows.end(),
+              [](const ScannedWindow* left, const ScannedWindow* right) {
+                  return HasEarlierFingerprintKey(*left, *right);
+              });
+    for (ScannedWindow* window : newWindows) {
         const std::wstring base =
-            ExecutableName(window.exePath) + L"|" + window.windowClass + L"#";
+            ExecutableName(window->exePath) + L"|" + window->windowClass + L"#";
         unsigned int ordinal = 0;
         while (FingerprintClaimed(windows, base + std::to_wstring(ordinal))) {
             ++ordinal;
         }
-        window.fingerprint = base + std::to_wstring(ordinal);
+        window->fingerprint = base + std::to_wstring(ordinal);
     }
 }
 

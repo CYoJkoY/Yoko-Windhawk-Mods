@@ -382,6 +382,17 @@ static void ScanCandidateSelection() {
             "candidate selection kept the least useful overflow window");
 }
 
+static void FingerprintOrdinalStability() {
+    std::vector<ScannedWindow> reversed{SampleWindow(0x200), SampleWindow(0x100)};
+    std::vector<ScannedWindow> ordered{SampleWindow(0x100), SampleWindow(0x200)};
+    AssignFingerprints(reversed);
+    AssignFingerprints(ordered);
+    Require(reversed[0].fingerprint == ordered[1].fingerprint,
+            "ordinal assignment depended on scan order");
+    Require(reversed[1].fingerprint == ordered[0].fingerprint,
+            "ordinal assignment was not stable");
+}
+
 static void WindowIdentity() {
     const ScannedWindow original = SampleWindow(0x100);
     InsertCard(ScannedWindow{original}, MakeRectF(0.0f, 0.0f, 640.0f, 480.0f));
@@ -653,6 +664,7 @@ static constexpr NativeCase kCases[] = {
     {"json_finite", JsonFinite}, {"json_order", JsonOrder},
     {"json_roundtrip", JsonRoundtrip}, {"hotkey_suffix", HotkeySuffix},
     {"fingerprint_lifetime", FingerprintLifetime}, {"window_identity", WindowIdentity},
+    {"fingerprint_ordinals", FingerprintOrdinalStability},
     {"scan_candidate_selection", ScanCandidateSelection},
     {"header_chrome", HeaderChrome}, {"pinned_order", PinnedOrder},
     {"pinned_layout_sync", PinnedLayoutSync}, {"pin_persistence", PinPersistence},

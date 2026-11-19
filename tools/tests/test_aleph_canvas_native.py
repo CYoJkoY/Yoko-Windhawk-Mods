@@ -156,6 +156,9 @@ class AlephCanvasNativeTests(unittest.TestCase):
     def test_duplicate_window_fingerprints_survive_close_and_reopen(self) -> None:
         self.run_case("fingerprint_lifetime")
 
+    def test_fingerprint_ordinals_do_not_depend_on_scan_order(self) -> None:
+        self.run_case("fingerprint_ordinals")
+
     def test_destroyed_or_reused_window_does_not_match_old_card(self) -> None:
         self.run_case("window_identity")
 
