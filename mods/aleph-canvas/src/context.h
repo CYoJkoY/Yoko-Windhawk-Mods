@@ -7,10 +7,6 @@
 #include "types.h"
 
 struct CanvasContext {
-    // Tool mod process ownership.
-    bool isToolModProcessLauncher = false;
-    HANDLE toolModProcessMutex = nullptr;
-
     // Worker thread plumbing.
     HANDLE workerThread = nullptr;
     HANDLE stopEvent = nullptr;
