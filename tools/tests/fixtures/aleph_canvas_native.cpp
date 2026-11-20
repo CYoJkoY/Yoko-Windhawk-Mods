@@ -1123,6 +1123,49 @@ static void StackZOrderFront() {
     Require(context.cards[2].stack.slot == 2, "rescan did not keep the old front at the back");
 }
 
+// One stack must occupy one contiguous block of the draw order with its front
+// slot drawn last; otherwise a background card of a neighbouring stack can be
+// painted over another stack's front card.
+static void RequireStackGroupBlock(const std::vector<Card>& cards,
+                                   const std::vector<size_t>& order,
+                                   const std::wstring& groupKey) {
+    size_t firstPosition = order.size();
+    size_t frontPosition = order.size();
+    size_t lastPosition = 0;
+    size_t memberCount = 0;
+    for (size_t position = 0; position < order.size(); ++position) {
+        const Card& card = cards[order[position]];
+        if (card.stack.groupKey != groupKey) {
+            continue;
+        }
+        const bool isFront = card.stack.slot == 0;
+        firstPosition = memberCount == 0 ? position : firstPosition;
+        frontPosition = isFront ? position : frontPosition;
+        lastPosition = position;
+        ++memberCount;
+    }
+    Require(memberCount > 1, "stack group lost its members");
+    Require(frontPosition == lastPosition, "stack front was not drawn last");
+    Require(lastPosition - firstPosition + 1 == memberCount,
+            "stack members were interleaved in the draw order");
+}
+
+static void StackDrawOrderGroups() {
+    UseStackSettings();
+    context.cards.clear();
+    AddStackCard(L"a#1", L"C:\\App\\Editor.exe");
+    AddStackCard(L"b#1", L"C:\\App\\Editor.exe");
+    AddStackCard(L"c#1", L"C:\\App\\Player.exe");
+    AddStackCard(L"d#1", L"C:\\App\\Player.exe");
+    ReconcileCardStacks(context.cards, context.settings);
+    const std::vector<size_t> order = CardDrawOrder(context.cards);
+    Require(order.size() == 4, "draw order lost a card");
+    RequireStackGroupBlock(context.cards, order, L"editor.exe");
+    RequireStackGroupBlock(context.cards, order, L"player.exe");
+    Require(context.cards[order.back()].stack.slot == 0,
+            "topmost drawn card was not a stack front");
+}
+
 static void StackWheelCycle() {
     Require(StackWheelSteps(-120) == 1, "wheel down did not map to the next card");
     Require(StackWheelSteps(120) == -1, "wheel up did not map to the previous card");
@@ -1145,6 +1188,133 @@ static void StackWheelCycle() {
     AddStackCard(L"a#1", L"C:\\App\\Editor.exe");
     ReconcileCardStacks(context.cards, context.settings);
     Require(!CycleStackForWheel(context.cards, context.settings, 0, -120), "wheel cycle accepted a single-card stack");
+}
+
+static void StackCycleAnimationFrames() {
+    UseStackSettings();
+    context.settings.animationMs = 300;
+    context.cards.clear();
+    AddStackCard(L"a#1", L"C:\\App\\Editor.exe");
+    AddStackCard(L"b#1", L"C:\\App\\Editor.exe");
+    AddStackCard(L"c#1", L"C:\\App\\Editor.exe");
+    ReconcileCardStacks(context.cards, context.settings);
+    std::vector<StackCycleTransition> transitions;
+    Require(CycleStackWithAnimation(context.cards,
+                StackCycleRequest{context.settings, 0, 1, 100}, transitions),
+            "animated cycle was rejected");
+    Require(transitions.size() == 1, "animated cycle did not keep its transition");
+    Require(!CycleStackWithAnimation(context.cards,
+                StackCycleRequest{context.settings, 0, 0, 110}, transitions),
+            "zero steps triggered an animation");
+    Require(transitions.size() == 1,
+            "zero steps changed the pending transition");
+    Require(context.cards[0].stack.slot == 2 && context.cards[1].stack.slot == 0,
+            "animated cycle did not immediately exchange stack slots");
+    Require(context.cards[0].stack.drawAboveStack,
+            "outgoing front was not rendered above the stack at animation start");
+    Require(CardDrawOrder(context.cards).back() == 0,
+            "outgoing card did not remain visually on top during extraction");
+    Near(context.cards[1].stack.opacity, 0.0f);
+
+    Require(AdvanceStackCycleTransitions(context.cards, transitions, 250),
+            "midpoint transition became inactive");
+    Require(!context.cards[0].stack.drawAboveStack,
+            "outgoing card stayed above the stack after extraction");
+    Require(CardDrawOrder(context.cards).back() == 1,
+            "incoming card was not rendered on top after extraction");
+    Near(context.cards[0].stack.opacity, 0.0f);
+    Near(context.cards[1].stack.opacity, 0.5f);
+    Near(context.cards[1].stack.rotationRadians,
+         -3.25f * (3.14159265f / 180.0f));
+
+    Require(AdvanceStackCycleTransitions(context.cards, transitions, 295),
+            "fade transition became inactive before settling");
+    Near(context.cards[0].stack.opacity, 0.0f);
+    Near(context.cards[1].stack.opacity, 1.0f);
+    Require(AdvanceStackCycleTransitions(context.cards, transitions, 340),
+            "outgoing card fade-in became inactive before completion");
+    Near(context.cards[0].stack.opacity, 3.0f / 7.0f);
+
+    Require(!AdvanceStackCycleTransitions(context.cards, transitions, 400),
+            "completed transition remained active");
+    Require(transitions.empty(), "completed transition was not removed");
+    Require(!context.cards[0].stack.drawAboveStack &&
+                !context.cards[1].stack.drawAboveStack,
+            "completed transition left a temporary draw order");
+    Near(context.cards[1].stack.opacity, 1.0f);
+    Near(context.cards[1].stack.rotationRadians, 0.0f);
+}
+
+static void StackCycleAnimationInterrupt() {
+    UseStackSettings();
+    context.settings.animationMs = 300;
+    context.cards.clear();
+    AddStackCard(L"a#1", L"C:\\App\\Editor.exe");
+    AddStackCard(L"b#1", L"C:\\App\\Editor.exe");
+    AddStackCard(L"c#1", L"C:\\App\\Editor.exe");
+    ReconcileCardStacks(context.cards, context.settings);
+    std::vector<StackCycleTransition> transitions;
+    Require(CycleStackWithAnimation(context.cards,
+                StackCycleRequest{context.settings, 0, 1, 100}, transitions),
+            "first animated cycle was rejected");
+    AdvanceStackCycleTransitions(context.cards, transitions, 175);
+    const float interruptedRotation = context.cards[1].stack.rotationRadians;
+    Require(CycleStackWithAnimation(context.cards,
+                StackCycleRequest{context.settings, 1, 1, 175}, transitions),
+            "interrupted animated cycle was rejected");
+    Require(transitions.size() == 1, "interruption kept a stale transition");
+    Near(transitions.front().cards.front().fromRotation,
+         context.cards[1].stack.rotationRadians);
+    Near(context.cards[1].stack.rotationRadians, interruptedRotation);
+    Require(context.cards[2].stack.slot == 0,
+            "second wheel event did not continue from the current stack order");
+    Require(context.cards[1].stack.drawAboveStack,
+            "new outgoing card was not raised during the interrupted cycle");
+}
+
+static void StackCycleAnimationClearedOnRescan() {
+    UseStackSettings();
+    context.settings.animationMs = 300;
+    std::vector<ScannedWindow> scanned{SampleWindow(0x100), SampleWindow(0x200)};
+    AssignFingerprints(scanned);
+    Require(MergeScan(scanned), "initial stack scan did not add cards");
+    Require(context.cards.size() == 2, "initial stack scan lost a card");
+    Require(CycleStackWithAnimation(context.cards,
+                StackCycleRequest{context.settings, 0, 1, 100},
+                context.stackTransitions),
+            "animated cycle was rejected");
+    Require(!context.stackTransitions.empty(), "cycle did not create a transition");
+
+    Require(MergeScan(std::vector<ScannedWindow>{scanned[1]}),
+            "rescan did not remove the closed window");
+    Require(context.stackTransitions.empty(), "rescan retained stale stack animation");
+    Require(context.cards.size() == 1 && context.cards[0].stack.slot == 0,
+            "remaining card was not reconciled as the stack front");
+    Near(context.cards[0].stack.opacity, 1.0f);
+    Require(!context.cards[0].stack.drawAboveStack,
+            "rescan retained temporary draw order");
+}
+
+static void StackCycleAnimationDisabled() {
+    UseStackSettings();
+    context.settings.animationMs = 0;
+    context.cards.clear();
+    AddStackCard(L"a#1", L"C:\\App\\Editor.exe");
+    AddStackCard(L"b#1", L"C:\\App\\Editor.exe");
+    ReconcileCardStacks(context.cards, context.settings);
+    std::vector<StackCycleTransition> transitions;
+    Require(CycleStackWithAnimation(context.cards,
+                StackCycleRequest{context.settings, 0, 1, 100}, transitions),
+            "zero-duration cycle was rejected");
+    Require(transitions.empty(), "zero-duration cycle created an animation");
+    Require(context.cards[1].stack.slot == 0 &&
+                CardDrawOrder(context.cards).back() == 1,
+            "zero-duration cycle did not immediately render the new front");
+    for (const Card& card : context.cards) {
+        Near(card.stack.opacity, 1.0f);
+        Require(!card.stack.drawAboveStack,
+                "zero-duration cycle left the outgoing card raised");
+    }
 }
 
 static void LayoutGroupedRoundtrip() {
@@ -1224,7 +1394,12 @@ static constexpr NativeCase kCases[] = {
     {"stack_same_exe_name_groups", StackSameExeNameGroups},
     {"hotkey_default_alt_z", HotkeyDefaultAltZ},
     {"stack_z_order_front", StackZOrderFront},
+    {"stack_draw_order_groups", StackDrawOrderGroups},
     {"stack_wheel_cycle", StackWheelCycle},
+    {"stack_cycle_animation_frames", StackCycleAnimationFrames},
+    {"stack_cycle_animation_interrupt", StackCycleAnimationInterrupt},
+    {"stack_cycle_animation_rescan", StackCycleAnimationClearedOnRescan},
+    {"stack_cycle_animation_disabled", StackCycleAnimationDisabled},
     {"stack_depth_visibility", StackDepthVisibility},
     {"stack_hit_rotation", StackHitRotation},
     {"layout_grouped_roundtrip", LayoutGroupedRoundtrip},

@@ -264,6 +264,21 @@ class AlephCanvasNativeTests(unittest.TestCase):
     def test_stack_wheel_cycle_direction(self) -> None:
         self.run_case("stack_wheel_cycle")
 
+    def test_stack_draw_order_keeps_each_group_contiguous(self) -> None:
+        self.run_case("stack_draw_order_groups")
+
+    def test_stack_cycle_animation_frames_and_draw_order(self) -> None:
+        self.run_case("stack_cycle_animation_frames")
+
+    def test_stack_cycle_animation_retargets_when_interrupted(self) -> None:
+        self.run_case("stack_cycle_animation_interrupt")
+
+    def test_stack_cycle_animation_clears_when_rescanned(self) -> None:
+        self.run_case("stack_cycle_animation_rescan")
+
+    def test_stack_cycle_animation_respects_zero_duration(self) -> None:
+        self.run_case("stack_cycle_animation_disabled")
+
     def test_stack_depth_controls_visibility(self) -> None:
         self.run_case("stack_depth_visibility")
 

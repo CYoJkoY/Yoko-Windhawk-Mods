@@ -36,6 +36,7 @@ inline void DismissCard(int index) {
     context.dismissedFingerprints.insert(
         context.cards[static_cast<size_t>(index)].fingerprint);
     RemoveCardAt(static_cast<size_t>(index));
+    context.stackTransitions.clear();
     ReconcileCardStacks(context.cards, context.settings);
     context.hoverHeaderAction = CardHeaderAction::None;
     context.sceneDirty = true;
@@ -319,8 +320,11 @@ inline void HandleMouseWheel(WPARAM wParam, LPARAM lParam) {
     if ((GetKeyState(VK_MENU) & 0x8000) != 0) {
         const int hit = HitTestCard(Vec2{static_cast<float>(cursor.x),
                                          static_cast<float>(cursor.y)});
-        if (hit >= 0 && CycleStackForWheel(context.cards, context.settings, hit,
-                                           GET_WHEEL_DELTA_WPARAM(wParam))) {
+        if (hit >= 0 && CycleStackWithAnimation(
+                context.cards,
+                StackCycleRequest{context.settings, hit,
+                    StackWheelSteps(GET_WHEEL_DELTA_WPARAM(wParam)), GetTickCount()},
+                context.stackTransitions)) {
             const std::wstring groupKey =
                 context.cards[static_cast<size_t>(hit)].stack.groupKey;
             context.selectedCard = hit;

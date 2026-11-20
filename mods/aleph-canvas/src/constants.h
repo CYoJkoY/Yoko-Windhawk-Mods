@@ -27,6 +27,7 @@ constexpr float kZoomStep = 1.15f;
 constexpr float kCameraSmoothingPerSecond = 20.0f;
 constexpr float kCameraEpsilonPx = 0.2f;
 constexpr float kZoomEpsilon = 0.001f;
+constexpr float kCardOpacityEpsilon = 0.001f;
 
 constexpr float kCardHeaderPx = 28.0f;
 constexpr float kCardHeaderMinPx = 10.0f;

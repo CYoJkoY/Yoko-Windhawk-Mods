@@ -150,6 +150,17 @@ inline void SubmitThumbnail(Card& card, const ThumbnailGeometry& geometry,
 }
 
 inline void UpdateThumbnail(Card& card, DWORD now) {
+    const bool stackAnimating = std::any_of(
+        context.stackTransitions.begin(), context.stackTransitions.end(),
+        [&card](const StackCycleTransition& transition) {
+            return transition.groupKey == card.stack.groupKey;
+        });
+    if (stackAnimating) {
+        if (card.thumbnail.valid() && card.thumbnailVisible) {
+            HideThumbnail(card, now);
+        }
+        return;
+    }
     // DWM thumbnails cannot be rotated or scaled, and a stack shows only
     // its front window live. Background members render as icon cards, so
     // never register or show a thumbnail for them.

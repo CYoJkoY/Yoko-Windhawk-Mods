@@ -195,6 +195,9 @@ inline void DrawCardBody(const Card& card, const RectF& body, float scale) {
 }
 
 inline void DrawCard(const Card& card, int index, float scale) {
+    if (card.stack.opacity <= kCardOpacityEpsilon) {
+        return;
+    }
     const RectF rect = CardScreenBounds(card);
     if (rect.empty()) {
         return;
@@ -234,12 +237,22 @@ inline void DrawCard(const Card& card, int index, float scale) {
                                      D2D1::Point2F(center.x, center.y)) *
             D2D1::Matrix3x2F::Rotation(degrees, D2D1::Point2F(center.x, center.y)));
     }
+    D2D1_LAYER_PARAMETERS layerParameters = {};
+    layerParameters.contentBounds = D2D1::InfiniteRect();
+    layerParameters.maskAntialiasMode = D2D1_ANTIALIAS_MODE_PER_PRIMITIVE;
+    layerParameters.maskTransform = D2D1::IdentityMatrix();
+    layerParameters.opacity = card.stack.opacity;
+    layerParameters.layerOptions = D2D1_LAYER_OPTIONS_NONE;
+    // ID2D1DeviceContext::PushLayer returns void, so the layer is always
+    // popped on the matching path below.
+    context.hudTarget->PushLayer(&layerParameters, nullptr);
     DrawCardBody(card, body, scale);
     DrawCardHeader(card, index, header, scale);
     SetHudColor(emphasized ? context.settings.accentColor : context.settings.gridColor);
     context.hudTarget->DrawRoundedRectangle(
         RoundedRect(rect, radius), context.hudBrush,
         emphasized ? 2.0f * scale : 1.0f * scale);
+    context.hudTarget->PopLayer();
     if (transformed) {
         context.hudTarget->SetTransform(savedTransform);
     }

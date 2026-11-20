@@ -273,6 +273,7 @@ inline bool MergeScan(const std::vector<ScannedWindow>& scanned) {
         }
     }
     if (changed) {
+        context.stackTransitions.clear();
         ReconcileCardStacks(context.cards, context.settings);
     }
     return changed;

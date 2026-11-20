@@ -35,6 +35,7 @@ struct CanvasContext {
 
     // Cards and camera.
     std::vector<Card> cards;
+    std::vector<StackCycleTransition> stackTransitions;
     Camera camera{};
     bool cameraMotion = false;
     DWORD lastRescanTick = 0;
