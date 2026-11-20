@@ -23,12 +23,13 @@ Drag cards to arrange them without moving the real desktop windows.
 
 ## Controls
 
-- `Ctrl+Alt+F12`: toggle the canvas (configurable). If the hotkey does
+- `Alt+Z`: toggle the canvas (configurable). If the hotkey does
   nothing, another program may already use it; pick a different combination.
 - Mouse wheel: zoom around the pointer.
 - Middle mouse drag: pan the canvas.
 - Hold Space and drag empty canvas: pan.
 - Drag a card: arrange it; nearby edges snap into alignment.
+- Shift+click a stacked card: bring the next window of the same app to the front.
 - Double-click a card or press Enter: focus the window; an other-desktop window is pulled onto this desktop first.
 - Tab / Shift+Tab: select a card; arrow keys pan; Home fits all cards; Escape hides the canvas.
 - Click or drag the minimap: navigate the canvas.
@@ -90,7 +91,7 @@ activation then follows the normal rules for the current process.
         - de: Deutsch
         - tr: Türkçe
         - it: Italiano
-    - toggle_hotkey: Ctrl+Alt+F12
+    - toggle_hotkey: Alt+Z
       $name: Toggle hotkey
       $name:zh-CN: 显示/隐藏快捷键
       $description: Global hotkey used to show or hide the canvas. Use modifiers such as Ctrl, Alt, Shift, or Win plus one key. Avoid AltGr combinations. If it does nothing, another program may already use the combination.

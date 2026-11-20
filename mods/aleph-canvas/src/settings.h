@@ -169,7 +169,7 @@ static void LoadSettings() {
     settings.toggleHotkey =
         hotkeyText != nullptr && *hotkeyText != L'\0'
             ? TrimText(hotkeyText)
-            : L"Ctrl+Alt+F12";
+            : L"Alt+Z";
 
     settings.openOnStart =
         yoko::GetClampedIntSetting(L"Behavior.open_on_start", 0, 1) != 0;

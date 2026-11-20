@@ -21,6 +21,7 @@ inline void FailThumbnail(Card& card, DWORD now) {
 inline bool HasDueThumbnailRetry(DWORD now) {
     for (const Card& card : context.cards) {
         if (card.state == WindowVisualState::Live && !card.destroyed &&
+            !IsStackBackground(card) &&
             card.thumbnailFailed &&
             now - card.thumbnailRetryTick >= kThumbnailRetryDelayMs) {
             return true;
@@ -149,11 +150,20 @@ inline void SubmitThumbnail(Card& card, const ThumbnailGeometry& geometry,
 }
 
 inline void UpdateThumbnail(Card& card, DWORD now) {
+    // DWM thumbnails cannot be rotated or scaled, and a stack shows only
+    // its front window live. Background members render as icon cards, so
+    // never register or show a thumbnail for them.
+    if (IsStackBackground(card)) {
+        if (card.thumbnail.valid()) {
+            HideThumbnail(card, now);
+        }
+        return;
+    }
     if (!EnsureThumbnail(card, now)) {
         return;
     }
     ThumbnailGeometry geometry;
-    geometry.destination = WorldToScreen(card.world, context.camera);
+    geometry.destination = WorldToScreen(StackWorldRect(card), context.camera);
     if (ThumbnailViewportClip(geometry.destination).empty()) {
         HideThumbnail(card, now);
         return;

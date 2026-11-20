@@ -1,6 +1,7 @@
 #pragma once
 
 #include "card_chrome.h"
+#include "card_stacks.h"
 #include "context.h"
 #include "localization.h"
 #include "minimap.h"
@@ -195,21 +196,53 @@ inline void DrawCardBody(const Card& card, const RectF& body, float scale) {
 
 inline void DrawCard(const Card& card, int index, float scale) {
     const RectF rect = CardScreenBounds(card);
-    if (rect.empty() || rect.right < 0.0f || rect.bottom < 0.0f ||
-        rect.left > static_cast<float>(VirtualScreenWidth()) ||
-        rect.top > static_cast<float>(VirtualScreenHeight())) {
+    if (rect.empty()) {
+        return;
+    }
+    // Cull on the rotated/scaled quad, not the unrotated bounds: a fanned
+    // stack member's corners extend past its own rectangle.
+    const std::array<Vec2, 4> quad = CardScreenQuad(rect, card.stack);
+    float quadLeft = quad[0].x;
+    float quadTop = quad[0].y;
+    float quadRight = quad[0].x;
+    float quadBottom = quad[0].y;
+    for (const Vec2& corner : quad) {
+        quadLeft = std::min(quadLeft, corner.x);
+        quadTop = std::min(quadTop, corner.y);
+        quadRight = std::max(quadRight, corner.x);
+        quadBottom = std::max(quadBottom, corner.y);
+    }
+    if (quadRight < 0.0f || quadBottom < 0.0f ||
+        quadLeft > static_cast<float>(VirtualScreenWidth()) ||
+        quadTop > static_cast<float>(VirtualScreenHeight())) {
         return;
     }
     const float radius = kCardCornerRadiusPx * scale;
     const bool emphasized = index == context.hoverCard || index == context.selectedCard;
-    const RectF body = WorldToScreen(card.world, context.camera);
+    const RectF body = WorldToScreen(StackWorldRect(card), context.camera);
     const RectF header = CardHeaderRect(card);
+    const bool transformed = card.stack.rotationRadians != 0.0f ||
+                             card.stack.scale != 1.0f;
+    D2D1_MATRIX_3X2_F savedTransform = D2D1::Matrix3x2F::Identity();
+    if (transformed) {
+        const Vec2 center{rect.centerX(), rect.centerY()};
+        const float degrees = card.stack.rotationRadians *
+                              (180.0f / 3.141592653589793f);
+        context.hudTarget->GetTransform(&savedTransform);
+        context.hudTarget->SetTransform(
+            D2D1::Matrix3x2F::Scale(card.stack.scale, card.stack.scale,
+                                     D2D1::Point2F(center.x, center.y)) *
+            D2D1::Matrix3x2F::Rotation(degrees, D2D1::Point2F(center.x, center.y)));
+    }
     DrawCardBody(card, body, scale);
     DrawCardHeader(card, index, header, scale);
     SetHudColor(emphasized ? context.settings.accentColor : context.settings.gridColor);
     context.hudTarget->DrawRoundedRectangle(
         RoundedRect(rect, radius), context.hudBrush,
         emphasized ? 2.0f * scale : 1.0f * scale);
+    if (transformed) {
+        context.hudTarget->SetTransform(savedTransform);
+    }
 }
 
 inline void DrawMinimapContents(const RectF& map, float scale) {
@@ -222,7 +255,7 @@ inline void DrawMinimapContents(const RectF& map, float scale) {
         D2D1::RectF(inner.left, inner.top, inner.right, inner.bottom),
         D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
     for (const Card& card : context.cards) {
-        const RectF projected = MinimapWorldToScreen(card.world, map, bounds);
+        const RectF projected = MinimapWorldToScreen(StackWorldRect(card), map, bounds);
         SetHudColor(card.state == WindowVisualState::Live
                         ? context.settings.accentColor
                         : context.settings.mutedTextColor);

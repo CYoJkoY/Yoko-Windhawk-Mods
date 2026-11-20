@@ -153,7 +153,7 @@ inline void BeginCardDrag(int index, POINT cursor) {
     context.camera.zoomAnchored = false;
     context.draggedCard = index;
     context.dragCursor = cursor;
-    const RectF screen = WorldToScreen(context.cards[static_cast<size_t>(index)].world,
+    const RectF screen = WorldToScreen(StackWorldRect(context.cards[static_cast<size_t>(index)]),
                                        context.camera);
     context.dragGrabOffset.x = static_cast<LONG>(static_cast<float>(cursor.x) - screen.left);
     context.dragGrabOffset.y = static_cast<LONG>(static_cast<float>(cursor.y) - screen.top);
@@ -176,6 +176,15 @@ inline void UpdateCardDrag(POINT cursor) {
     moved.right = moved.left + card.world.width();
     moved.bottom = moved.top + card.world.height();
     card.world = moved;
+    // Dragging one member moves the whole stack: every member shares the
+    // anchor, so update it together instead of leaving the stack behind.
+    if (card.stack.grouped && !card.stack.groupKey.empty()) {
+        for (Card& member : context.cards) {
+            if (member.stack.grouped && member.stack.groupKey == card.stack.groupKey) {
+                member.stack.anchorWorld = moved;
+            }
+        }
+    }
     context.hasGuideVertical = snap.snapVertical;
     context.hasGuideHorizontal = snap.snapHorizontal;
     context.guideVertical = RectF{(snap.guideX - context.camera.centerX) * context.camera.zoom +
@@ -266,6 +275,23 @@ inline void HandleLeftButtonDown(POINT cursor) {
         }
         if (action == CardHeaderAction::Pin) {
             ToggleCardPin(card);
+            return;
+        }
+    }
+    // Shift+click on a stacked card brings the next window in the stack
+    // to the front. Without it the background windows would be visible
+    // in the fan but unreachable by mouse; drag and dive stay unchanged.
+    if (card >= 0 && (GetKeyState(VK_SHIFT) & 0x8000) != 0) {
+        const std::wstring groupKey = context.cards[static_cast<size_t>(card)].stack.groupKey;
+        if (CycleCardStack(context.cards, context.settings, card, 1)) {
+            context.selectedCard = card;
+            for (size_t index = 0; index < context.cards.size(); ++index) {
+                if (context.cards[index].stack.groupKey == groupKey &&
+                    context.cards[index].stack.slot == 0) {
+                    context.selectedCard = static_cast<int>(index);
+                    break;
+                }
+            }
             return;
         }
     }
