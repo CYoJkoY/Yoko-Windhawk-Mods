@@ -2960,6 +2960,113 @@ inline std::array<Vec2, 4> CardScreenQuad(const RectF& bounds,
     return quad;
 }
 
+inline RectF CardQuadBounds(const std::array<Vec2, 4>& quad) {
+    RectF bounds{quad[0].x, quad[0].y, quad[0].x, quad[0].y};
+    for (const Vec2& point : quad) {
+        bounds.left = std::min(bounds.left, point.x);
+        bounds.top = std::min(bounds.top, point.y);
+        bounds.right = std::max(bounds.right, point.x);
+        bounds.bottom = std::max(bounds.bottom, point.y);
+    }
+    return bounds;
+}
+
+inline void SubtractRect(const RectF& source, const RectF& hole,
+                         std::vector<RectF>& result) {
+    if (!RectsOverlap(source, hole)) {
+        result.push_back(source);
+        return;
+    }
+    const RectF overlap{std::max(source.left, hole.left),
+                        std::max(source.top, hole.top),
+                        std::min(source.right, hole.right),
+                        std::min(source.bottom, hole.bottom)};
+    const RectF pieces[] = {
+        {source.left, source.top, source.right, overlap.top},
+        {source.left, overlap.bottom, source.right, source.bottom},
+        {source.left, overlap.top, overlap.left, overlap.bottom},
+        {overlap.right, overlap.top, source.right, overlap.bottom}};
+    for (const RectF& piece : pieces) {
+        if (!piece.empty()) {
+            result.push_back(piece);
+        }
+    }
+}
+
+struct CardDrawClips {
+    bool clipped = false;
+    std::vector<RectF> regions;
+};
+
+inline std::vector<bool> SelectUnoccludedThumbnails(
+    const std::vector<size_t>& drawOrder,
+    const std::vector<RectF>& destinations) {
+    std::vector<bool> selected(destinations.size(), false);
+    std::vector<RectF> visibleDestinations;
+    for (size_t position = drawOrder.size(); position-- > 0;) {
+        const size_t index = drawOrder[position];
+        if (index >= destinations.size() || destinations[index].empty()) {
+            continue;
+        }
+        const RectF& destination = destinations[index];
+        if (std::any_of(visibleDestinations.begin(), visibleDestinations.end(),
+                        [&destination](const RectF& visible) {
+                            return RectsOverlap(destination, visible);
+                        })) {
+            continue;
+        }
+        selected[index] = true;
+        visibleDestinations.push_back(destination);
+    }
+    return selected;
+}
+
+inline std::vector<RectF> CardOcclusionHoles(
+    const RectF& viewport, const RectF& cardBounds,
+    const std::vector<RectF>& holes) {
+    std::vector<RectF> relevantHoles;
+    for (const RectF& hole : holes) {
+        if (RectsOverlap(cardBounds, hole) && RectsOverlap(viewport, hole)) {
+            const RectF clippedHole{std::max(viewport.left, hole.left),
+                                    std::max(viewport.top, hole.top),
+                                    std::min(viewport.right, hole.right),
+                                    std::min(viewport.bottom, hole.bottom)};
+            relevantHoles.push_back(clippedHole);
+        }
+    }
+    return relevantHoles;
+}
+
+inline std::vector<RectF> SubtractCardOcclusionHoles(
+    const RectF& viewport, const std::vector<RectF>& holes) {
+    std::vector<RectF> regions{viewport};
+    for (const RectF& hole : holes) {
+        std::vector<RectF> remaining;
+        for (const RectF& region : regions) {
+            SubtractRect(region, hole, remaining);
+        }
+        regions = std::move(remaining);
+        if (regions.empty()) {
+            break;
+        }
+    }
+    return regions;
+}
+
+inline CardDrawClips CardDrawRegions(
+    const RectF& viewport, const std::array<Vec2, 4>& cardQuad,
+    const std::vector<RectF>& holes) {
+    if (viewport.empty()) {
+        return CardDrawClips{true, {}};
+    }
+    const std::vector<RectF> relevantHoles =
+        CardOcclusionHoles(viewport, CardQuadBounds(cardQuad), holes);
+    if (relevantHoles.empty()) {
+        return CardDrawClips{};
+    }
+    return CardDrawClips{true, SubtractCardOcclusionHoles(viewport, relevantHoles)};
+}
+
 inline CardStackPlacement StackPlacementForSlot(size_t slot,
                                                const std::wstring& groupKey,
                                                const CanvasSettings& settings) {
@@ -4233,6 +4340,195 @@ inline Camera DiveCameraForCard(const Card& card) {
 }
 
 
+// Card header chrome.
+//
+// Every live card reserves a 28 DIP strip above its body. The strip carries the
+// title and two buttons: pin keeps a card above every unpinned card, close
+// dismisses the card until the canvas is shown again.
+//
+// This header stays free of Direct2D and Win32 drawing calls so the native
+// regressions can exercise the geometry on its own.
+
+
+#include <algorithm>
+#include <unordered_map>
+
+inline RectF CardHeaderRect(const Card& card) {
+    const RectF bounds = CardScreenBounds(card);
+    return RectF{bounds.left, bounds.top, bounds.right,
+                 bounds.top + CardHeaderHeight()};
+}
+
+// The inset shrinks with the header so a zoomed-out card still keeps its
+// buttons inside the strip instead of clipping them.
+inline float CardHeaderButtonInset(float headerHeight, float scale) {
+    return std::min(kCardHeaderButtonInsetPx * scale, headerHeight * 0.2f);
+}
+
+inline float CardHeaderButtonSize(float headerHeight, float scale) {
+    if (headerHeight <= 0.0f) {
+        return 0.0f;
+    }
+    const float inset = CardHeaderButtonInset(headerHeight, scale);
+    return std::min(kCardHeaderButtonPx * scale, headerHeight - inset * 2.0f);
+}
+
+inline bool CardHeaderButtonsFit(const RectF& header, float scale) {
+    if (header.empty()) {
+        return false;
+    }
+    const float size = CardHeaderButtonSize(header.height(), scale);
+    if (size <= 0.0f) {
+        return false;
+    }
+    const float inset = CardHeaderButtonInset(header.height(), scale);
+    const float gap = kCardHeaderButtonGapPx * scale;
+    const float needed =
+        size * 2.0f + gap + inset * 2.0f + kCardTitlePaddingPx * scale * 2.0f;
+    return header.width() >= needed;
+}
+
+inline RectF CardCloseButtonRect(const RectF& header, float scale) {
+    if (!CardHeaderButtonsFit(header, scale)) {
+        return {};
+    }
+    const float size = CardHeaderButtonSize(header.height(), scale);
+    const float inset = CardHeaderButtonInset(header.height(), scale);
+    const float top = header.centerY() - size * 0.5f;
+    return MakeRectF(header.right - inset - size, top, size, size);
+}
+
+inline RectF CardPinButtonRect(const RectF& header, float scale) {
+    const RectF close = CardCloseButtonRect(header, scale);
+    if (close.empty()) {
+        return {};
+    }
+    const float gap = kCardHeaderButtonGapPx * scale;
+    return MakeRectF(close.left - gap - close.width(), close.top, close.width(),
+                     close.height());
+}
+
+inline CardHeaderAction HitTestCardHeader(const RectF& header, Vec2 point,
+                                          float scale) {
+    if (ContainsPoint(CardCloseButtonRect(header, scale), point.x, point.y)) {
+        return CardHeaderAction::Close;
+    }
+    if (ContainsPoint(CardPinButtonRect(header, scale), point.x, point.y)) {
+        return CardHeaderAction::Pin;
+    }
+    return CardHeaderAction::None;
+}
+
+inline bool IsGroupedStackCard(const Card& card) {
+    return card.stack.grouped && !card.stack.groupKey.empty();
+}
+
+// Stack members share one draw group so they stay contiguous in paint order;
+// an ungrouped card is its own group and keeps its scan position.
+inline std::wstring CardDrawGroupKey(const Card& card, size_t index) {
+    if (IsGroupedStackCard(card)) {
+        return L"S:" + card.stack.groupKey;
+    }
+    return L"C:" + card.fingerprint + L":" + std::to_wstring(index);
+}
+
+inline std::unordered_map<std::wstring, bool> CollectStackPins(
+    const std::vector<Card>& cards) {
+    std::unordered_map<std::wstring, bool> stackPinned;
+    for (const Card& card : cards) {
+        if (!IsGroupedStackCard(card)) {
+            continue;
+        }
+        bool& pinned = stackPinned[card.stack.groupKey];
+        pinned = pinned || card.pinned;
+    }
+    return stackPinned;
+}
+
+inline std::vector<size_t> AssignDrawGroups(const std::vector<Card>& cards) {
+    std::unordered_map<std::wstring, size_t> groupIds;
+    std::vector<size_t> drawGroups(cards.size());
+    for (size_t index = 0; index < cards.size(); ++index) {
+        const auto entry = groupIds.try_emplace(
+            CardDrawGroupKey(cards[index], index), groupIds.size()).first;
+        drawGroups[index] = entry->second;
+    }
+    return drawGroups;
+}
+
+inline bool CardDrawPinned(
+    const Card& card, const std::unordered_map<std::wstring, bool>& stackPinned) {
+    if (!IsGroupedStackCard(card)) {
+        return card.pinned;
+    }
+    const auto entry = stackPinned.find(card.stack.groupKey);
+    return entry == stackPinned.end() ? card.pinned : entry->second;
+}
+
+inline bool IsStackFrontCard(const Card& card) {
+    return IsGroupedStackCard(card) &&
+           (card.stack.slot == 0 || card.stack.drawAboveStack);
+}
+
+// The card lifted out of the stack paints above its own members, then the
+// highest slot (deepest background card) paints first and the front slot
+// (slot 0) paints last, so a stack always reads as one card with its front on
+// top.
+inline bool StackDrawLess(const Card& left, const Card& right) {
+    if (left.stack.drawAboveStack != right.stack.drawAboveStack) {
+        return !left.stack.drawAboveStack;
+    }
+    return left.stack.slot > right.stack.slot;
+}
+
+// Stack fronts are the highest layer, followed by pinned cards, so a pin lifts
+// other cards without covering the upright card at the front of a stack.
+// Hit testing walks this order backwards, reaching the visible top card first.
+inline std::vector<size_t> CardDrawOrder(const std::vector<Card>& cards) {
+    const std::unordered_map<std::wstring, bool> stackPinned =
+        CollectStackPins(cards);
+    const std::vector<size_t> drawGroups = AssignDrawGroups(cards);
+    std::vector<size_t> order;
+    order.reserve(cards.size());
+    for (size_t index = 0; index < cards.size(); ++index) {
+        order.push_back(index);
+    }
+    std::stable_sort(
+        order.begin(), order.end(),
+        [&cards, &drawGroups, &stackPinned](size_t left, size_t right) {
+            const bool leftFront = IsStackFrontCard(cards[left]);
+            const bool rightFront = IsStackFrontCard(cards[right]);
+            if (leftFront != rightFront) {
+                return !leftFront;
+            }
+            const bool leftPinned = CardDrawPinned(cards[left], stackPinned);
+            const bool rightPinned = CardDrawPinned(cards[right], stackPinned);
+            if (leftPinned != rightPinned) {
+                return !leftPinned;
+            }
+            if (drawGroups[left] != drawGroups[right]) {
+                return drawGroups[left] < drawGroups[right];
+            }
+            if (!IsGroupedStackCard(cards[left]) ||
+                !IsGroupedStackCard(cards[right])) {
+                return false;
+            }
+            return StackDrawLess(cards[left], cards[right]);
+        });
+    return order;
+}
+
+inline int HitTestCardInOrder(const std::vector<Card>& cards, Vec2 point) {
+    const std::vector<size_t> order = CardDrawOrder(cards);
+    for (size_t slot = order.size(); slot-- > 0;) {
+        const size_t index = order[slot];
+        if (ContainsPoint(CardScreenBounds(cards[index]), point.x, point.y)) {
+            return static_cast<int>(index);
+        }
+    }
+    return -1;
+}
+
 inline void ReleaseThumbnail(Card& card) {
     card.thumbnail.reset();
     card.thumbnailVisible = false;
@@ -4376,7 +4672,7 @@ inline void SubmitThumbnail(Card& card, const ThumbnailGeometry& geometry,
     card.thumbnailVisible = true;
 }
 
-inline void UpdateThumbnail(Card& card, DWORD now) {
+inline bool CanPrepareThumbnail(Card& card, DWORD now) {
     const bool stackAnimating = std::any_of(
         context.stackTransitions.begin(), context.stackTransitions.end(),
         [&card](const StackCycleTransition& transition) {
@@ -4386,7 +4682,7 @@ inline void UpdateThumbnail(Card& card, DWORD now) {
         if (card.thumbnail.valid() && card.thumbnailVisible) {
             HideThumbnail(card, now);
         }
-        return;
+        return false;
     }
     // DWM thumbnails cannot be rotated or scaled, and a stack shows only
     // its front window live. Background members render as icon cards, so
@@ -4395,32 +4691,51 @@ inline void UpdateThumbnail(Card& card, DWORD now) {
         if (card.thumbnail.valid()) {
             HideThumbnail(card, now);
         }
-        return;
+        return false;
     }
-    if (!EnsureThumbnail(card, now)) {
-        return;
+    return EnsureThumbnail(card, now);
+}
+
+inline bool PrepareThumbnail(Card& card, DWORD now,
+                             ThumbnailGeometry& geometry) {
+    if (!CanPrepareThumbnail(card, now)) {
+        return false;
     }
-    ThumbnailGeometry geometry;
     geometry.destination = WorldToScreen(StackWorldRect(card), context.camera);
     if (ThumbnailViewportClip(geometry.destination).empty()) {
         HideThumbnail(card, now);
-        return;
+        return false;
     }
     if (!ReadThumbnailSource(card, geometry.source)) {
         FailThumbnail(card, now);
-        return;
+        return false;
     }
     if (!ClipThumbnailGeometry(geometry)) {
         HideThumbnail(card, now);
-        return;
+        return false;
     }
-    SubmitThumbnail(card, geometry, now);
+    return true;
 }
 
 inline void UpdateThumbnails() {
     const DWORD now = GetTickCount();
-    for (Card& card : context.cards) {
-        UpdateThumbnail(card, now);
+    std::vector<ThumbnailGeometry> geometries(context.cards.size());
+    std::vector<RectF> destinations(context.cards.size());
+    for (size_t index = 0; index < context.cards.size(); ++index) {
+        if (PrepareThumbnail(context.cards[index], now, geometries[index])) {
+            destinations[index] =
+                RectFromRect(ThumbnailRect(geometries[index].destination));
+        }
+    }
+    const std::vector<bool> selected = SelectUnoccludedThumbnails(
+        CardDrawOrder(context.cards), destinations);
+    for (size_t index = 0; index < context.cards.size(); ++index) {
+        Card& card = context.cards[index];
+        if (selected[index]) {
+            SubmitThumbnail(card, geometries[index], now);
+        } else if (card.thumbnail.valid() && card.thumbnailVisible) {
+            HideThumbnail(card, now);
+        }
     }
 }
 
@@ -4478,185 +4793,6 @@ inline void DrawHostScene(HDC dc) {
     DeleteObject(pen);
 }
 
-
-// Card header chrome.
-//
-// Every live card reserves a 28 DIP strip above its body. The strip carries the
-// title and two buttons: pin keeps a card above every unpinned card, close
-// dismisses the card until the canvas is shown again.
-//
-// This header stays free of Direct2D and Win32 drawing calls so the native
-// regressions can exercise the geometry on its own.
-
-
-#include <algorithm>
-#include <unordered_map>
-
-inline RectF CardHeaderRect(const Card& card) {
-    const RectF bounds = CardScreenBounds(card);
-    return RectF{bounds.left, bounds.top, bounds.right,
-                 bounds.top + CardHeaderHeight()};
-}
-
-// The inset shrinks with the header so a zoomed-out card still keeps its
-// buttons inside the strip instead of clipping them.
-inline float CardHeaderButtonInset(float headerHeight, float scale) {
-    return std::min(kCardHeaderButtonInsetPx * scale, headerHeight * 0.2f);
-}
-
-inline float CardHeaderButtonSize(float headerHeight, float scale) {
-    if (headerHeight <= 0.0f) {
-        return 0.0f;
-    }
-    const float inset = CardHeaderButtonInset(headerHeight, scale);
-    return std::min(kCardHeaderButtonPx * scale, headerHeight - inset * 2.0f);
-}
-
-inline bool CardHeaderButtonsFit(const RectF& header, float scale) {
-    if (header.empty()) {
-        return false;
-    }
-    const float size = CardHeaderButtonSize(header.height(), scale);
-    if (size <= 0.0f) {
-        return false;
-    }
-    const float inset = CardHeaderButtonInset(header.height(), scale);
-    const float gap = kCardHeaderButtonGapPx * scale;
-    const float needed =
-        size * 2.0f + gap + inset * 2.0f + kCardTitlePaddingPx * scale * 2.0f;
-    return header.width() >= needed;
-}
-
-inline RectF CardCloseButtonRect(const RectF& header, float scale) {
-    if (!CardHeaderButtonsFit(header, scale)) {
-        return {};
-    }
-    const float size = CardHeaderButtonSize(header.height(), scale);
-    const float inset = CardHeaderButtonInset(header.height(), scale);
-    const float top = header.centerY() - size * 0.5f;
-    return MakeRectF(header.right - inset - size, top, size, size);
-}
-
-inline RectF CardPinButtonRect(const RectF& header, float scale) {
-    const RectF close = CardCloseButtonRect(header, scale);
-    if (close.empty()) {
-        return {};
-    }
-    const float gap = kCardHeaderButtonGapPx * scale;
-    return MakeRectF(close.left - gap - close.width(), close.top, close.width(),
-                     close.height());
-}
-
-inline CardHeaderAction HitTestCardHeader(const RectF& header, Vec2 point,
-                                          float scale) {
-    if (ContainsPoint(CardCloseButtonRect(header, scale), point.x, point.y)) {
-        return CardHeaderAction::Close;
-    }
-    if (ContainsPoint(CardPinButtonRect(header, scale), point.x, point.y)) {
-        return CardHeaderAction::Pin;
-    }
-    return CardHeaderAction::None;
-}
-
-inline bool IsGroupedStackCard(const Card& card) {
-    return card.stack.grouped && !card.stack.groupKey.empty();
-}
-
-// Stack members share one draw group so they stay contiguous in paint order;
-// an ungrouped card is its own group and keeps its scan position.
-inline std::wstring CardDrawGroupKey(const Card& card, size_t index) {
-    if (IsGroupedStackCard(card)) {
-        return L"S:" + card.stack.groupKey;
-    }
-    return L"C:" + card.fingerprint + L":" + std::to_wstring(index);
-}
-
-inline std::unordered_map<std::wstring, bool> CollectStackPins(
-    const std::vector<Card>& cards) {
-    std::unordered_map<std::wstring, bool> stackPinned;
-    for (const Card& card : cards) {
-        if (!IsGroupedStackCard(card)) {
-            continue;
-        }
-        bool& pinned = stackPinned[card.stack.groupKey];
-        pinned = pinned || card.pinned;
-    }
-    return stackPinned;
-}
-
-inline std::vector<size_t> AssignDrawGroups(const std::vector<Card>& cards) {
-    std::unordered_map<std::wstring, size_t> groupIds;
-    std::vector<size_t> drawGroups(cards.size());
-    for (size_t index = 0; index < cards.size(); ++index) {
-        const auto entry = groupIds.try_emplace(
-            CardDrawGroupKey(cards[index], index), groupIds.size()).first;
-        drawGroups[index] = entry->second;
-    }
-    return drawGroups;
-}
-
-inline bool CardDrawPinned(
-    const Card& card, const std::unordered_map<std::wstring, bool>& stackPinned) {
-    if (!IsGroupedStackCard(card)) {
-        return card.pinned;
-    }
-    const auto entry = stackPinned.find(card.stack.groupKey);
-    return entry == stackPinned.end() ? card.pinned : entry->second;
-}
-
-// The card lifted out of the stack paints above its own members, then the
-// highest slot (deepest background card) paints first and the front slot
-// (slot 0) paints last, so a stack always reads as one card with its front on
-// top.
-inline bool StackDrawLess(const Card& left, const Card& right) {
-    if (left.stack.drawAboveStack != right.stack.drawAboveStack) {
-        return !left.stack.drawAboveStack;
-    }
-    return left.stack.slot > right.stack.slot;
-}
-
-// Pinned cards are drawn last and hit-tested first, so pinning a card lifts it
-// above every unpinned card without reordering the scan-owned card vector.
-// Hit testing walks this order backwards, so it reaches a stack front first.
-inline std::vector<size_t> CardDrawOrder(const std::vector<Card>& cards) {
-    const std::unordered_map<std::wstring, bool> stackPinned =
-        CollectStackPins(cards);
-    const std::vector<size_t> drawGroups = AssignDrawGroups(cards);
-    std::vector<size_t> order;
-    order.reserve(cards.size());
-    for (size_t index = 0; index < cards.size(); ++index) {
-        order.push_back(index);
-    }
-    std::stable_sort(
-        order.begin(), order.end(),
-        [&cards, &drawGroups, &stackPinned](size_t left, size_t right) {
-            const bool leftPinned = CardDrawPinned(cards[left], stackPinned);
-            const bool rightPinned = CardDrawPinned(cards[right], stackPinned);
-            if (leftPinned != rightPinned) {
-                return !leftPinned;
-            }
-            if (drawGroups[left] != drawGroups[right]) {
-                return drawGroups[left] < drawGroups[right];
-            }
-            if (!IsGroupedStackCard(cards[left]) ||
-                !IsGroupedStackCard(cards[right])) {
-                return false;
-            }
-            return StackDrawLess(cards[left], cards[right]);
-        });
-    return order;
-}
-
-inline int HitTestCardInOrder(const std::vector<Card>& cards, Vec2 point) {
-    const std::vector<size_t> order = CardDrawOrder(cards);
-    for (size_t slot = order.size(); slot-- > 0;) {
-        const size_t index = order[slot];
-        if (ContainsPoint(CardScreenBounds(cards[index]), point.x, point.y)) {
-            return static_cast<int>(index);
-        }
-    }
-    return -1;
-}
 
 inline void SetHudColor(uint32_t rgb, float alpha = 1.0f) {
     context.hudBrush->SetColor(ToColorF(rgb, alpha));
@@ -4855,19 +4991,10 @@ inline void DrawCard(const Card& card, int index, float scale) {
     // Cull on the rotated/scaled quad, not the unrotated bounds: a fanned
     // stack member's corners extend past its own rectangle.
     const std::array<Vec2, 4> quad = CardScreenQuad(rect, card.stack);
-    float quadLeft = quad[0].x;
-    float quadTop = quad[0].y;
-    float quadRight = quad[0].x;
-    float quadBottom = quad[0].y;
-    for (const Vec2& corner : quad) {
-        quadLeft = std::min(quadLeft, corner.x);
-        quadTop = std::min(quadTop, corner.y);
-        quadRight = std::max(quadRight, corner.x);
-        quadBottom = std::max(quadBottom, corner.y);
-    }
-    if (quadRight < 0.0f || quadBottom < 0.0f ||
-        quadLeft > static_cast<float>(VirtualScreenWidth()) ||
-        quadTop > static_cast<float>(VirtualScreenHeight())) {
+    const RectF quadBounds = CardQuadBounds(quad);
+    if (quadBounds.right < 0.0f || quadBounds.bottom < 0.0f ||
+        quadBounds.left > static_cast<float>(VirtualScreenWidth()) ||
+        quadBounds.top > static_cast<float>(VirtualScreenHeight())) {
         return;
     }
     const float radius = kCardCornerRadiusPx * scale;
@@ -4906,6 +5033,71 @@ inline void DrawCard(const Card& card, int index, float scale) {
     if (transformed) {
         context.hudTarget->SetTransform(savedTransform);
     }
+}
+
+// A live preview is composited inside the host window, which sits below the HUD
+// layer, so HUD artwork is always above every preview. A card may therefore
+// only yield the preview rectangles of cards painted after it: reserving a
+// lower card's preview would punch that card through this one, and the upright
+// card at the front of a stack would show the cards stacked beneath it.
+inline std::vector<RectF> HigherThumbnailRects(
+    const std::vector<Card>& cards, const std::vector<size_t>& order,
+    size_t position) {
+    std::vector<RectF> thumbnails;
+    for (size_t slot = position + 1; slot < order.size(); ++slot) {
+        const size_t index = order[slot];
+        if (index >= cards.size()) {
+            continue;
+        }
+        const Card& card = cards[index];
+        if (card.state != WindowVisualState::Live || !card.thumbnail.valid() ||
+            !card.thumbnailVisible) {
+            continue;
+        }
+        const RectF destination = RectFromRect(card.thumbnailDestination);
+        if (!destination.empty()) {
+            thumbnails.push_back(destination);
+        }
+    }
+    return thumbnails;
+}
+
+// One card's paint request: the card, its index for hover/selection emphasis,
+// and the chrome scale shared by every card in the frame.
+struct HudCardPaint {
+    const Card& card;
+    int index;
+    float scale;
+};
+
+inline void DrawCardWithThumbnailClips(const HudCardPaint& paint,
+                                       const CardDrawClips& clips) {
+    if (!clips.clipped) {
+        DrawCard(paint.card, paint.index, paint.scale);
+        return;
+    }
+    for (const RectF& region : clips.regions) {
+        context.hudTarget->PushAxisAlignedClip(
+            D2D1::RectF(region.left, region.top, region.right, region.bottom),
+            D2D1_ANTIALIAS_MODE_ALIASED);
+        DrawCard(paint.card, paint.index, paint.scale);
+        context.hudTarget->PopAxisAlignedClip();
+    }
+}
+
+inline CardDrawClips CardThumbnailDrawClips(
+    const std::vector<Card>& cards, const std::vector<size_t>& order,
+    size_t position) {
+    const size_t index = order[position];
+    if (index >= cards.size()) {
+        return CardDrawClips{};
+    }
+    const RectF bounds = CardScreenBounds(cards[index]);
+    const std::array<Vec2, 4> quad = CardScreenQuad(bounds, cards[index].stack);
+    const RectF viewport{0.0f, 0.0f, static_cast<float>(VirtualScreenWidth()),
+                         static_cast<float>(VirtualScreenHeight())};
+    return CardDrawRegions(viewport, quad,
+                           HigherThumbnailRects(cards, order, position));
 }
 
 inline void DrawMinimapContents(const RectF& map, float scale) {
@@ -5009,8 +5201,14 @@ inline bool SubmitHudFrame() {
     context.hudTarget->BeginDraw();
     context.hudTarget->Clear(D2D1::ColorF(0, 0.0f));
     const float scale = ChromeScale();
-    for (const size_t index : CardDrawOrder(context.cards)) {
-        DrawCard(context.cards[index], static_cast<int>(index), scale);
+    const std::vector<size_t> order = CardDrawOrder(context.cards);
+    for (size_t position = 0; position < order.size(); ++position) {
+        const size_t index = order[position];
+        const CardDrawClips clips =
+            CardThumbnailDrawClips(context.cards, order, position);
+        DrawCardWithThumbnailClips(
+            HudCardPaint{context.cards[index], static_cast<int>(index), scale},
+            clips);
     }
     DrawEmptyCanvas(scale);
     DrawMinimap(scale);
