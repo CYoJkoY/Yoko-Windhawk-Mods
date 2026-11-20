@@ -131,6 +131,9 @@ static std::string SerializeLayout(const LayoutSnapshot& layout) {
         if (entry.pinned) {
             output += ",\"pin\":1";
         }
+        if (!entry.grouped) {
+            output += ",\"is_grouped\":0";
+        }
         output += "}";
     }
     output += "]}\n";
@@ -504,12 +507,14 @@ struct JsonEntryFields {
     double width = 0.0;
     double height = 0.0;
     double pin = 0.0;
+    double grouped = 1.0;
     bool hasFingerprint = false;
     bool hasX = false;
     bool hasY = false;
     bool hasWidth = false;
     bool hasHeight = false;
     bool hasPin = false;
+    bool hasGrouped = false;
 };
 
 struct JsonEntryCursor {
@@ -564,6 +569,10 @@ static bool ReadJsonEntryField(JsonEntryCursor& cursor,
         return ReadJsonEntryNumber(cursor, cursor.fields.hasPin,
                                    cursor.fields.pin);
     }
+    if (key == "is_grouped") {
+        return ReadJsonEntryNumber(cursor, cursor.fields.hasGrouped,
+                                   cursor.fields.grouped);
+    }
     return SkipJsonValue(cursor.text, cursor.index, 2);
 }
 
@@ -586,6 +595,9 @@ static bool BuildLayoutEntry(const JsonEntryFields& fields, LayoutEntry& entry) 
     if (fields.hasPin && fields.pin != 0.0 && fields.pin != 1.0) {
         return false;
     }
+    if (fields.hasGrouped && fields.grouped != 0.0 && fields.grouped != 1.0) {
+        return false;
+    }
     const float left = static_cast<float>(fields.x);
     const float top = static_cast<float>(fields.y);
     const float width = static_cast<float>(fields.width);
@@ -599,6 +611,7 @@ static bool BuildLayoutEntry(const JsonEntryFields& fields, LayoutEntry& entry) 
     entry.fingerprint = fields.fingerprint;
     entry.world = world;
     entry.pinned = fields.hasPin && fields.pin == 1.0;
+    entry.grouped = !fields.hasGrouped || fields.grouped == 1.0;
     return true;
 }
 

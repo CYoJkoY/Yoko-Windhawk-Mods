@@ -240,5 +240,26 @@ class AlephCanvasNativeTests(unittest.TestCase):
     def test_card_state_selects_the_matching_badge(self) -> None:
         self.run_case("localization_badge_selection")
 
+    def test_stack_geometry_matches_fan_settings(self) -> None:
+        self.run_case("stack_geometry")
+
+    def test_stack_cycle_rotates_front_and_rejects_invalid(self) -> None:
+        self.run_case("stack_cycle")
+
+    def test_stack_removal_promotes_next_member(self) -> None:
+        self.run_case("stack_removal")
+
+    def test_stack_invalid_states_are_rejected_or_cleared(self) -> None:
+        self.run_case("stack_invalid")
+
+    def test_stack_depth_controls_visibility(self) -> None:
+        self.run_case("stack_depth_visibility")
+
+    def test_stack_hit_testing_inverts_rotation_and_scale(self) -> None:
+        self.run_case("stack_hit_rotation")
+
+    def test_layout_grouped_flag_roundtrips(self) -> None:
+        self.run_case("layout_grouped_roundtrip")
+
 if __name__ == "__main__":
     unittest.main()

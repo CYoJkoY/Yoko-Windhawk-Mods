@@ -213,6 +213,23 @@ static void LoadSettings() {
     settings.cardFillColor =
         ReadColorSetting(L"Appearance.card_fill_color", 0x111827);
 
+    settings.stacksEnabled =
+        yoko::GetClampedIntSetting(L"Canvas.card_stacks_enabled", 0, 1) != 0;
+    settings.stackStepDegrees =
+        static_cast<float>(yoko::GetClampedIntSetting(
+            L"Canvas.card_stack_step_degrees", 0, 900)) / 10.0f;
+    settings.stackMaxDegrees =
+        static_cast<float>(yoko::GetClampedIntSetting(
+            L"Canvas.card_stack_max_degrees", 0, 900)) / 10.0f;
+    settings.stackScaleFactor =
+        static_cast<float>(yoko::GetClampedIntSetting(
+            L"Canvas.card_stack_scale_percent", 800, 1000)) / 1000.0f;
+    settings.stackMaxDepth =
+        yoko::GetClampedIntSetting(L"Canvas.card_stack_max_depth", 0, kMaxStackDepth);
+    settings.stackRotationDirection =
+        yoko::GetClampedIntSetting(L"Canvas.card_stack_rotation_direction", -1,
+                                   1);
+
     WindhawkUtils::StringSetting initialLayout =
         WindhawkUtils::StringSetting::make(L"Canvas.initial_layout");
     const wchar_t* layoutText = initialLayout.get();

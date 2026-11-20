@@ -139,6 +139,15 @@ private:
     HTHUMBNAIL handle_ = nullptr;
 };
 
+struct CardStackPlacement {
+    std::wstring groupKey;
+    size_t slot = 0;
+    bool grouped = true;
+    bool visible = true;
+    float rotationRadians = 0.0f;
+    float scale = 1.0f;
+};
+
 struct Card {
     HWND hwnd = nullptr;
     DWORD processId = 0;
@@ -151,6 +160,7 @@ struct Card {
     std::wstring title;
     std::wstring fingerprint;
     std::wstring exePath;
+    CardStackPlacement stack;
     Thumbnail thumbnail;
     bool thumbnailFailed = false;
     DWORD thumbnailRetryTick = 0;
@@ -203,12 +213,19 @@ struct CanvasSettings {
     uint32_t mutedTextColor = 0x64748B;
     uint32_t cardFillColor = 0x111827;
     std::vector<std::wstring> excludeList;
+    bool stacksEnabled = true;
+    float stackStepDegrees = 6.5f;
+    float stackMaxDegrees = 24.0f;
+    float stackScaleFactor = 0.975f;
+    int stackMaxDepth = 5;
+    int stackRotationDirection = -1;
 };
 
 struct LayoutEntry {
     std::wstring fingerprint;
     RectF world = {};
     bool pinned = false;
+    bool grouped = true;
 };
 
 struct LayoutSnapshot {

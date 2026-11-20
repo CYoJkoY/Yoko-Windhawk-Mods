@@ -383,13 +383,14 @@ static const LayoutEntry* FindLayoutEntry(const std::wstring& fingerprint) {
 }
 
 static void RememberLayoutPin(const std::wstring& fingerprint,
-                              const RectF& world, bool pinned);
+                              const RectF& world, bool pinned, bool grouped);
 
 static void RememberLayoutEntry(const std::wstring& fingerprint,
                                 const RectF& world) {
     const LayoutEntry* existing = FindLayoutEntry(fingerprint);
     const bool pinned = existing != nullptr && existing->pinned;
-    RememberLayoutPin(fingerprint, world, pinned);
+    const bool grouped = existing == nullptr || existing->grouped;
+    RememberLayoutPin(fingerprint, world, pinned, grouped);
 }
 
 static void MoveLayoutEntryToBack(size_t index) {
@@ -414,7 +415,7 @@ static bool EvictFirstUnpinnedLayoutEntry() {
 }
 
 static void RememberLayoutPin(const std::wstring& fingerprint,
-                              const RectF& world, bool pinned) {
+                              const RectF& world, bool pinned, bool grouped) {
     auto& entries = context.layout.entries;
     const auto existing = std::find_if(
         entries.begin(), entries.end(),
@@ -424,6 +425,7 @@ static void RememberLayoutPin(const std::wstring& fingerprint,
     if (existing != entries.end()) {
         existing->world = world;
         existing->pinned = pinned;
+        existing->grouped = grouped;
         MoveLayoutEntryToBack(
             static_cast<size_t>(existing - entries.begin()));
         return;
@@ -432,5 +434,5 @@ static void RememberLayoutPin(const std::wstring& fingerprint,
         !EvictFirstUnpinnedLayoutEntry()) {
         return;
     }
-    entries.push_back(LayoutEntry{fingerprint, world, pinned});
+    entries.push_back(LayoutEntry{fingerprint, world, pinned, grouped});
 }
