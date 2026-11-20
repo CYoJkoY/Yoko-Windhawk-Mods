@@ -26,6 +26,7 @@ Drag cards to arrange them without moving the real desktop windows.
 - `Alt+Z`: toggle the canvas (configurable). If the hotkey does
   nothing, another program may already use it; pick a different combination.
 - Mouse wheel: zoom around the pointer.
+- Alt+wheel over a stacked card: cycle the stack; plain wheel still zooms.
 - Middle mouse drag: pan the canvas.
 - Hold Space and drag empty canvas: pan.
 - Drag a card: arrange it; nearby edges snap into alignment.
@@ -899,6 +900,10 @@ struct Card {
     std::wstring title;
     std::wstring fingerprint;
     std::wstring exePath;
+    // Scan index from EnumWindows, topmost window first (0 = topmost).
+    // Copied from ScannedWindow on every merge so stack order follows
+    // the desktop Z-order instead of card insertion order.
+    size_t zOrder = 0;
     CardStackPlacement stack;
     Thumbnail thumbnail;
     bool thumbnailFailed = false;
@@ -934,6 +939,10 @@ struct ScannedWindow {
     std::wstring title;
     std::wstring fingerprint;
     std::wstring exePath;
+    // Scan index from EnumWindows, topmost window first (0 = topmost).
+    // Stacks order members by this rank so the focused/topmost window
+    // becomes the straight front card instead of an arbitrary member.
+    size_t zOrder = 0;
 };
 
 inline bool MatchesWindow(const Card& card, const ScannedWindow& window) {
@@ -2797,6 +2806,12 @@ static std::vector<ScannedWindow> ScanWindows(IVirtualDesktopManager* manager) {
     pass.desktopManager = manager;
     EnumWindows(&CollectPass::Thunk, reinterpret_cast<LPARAM>(&pass));
     PrepareScanCandidates(pass.windows);
+    // EnumWindows yields windows topmost first, so the vector index is
+    // the desktop Z-order rank. Record it before MergeScan reorders
+    // additions by area, or stacks would lose which window is on top.
+    for (size_t index = 0; index < pass.windows.size(); ++index) {
+        pass.windows[index].zOrder = index;
+    }
     return std::move(pass.windows);
 }
 
@@ -3050,6 +3065,13 @@ inline void AssignStackGroups(std::vector<Card>& cards,
         if (left.groupKey != right.groupKey) {
             return left.groupKey < right.groupKey;
         }
+        // Within one app, members fan in desktop Z-order: the topmost /
+        // focused window is first, so a newly formed stack hands slot 0
+        // (0 degrees, scale 1, drawn on top) to that window. Fingerprint
+        // only breaks ties, e.g. cards built without a scan rank.
+        if (cards[left.index].zOrder != cards[right.index].zOrder) {
+            return cards[left.index].zOrder < cards[right.index].zOrder;
+        }
         return cards[left.index].fingerprint < cards[right.index].fingerprint;
     });
     for (auto group = sorted.begin(); group != sorted.end();) {
@@ -3146,6 +3168,23 @@ inline bool CycleCardStack(std::vector<Card>& cards, const CanvasSettings& setti
     }
     ApplyStackOrder(cards, RotateStackOrder(members, shift), settings);
     return true;
+}
+
+// Alt+wheel cycles a stack instead of zooming. Wheel delta is in
+// WHEEL_DELTA units (120 per detent, positive = wheel up): wheel down
+// brings the next card to the front, wheel up brings the previous one
+// back. A sub-detent delta maps to zero steps and cycles nothing.
+inline int StackWheelSteps(int wheelDelta) {
+    return -wheelDelta / WHEEL_DELTA;
+}
+
+inline bool CycleStackForWheel(std::vector<Card>& cards,
+                               const CanvasSettings& settings, int hitIndex,
+                               int wheelDelta) {
+    if (wheelDelta == 0) {
+        return false;
+    }
+    return CycleCardStack(cards, settings, hitIndex, StackWheelSteps(wheelDelta));
 }
 
 
@@ -3264,6 +3303,7 @@ inline void InsertCard(ScannedWindow&& window, RectF world) {
     card.title = std::move(window.title);
     card.fingerprint = std::move(window.fingerprint);
     card.exePath = std::move(window.exePath);
+    card.zOrder = window.zOrder;
     context.cards.push_back(std::move(card));
 }
 
@@ -3326,7 +3366,8 @@ inline void ClearCards() {
 inline bool UpdateCardFromScan(size_t index, const ScannedWindow& window) {
     Card& card = context.cards[index];
     const bool changed = card.state != window.state || card.title != window.title ||
-                         !EqualRect(&card.framePx, &window.framePx);
+                         !EqualRect(&card.framePx, &window.framePx) ||
+                         card.zOrder != window.zOrder;
     if (card.state != window.state) {
         card.thumbnail.reset();
     }
@@ -3338,6 +3379,7 @@ inline bool UpdateCardFromScan(size_t index, const ScannedWindow& window) {
     card.framePx = window.framePx;
     card.title = window.title;
     card.exePath = window.exePath;
+    card.zOrder = window.zOrder;
     if (const LayoutEntry* saved = FindLayoutEntry(window.fingerprint);
         saved != nullptr) {
         card.pinned = saved->pinned;
@@ -5162,6 +5204,29 @@ inline void HandleMouseWheel(WPARAM wParam, LPARAM lParam) {
     }
     POINT cursor = {GET_X_LPARAM(lParam) - context.virtualScreen.left,
                     GET_Y_LPARAM(lParam) - context.virtualScreen.top};
+    // Alt+wheel over a stack cycles it instead of zooming: the wheel is
+    // otherwise bound to canvas zoom, so a plain wheel can never switch
+    // cards. Alt+wheel that misses a cyclable stack falls through to
+    // zoom, and a plain wheel is unchanged.
+    if ((GetKeyState(VK_MENU) & 0x8000) != 0) {
+        const int hit = HitTestCard(Vec2{static_cast<float>(cursor.x),
+                                         static_cast<float>(cursor.y)});
+        if (hit >= 0 && CycleStackForWheel(context.cards, context.settings, hit,
+                                           GET_WHEEL_DELTA_WPARAM(wParam))) {
+            const std::wstring groupKey =
+                context.cards[static_cast<size_t>(hit)].stack.groupKey;
+            context.selectedCard = hit;
+            for (size_t index = 0; index < context.cards.size(); ++index) {
+                if (context.cards[index].stack.groupKey == groupKey &&
+                    context.cards[index].stack.slot == 0) {
+                    context.selectedCard = static_cast<int>(index);
+                    break;
+                }
+            }
+            context.sceneDirty = true;
+            return;
+        }
+    }
     const float steps = static_cast<float>(GET_WHEEL_DELTA_WPARAM(wParam)) /
                         static_cast<float>(WHEEL_DELTA);
     const float factor = std::pow(kZoomStep, steps);
