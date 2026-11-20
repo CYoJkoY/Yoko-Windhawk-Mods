@@ -32,6 +32,7 @@ Drag cards to arrange them without moving the real desktop windows.
 - Double-click a card or press Enter: focus the window; an other-desktop window is pulled onto this desktop first.
 - Tab / Shift+Tab: select a card; arrow keys pan; Home fits all cards; Escape hides the canvas.
 - Click or drag the minimap: navigate the canvas.
+- The canvas hides when another window takes input focus.
 
 ## Notes
 
@@ -687,7 +688,6 @@ struct LayoutEntry {
     std::wstring fingerprint;
     RectF world = {};
     bool pinned = false;
-    DWORD lastSeenTick = 0;
 };
 
 struct LayoutSnapshot {
@@ -1875,7 +1875,6 @@ static bool BuildLayoutEntry(const JsonEntryFields& fields, LayoutEntry& entry) 
     entry.fingerprint = fields.fingerprint;
     entry.world = world;
     entry.pinned = fields.hasPin && fields.pin == 1.0;
-    entry.lastSeenTick = 0;
     return true;
 }
 
@@ -2447,12 +2446,30 @@ static void AssignFingerprints(std::vector<ScannedWindow>& windows) {
     }
 }
 
+static void EraseDismissedWindows(std::vector<ScannedWindow>& windows) {
+    windows.erase(
+        std::remove_if(windows.begin(), windows.end(),
+                       [](const ScannedWindow& window) {
+                           return context.dismissedFingerprints.count(
+                                      window.fingerprint) != 0;
+                       }),
+        windows.end());
+}
+
+// Dismissed windows must not occupy a card slot, and a dismissal can only be
+// recognized after the window has a fingerprint, so identity assignment runs
+// before both the dismissal filter and the card cut.
+inline void PrepareScanCandidates(std::vector<ScannedWindow>& windows) {
+    AssignFingerprints(windows);
+    EraseDismissedWindows(windows);
+    SelectScanCandidates(windows);
+}
+
 static std::vector<ScannedWindow> ScanWindows(IVirtualDesktopManager* manager) {
     CollectPass pass;
     pass.desktopManager = manager;
     EnumWindows(&CollectPass::Thunk, reinterpret_cast<LPARAM>(&pass));
-    SelectScanCandidates(pass.windows);
-    AssignFingerprints(pass.windows);
+    PrepareScanCandidates(pass.windows);
     return std::move(pass.windows);
 }
 
@@ -2470,37 +2487,52 @@ static void RememberLayoutPin(const std::wstring& fingerprint,
 
 static void RememberLayoutEntry(const std::wstring& fingerprint,
                                 const RectF& world) {
-    RememberLayoutPin(fingerprint, world, false);
+    const LayoutEntry* existing = FindLayoutEntry(fingerprint);
+    const bool pinned = existing != nullptr && existing->pinned;
+    RememberLayoutPin(fingerprint, world, pinned);
+}
+
+static void MoveLayoutEntryToBack(size_t index) {
+    LayoutEntry moved = std::move(context.layout.entries[index]);
+    context.layout.entries.erase(
+        context.layout.entries.begin() + static_cast<std::ptrdiff_t>(index));
+    context.layout.entries.push_back(std::move(moved));
+}
+
+// The vector order is the recency order: index zero is the least recently
+// touched entry and the back is the most recent one.
+static bool EvictFirstUnpinnedLayoutEntry() {
+    for (auto entry = context.layout.entries.begin();
+         entry != context.layout.entries.end(); ++entry) {
+        if (entry->pinned) {
+            continue;
+        }
+        context.layout.entries.erase(entry);
+        return true;
+    }
+    return false;
 }
 
 static void RememberLayoutPin(const std::wstring& fingerprint,
                               const RectF& world, bool pinned) {
-    for (LayoutEntry& entry : context.layout.entries) {
-        if (entry.fingerprint == fingerprint) {
-            entry.world = world;
-            entry.pinned = pinned;
-            entry.lastSeenTick = GetTickCount();
-            return;
-        }
-    }
-    if (context.layout.entries.size() >=
-        static_cast<size_t>(kMaxLayoutEntries)) {
-        const auto oldest = std::min_element(
-            context.layout.entries.begin(), context.layout.entries.end(),
-            [](const LayoutEntry& left, const LayoutEntry& right) {
-                if (left.pinned != right.pinned) {
-                    return right.pinned;
-                }
-                return left.lastSeenTick < right.lastSeenTick;
-            });
-        if (oldest == context.layout.entries.end()) {
-            return;
-        }
-        *oldest = LayoutEntry{fingerprint, world, pinned, GetTickCount()};
+    auto& entries = context.layout.entries;
+    const auto existing = std::find_if(
+        entries.begin(), entries.end(),
+        [&fingerprint](const LayoutEntry& entry) {
+            return entry.fingerprint == fingerprint;
+        });
+    if (existing != entries.end()) {
+        existing->world = world;
+        existing->pinned = pinned;
+        MoveLayoutEntryToBack(
+            static_cast<size_t>(existing - entries.begin()));
         return;
     }
-    context.layout.entries.push_back(
-        LayoutEntry{fingerprint, world, pinned, GetTickCount()});
+    if (entries.size() >= static_cast<size_t>(kMaxLayoutEntries) &&
+        !EvictFirstUnpinnedLayoutEntry()) {
+        return;
+    }
+    entries.push_back(LayoutEntry{fingerprint, world, pinned});
 }
 
 // Card creation, packing and snapping.
@@ -2839,33 +2871,6 @@ inline SnapResult ComputeSnap(const RectF& moving, int ignoreIndex) {
 // Direct2D, DirectWrite, WIC and shared GDI surfaces.
 
 
-// Restores the 64-bit view after WOW64 file-system redirection.
-
-using Wow64PreviousRedirectionState = void*;
-
-class ScopedWow64RedirectionDisabled {
-public:
-    ScopedWow64RedirectionDisabled()
-        : valid_(Wow64DisableWow64FsRedirection(&previous_) != FALSE) {
-    }
-
-    ~ScopedWow64RedirectionDisabled() {
-        if (valid_) {
-            Wow64RevertWow64FsRedirection(previous_);
-        }
-    }
-
-    ScopedWow64RedirectionDisabled(const ScopedWow64RedirectionDisabled&) = delete;
-    ScopedWow64RedirectionDisabled& operator=(
-        const ScopedWow64RedirectionDisabled&) = delete;
-
-    bool valid() const { return valid_; }
-
-private:
-    bool valid_ = false;
-    Wow64PreviousRedirectionState previous_ = nullptr;
-};
-
 // Icon source selection for icon cards.
 //
 // An icon card draws its bitmap at up to kCardIconMaxPx display pixels, so the
@@ -3183,15 +3188,9 @@ inline HICON QueryShellIcon(const std::wstring& exePath) {
         return nullptr;
     }
     SHFILEINFOW info = {};
-    {
-        ScopedWow64RedirectionDisabled disabled;
-        if (!disabled.valid()) {
-            return nullptr;
-        }
-        if (SHGetFileInfoW(exePath.c_str(), 0, &info, sizeof(info),
-                           SHGFI_SYSICONINDEX) == 0) {
-            return nullptr;
-        }
+    if (SHGetFileInfoW(exePath.c_str(), 0, &info, sizeof(info),
+                       SHGFI_SYSICONINDEX) == 0) {
+        return nullptr;
     }
     return QueryFirstAvailableIcon(
         kShellIconListSizes,
@@ -4598,7 +4597,7 @@ inline LRESULT CALLBACK CanvasWindowProc(HWND window, UINT message,
                 !context.diving) {
                 HideCanvasWindows();
             }
-            return 0;
+            return DefWindowProcW(window, message, wParam, lParam);
         case WM_DISPLAYCHANGE:
         case WM_DPICHANGED:
             RefreshCanvasGeometry();
