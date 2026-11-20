@@ -23,12 +23,13 @@ Drag cards to arrange them without moving the real desktop windows.
 
 ## Controls
 
-- `Ctrl+Alt+F12`: toggle the canvas (configurable). If the hotkey does
+- `Alt+Z`: toggle the canvas (configurable). If the hotkey does
   nothing, another program may already use it; pick a different combination.
 - Mouse wheel: zoom around the pointer.
 - Middle mouse drag: pan the canvas.
 - Hold Space and drag empty canvas: pan.
 - Drag a card: arrange it; nearby edges snap into alignment.
+- Shift+click a stacked card: bring the next window of the same app to the front.
 - Double-click a card or press Enter: focus the window; an other-desktop window is pulled onto this desktop first.
 - Tab / Shift+Tab: select a card; arrow keys pan; Home fits all cards; Escape hides the canvas.
 - Click or drag the minimap: navigate the canvas.
@@ -90,7 +91,7 @@ activation then follows the normal rules for the current process.
         - de: Deutsch
         - tr: Türkçe
         - it: Italiano
-    - toggle_hotkey: Ctrl+Alt+F12
+    - toggle_hotkey: Alt+Z
       $name: Toggle hotkey
       $name:zh-CN: 显示/隐藏快捷键
       $description: Global hotkey used to show or hide the canvas. Use modifiers such as Ctrl, Alt, Shift, or Win plus one key. Avoid AltGr combinations. If it does nothing, another program may already use the combination.
@@ -879,6 +880,11 @@ struct CardStackPlacement {
     bool visible = true;
     float rotationRadians = 0.0f;
     float scale = 1.0f;
+    // Shared world rectangle for the whole stack. Empty until the stack
+    // is formed; the front card's world rectangle is captured as the
+    // anchor so every member renders at one place instead of at its own
+    // unrelated window position.
+    RectF anchorWorld{};
 };
 
 struct Card {
@@ -902,6 +908,22 @@ struct Card {
     bool pinned = false;
 };
 
+// World rectangle a card occupies on the canvas. Grouped cards share
+// their stack anchor once it is captured; ungrouped cards and stacks
+// without an anchor keep their own world rectangle.
+inline RectF StackWorldRect(const Card& card) {
+    if (card.stack.grouped && !card.stack.groupKey.empty() &&
+        !card.stack.anchorWorld.empty()) {
+        return card.stack.anchorWorld;
+    }
+    return card.world;
+}
+
+inline bool IsStackBackground(const Card& card) {
+    return card.stack.grouped && !card.stack.groupKey.empty() &&
+           card.stack.slot != 0;
+}
+
 struct ScannedWindow {
     HWND hwnd = nullptr;
     DWORD processId = 0;
@@ -923,7 +945,7 @@ inline bool MatchesWindow(const Card& card, const ScannedWindow& window) {
 }
 
 struct CanvasSettings {
-    std::wstring toggleHotkey = L"Ctrl+Alt+F12";
+    std::wstring toggleHotkey = L"Alt+Z";
     LanguageId language = LanguageId::English;
     bool openOnStart = false;
     int animationMs = 140;
@@ -1114,7 +1136,7 @@ inline RectF WorldToScreen(const RectF& world, const Camera& camera) {
 }
 
 inline RectF CardScreenBounds(const Card& card) {
-    RectF rect = WorldToScreen(card.world, context.camera);
+    RectF rect = WorldToScreen(StackWorldRect(card), context.camera);
     rect.top -= CardHeaderHeight();
     return rect;
 }
@@ -1445,7 +1467,7 @@ static void LoadSettings() {
     settings.toggleHotkey =
         hotkeyText != nullptr && *hotkeyText != L'\0'
             ? TrimText(hotkeyText)
-            : L"Ctrl+Alt+F12";
+            : L"Alt+Z";
 
     settings.openOnStart =
         yoko::GetClampedIntSetting(L"Behavior.open_on_start", 0, 1) != 0;
@@ -2926,6 +2948,7 @@ inline void ResetStackPlacement(Card& card) {
     card.stack.rotationRadians = 0.0f;
     card.stack.scale = 1.0f;
     card.stack.visible = true;
+    card.stack.anchorWorld = RectF{};
 }
 
 inline void ClearAllStackPlacements(std::vector<Card>& cards) {
@@ -2948,7 +2971,7 @@ inline std::vector<StackMember> CollectStackMembers(const std::vector<Card>& car
     for (size_t index = 0; index < cards.size(); ++index) {
         const Card& card = cards[index];
         if (card.stack.grouped && !card.exePath.empty()) {
-            members.push_back({index, ToLowerText(card.exePath)});
+            members.push_back({index, ExecutableName(card.exePath)});
         }
     }
     return members;
@@ -2976,7 +2999,9 @@ inline void ApplyStackOrder(std::vector<Card>& cards,
             continue;
         }
         const std::wstring groupKey = cards[index].stack.groupKey;
+        const RectF anchor = cards[index].stack.anchorWorld;
         cards[index].stack = StackPlacementForSlot(slot, groupKey, settings);
+        cards[index].stack.anchorWorld = anchor;
     }
 }
 
@@ -2995,6 +3020,23 @@ inline void AssignStack(std::vector<Card>& cards,
         cards[member.index].stack.groupKey = member.groupKey;
         cards[member.index].stack.grouped = true;
         order.push_back(member.index);
+    }
+    // Keep the stack at one place: reuse the anchor captured when the
+    // stack was formed, and only capture the front card's world rectangle
+    // the first time. Recapturing on every rescan or cycle would move the
+    // stack to the new front card's unrelated window position.
+    RectF anchor{};
+    for (const size_t index : order) {
+        if (!cards[index].stack.anchorWorld.empty()) {
+            anchor = cards[index].stack.anchorWorld;
+            break;
+        }
+    }
+    if (anchor.empty() && !order.empty()) {
+        anchor = cards[order.front()].world;
+    }
+    for (const size_t index : order) {
+        cards[index].stack.anchorWorld = anchor;
     }
     ApplyStackOrder(cards, order, settings);
 }
@@ -3423,7 +3465,7 @@ inline SnapResult ComputeSnap(const RectF& moving, int ignoreIndex) {
         if (static_cast<int>(index) == ignoreIndex) {
             continue;
         }
-        SnapAgainstCard(moving, context.cards[index].world, axes);
+        SnapAgainstCard(moving, StackWorldRect(context.cards[index]), axes);
     }
     result.snapVertical = axes.first.snapped;
     result.snapHorizontal = axes.second.snapped;
@@ -3859,7 +3901,7 @@ inline RectF MinimapInnerRect(const RectF& minimap) {
 inline RectF CanvasWorldBounds() {
     RectF bounds{};
     for (const Card& card : context.cards) {
-        bounds = UnionRect(bounds, card.world);
+        bounds = UnionRect(bounds, StackWorldRect(card));
     }
     if (bounds.empty()) {
         return RectF{-500.0f, -500.0f, 500.0f, 500.0f};
@@ -3920,7 +3962,7 @@ inline void FitAllCards() {
     }
     RectF bounds{};
     for (const Card& card : context.cards) {
-        bounds = UnionRect(bounds, card.world);
+        bounds = UnionRect(bounds, StackWorldRect(card));
     }
     const float width = static_cast<float>(std::max(VirtualScreenWidth(), 1));
     const float height = static_cast<float>(std::max(VirtualScreenHeight(), 1));
@@ -3934,21 +3976,22 @@ inline void CenterOnCard(int index) {
     if (index < 0 || static_cast<size_t>(index) >= context.cards.size()) {
         return;
     }
-    const RectF& world = context.cards[static_cast<size_t>(index)].world;
+    const RectF world = StackWorldRect(context.cards[static_cast<size_t>(index)]);
     CenterOnPoint(context.camera, Vec2{world.centerX(), world.centerY()});
 }
 
 inline Camera DiveCameraForCard(const Card& card) {
     Camera target = context.camera;
     target.targetZoom = 1.0f;
+    const RectF world = StackWorldRect(card);
     const float frameCenterX =
         static_cast<float>(card.framePx.left - context.virtualScreen.left) +
         static_cast<float>(card.framePx.right - card.framePx.left) * 0.5f;
     const float frameCenterY =
         static_cast<float>(card.framePx.top - context.virtualScreen.top) +
         static_cast<float>(card.framePx.bottom - card.framePx.top) * 0.5f;
-    target.targetCenterX = card.world.centerX() - frameCenterX + ScreenCenterX();
-    target.targetCenterY = card.world.centerY() - frameCenterY + ScreenCenterY();
+    target.targetCenterX = world.centerX() - frameCenterX + ScreenCenterX();
+    target.targetCenterY = world.centerY() - frameCenterY + ScreenCenterY();
     return target;
 }
 
@@ -3968,6 +4011,7 @@ inline void FailThumbnail(Card& card, DWORD now) {
 inline bool HasDueThumbnailRetry(DWORD now) {
     for (const Card& card : context.cards) {
         if (card.state == WindowVisualState::Live && !card.destroyed &&
+            !IsStackBackground(card) &&
             card.thumbnailFailed &&
             now - card.thumbnailRetryTick >= kThumbnailRetryDelayMs) {
             return true;
@@ -4096,11 +4140,20 @@ inline void SubmitThumbnail(Card& card, const ThumbnailGeometry& geometry,
 }
 
 inline void UpdateThumbnail(Card& card, DWORD now) {
+    // DWM thumbnails cannot be rotated or scaled, and a stack shows only
+    // its front window live. Background members render as icon cards, so
+    // never register or show a thumbnail for them.
+    if (IsStackBackground(card)) {
+        if (card.thumbnail.valid()) {
+            HideThumbnail(card, now);
+        }
+        return;
+    }
     if (!EnsureThumbnail(card, now)) {
         return;
     }
     ThumbnailGeometry geometry;
-    geometry.destination = WorldToScreen(card.world, context.camera);
+    geometry.destination = WorldToScreen(StackWorldRect(card), context.camera);
     if (ThumbnailViewportClip(geometry.destination).empty()) {
         HideThumbnail(card, now);
         return;
@@ -4188,6 +4241,8 @@ inline void DrawHostScene(HDC dc) {
 // regressions can exercise the geometry on its own.
 
 
+#include <algorithm>
+
 inline RectF CardHeaderRect(const Card& card) {
     const RectF bounds = CardScreenBounds(card);
     return RectF{bounds.left, bounds.top, bounds.right,
@@ -4256,19 +4311,21 @@ inline CardHeaderAction HitTestCardHeader(const RectF& header, Vec2 point,
 
 // Pinned cards are drawn last and hit-tested first, so pinning a card lifts it
 // above every unpinned card without reordering the scan-owned card vector.
+// Inside one stack the background slots are drawn first and the front slot
+// (slot 0) last, so the stack reads as one card with the front on top and
+// hit testing (which walks this order backwards) reaches the front first.
 inline std::vector<size_t> CardDrawOrder(const std::vector<Card>& cards) {
     std::vector<size_t> order;
     order.reserve(cards.size());
     for (size_t index = 0; index < cards.size(); ++index) {
-        if (!cards[index].pinned) {
-            order.push_back(index);
-        }
+        order.push_back(index);
     }
-    for (size_t index = 0; index < cards.size(); ++index) {
-        if (cards[index].pinned) {
-            order.push_back(index);
+    std::stable_sort(order.begin(), order.end(), [&cards](size_t left, size_t right) {
+        if (cards[left].pinned != cards[right].pinned) {
+            return !cards[left].pinned;
         }
-    }
+        return cards[left].stack.slot > cards[right].stack.slot;
+    });
     return order;
 }
 
@@ -4471,21 +4528,53 @@ inline void DrawCardBody(const Card& card, const RectF& body, float scale) {
 
 inline void DrawCard(const Card& card, int index, float scale) {
     const RectF rect = CardScreenBounds(card);
-    if (rect.empty() || rect.right < 0.0f || rect.bottom < 0.0f ||
-        rect.left > static_cast<float>(VirtualScreenWidth()) ||
-        rect.top > static_cast<float>(VirtualScreenHeight())) {
+    if (rect.empty()) {
+        return;
+    }
+    // Cull on the rotated/scaled quad, not the unrotated bounds: a fanned
+    // stack member's corners extend past its own rectangle.
+    const std::array<Vec2, 4> quad = CardScreenQuad(rect, card.stack);
+    float quadLeft = quad[0].x;
+    float quadTop = quad[0].y;
+    float quadRight = quad[0].x;
+    float quadBottom = quad[0].y;
+    for (const Vec2& corner : quad) {
+        quadLeft = std::min(quadLeft, corner.x);
+        quadTop = std::min(quadTop, corner.y);
+        quadRight = std::max(quadRight, corner.x);
+        quadBottom = std::max(quadBottom, corner.y);
+    }
+    if (quadRight < 0.0f || quadBottom < 0.0f ||
+        quadLeft > static_cast<float>(VirtualScreenWidth()) ||
+        quadTop > static_cast<float>(VirtualScreenHeight())) {
         return;
     }
     const float radius = kCardCornerRadiusPx * scale;
     const bool emphasized = index == context.hoverCard || index == context.selectedCard;
-    const RectF body = WorldToScreen(card.world, context.camera);
+    const RectF body = WorldToScreen(StackWorldRect(card), context.camera);
     const RectF header = CardHeaderRect(card);
+    const bool transformed = card.stack.rotationRadians != 0.0f ||
+                             card.stack.scale != 1.0f;
+    D2D1_MATRIX_3X2_F savedTransform = D2D1::Matrix3x2F::Identity();
+    if (transformed) {
+        const Vec2 center{rect.centerX(), rect.centerY()};
+        const float degrees = card.stack.rotationRadians *
+                              (180.0f / 3.141592653589793f);
+        context.hudTarget->GetTransform(&savedTransform);
+        context.hudTarget->SetTransform(
+            D2D1::Matrix3x2F::Scale(card.stack.scale, card.stack.scale,
+                                     D2D1::Point2F(center.x, center.y)) *
+            D2D1::Matrix3x2F::Rotation(degrees, D2D1::Point2F(center.x, center.y)));
+    }
     DrawCardBody(card, body, scale);
     DrawCardHeader(card, index, header, scale);
     SetHudColor(emphasized ? context.settings.accentColor : context.settings.gridColor);
     context.hudTarget->DrawRoundedRectangle(
         RoundedRect(rect, radius), context.hudBrush,
         emphasized ? 2.0f * scale : 1.0f * scale);
+    if (transformed) {
+        context.hudTarget->SetTransform(savedTransform);
+    }
 }
 
 inline void DrawMinimapContents(const RectF& map, float scale) {
@@ -4498,7 +4587,7 @@ inline void DrawMinimapContents(const RectF& map, float scale) {
         D2D1::RectF(inner.left, inner.top, inner.right, inner.bottom),
         D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
     for (const Card& card : context.cards) {
-        const RectF projected = MinimapWorldToScreen(card.world, map, bounds);
+        const RectF projected = MinimapWorldToScreen(StackWorldRect(card), map, bounds);
         SetHudColor(card.state == WindowVisualState::Live
                         ? context.settings.accentColor
                         : context.settings.mutedTextColor);
@@ -4914,7 +5003,7 @@ inline void BeginCardDrag(int index, POINT cursor) {
     context.camera.zoomAnchored = false;
     context.draggedCard = index;
     context.dragCursor = cursor;
-    const RectF screen = WorldToScreen(context.cards[static_cast<size_t>(index)].world,
+    const RectF screen = WorldToScreen(StackWorldRect(context.cards[static_cast<size_t>(index)]),
                                        context.camera);
     context.dragGrabOffset.x = static_cast<LONG>(static_cast<float>(cursor.x) - screen.left);
     context.dragGrabOffset.y = static_cast<LONG>(static_cast<float>(cursor.y) - screen.top);
@@ -4937,6 +5026,15 @@ inline void UpdateCardDrag(POINT cursor) {
     moved.right = moved.left + card.world.width();
     moved.bottom = moved.top + card.world.height();
     card.world = moved;
+    // Dragging one member moves the whole stack: every member shares the
+    // anchor, so update it together instead of leaving the stack behind.
+    if (card.stack.grouped && !card.stack.groupKey.empty()) {
+        for (Card& member : context.cards) {
+            if (member.stack.grouped && member.stack.groupKey == card.stack.groupKey) {
+                member.stack.anchorWorld = moved;
+            }
+        }
+    }
     context.hasGuideVertical = snap.snapVertical;
     context.hasGuideHorizontal = snap.snapHorizontal;
     context.guideVertical = RectF{(snap.guideX - context.camera.centerX) * context.camera.zoom +
@@ -5027,6 +5125,23 @@ inline void HandleLeftButtonDown(POINT cursor) {
         }
         if (action == CardHeaderAction::Pin) {
             ToggleCardPin(card);
+            return;
+        }
+    }
+    // Shift+click on a stacked card brings the next window in the stack
+    // to the front. Without it the background windows would be visible
+    // in the fan but unreachable by mouse; drag and dive stay unchanged.
+    if (card >= 0 && (GetKeyState(VK_SHIFT) & 0x8000) != 0) {
+        const std::wstring groupKey = context.cards[static_cast<size_t>(card)].stack.groupKey;
+        if (CycleCardStack(context.cards, context.settings, card, 1)) {
+            context.selectedCard = card;
+            for (size_t index = 0; index < context.cards.size(); ++index) {
+                if (context.cards[index].stack.groupKey == groupKey &&
+                    context.cards[index].stack.slot == 0) {
+                    context.selectedCard = static_cast<int>(index);
+                    break;
+                }
+            }
             return;
         }
     }
