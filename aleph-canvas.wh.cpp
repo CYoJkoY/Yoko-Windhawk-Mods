@@ -155,6 +155,36 @@ activation then follows the normal rules for the current process.
       $options:zh-CN:
         - packed: 自动排列
         - desktop: 桌面位置
+    - card_stacks_enabled: true
+      $name: Group card stacks
+      $name:zh-CN: 启用卡片堆叠
+      $description: Group windows from the same application and fan older members behind the active card.
+      $description:zh-CN: 将同一应用程序的窗口分为一组，并把较早的成员展开到当前卡片后方。
+    - card_stack_step_degrees: 65
+      $name: Stack angle step
+      $name:zh-CN: 堆叠角度步进
+      $description: Rotation added by each stack position, in tenths of a degree. Range 0-900.
+      $description:zh-CN: 每个堆叠位置增加的旋转角度，单位为十分之一度。范围 0-900。
+    - card_stack_max_degrees: 240
+      $name: Stack maximum angle
+      $name:zh-CN: 堆叠最大角度
+      $description: Maximum rotation applied to a stack member, in tenths of a degree. Range 0-900.
+      $description:zh-CN: 堆叠成员可用的最大旋转角度，单位为十分之一度。范围 0-900。
+    - card_stack_scale_percent: 975
+      $name: Stack scale factor
+      $name:zh-CN: 堆叠缩放系数
+      $description: Per-level scale multiplier, in thousandths. Range 800-1000.
+      $description:zh-CN: 每一级堆叠使用的缩放系数，单位为千分之一。范围 800-1000。
+    - card_stack_max_depth: 5
+      $name: Stack depth
+      $name:zh-CN: 堆叠深度
+      $description: Maximum number of visible layers behind the active card. Range 0-8.
+      $description:zh-CN: 当前卡片后方可见的最大层数。范围 0-8。
+    - card_stack_rotation_direction: -1
+      $name: Stack rotation direction
+      $name:zh-CN: 堆叠旋转方向
+      $description: Use 1 for clockwise, -1 for counter-clockwise, or 0 for no rotation.
+      $description:zh-CN: 1 为顺时针，-1 为逆时针，0 为不旋转。
   $name: Canvas
   $name:zh-CN: 画布
 
@@ -484,6 +514,7 @@ constexpr UINT kToggleHotkeyId = 0xA1E1;
 constexpr int kMaxCards = 64;
 constexpr int kMaxLayoutEntries = 256;
 constexpr int kMaxExcludeEntries = 64;
+constexpr int kMaxStackDepth = 8;
 
 constexpr int kFrameIntervalMs = 16;
 constexpr int kMinRescanIntervalMs = 100;
@@ -841,6 +872,15 @@ private:
     HTHUMBNAIL handle_ = nullptr;
 };
 
+struct CardStackPlacement {
+    std::wstring groupKey;
+    size_t slot = 0;
+    bool grouped = true;
+    bool visible = true;
+    float rotationRadians = 0.0f;
+    float scale = 1.0f;
+};
+
 struct Card {
     HWND hwnd = nullptr;
     DWORD processId = 0;
@@ -853,6 +893,7 @@ struct Card {
     std::wstring title;
     std::wstring fingerprint;
     std::wstring exePath;
+    CardStackPlacement stack;
     Thumbnail thumbnail;
     bool thumbnailFailed = false;
     DWORD thumbnailRetryTick = 0;
@@ -905,12 +946,19 @@ struct CanvasSettings {
     uint32_t mutedTextColor = 0x64748B;
     uint32_t cardFillColor = 0x111827;
     std::vector<std::wstring> excludeList;
+    bool stacksEnabled = true;
+    float stackStepDegrees = 6.5f;
+    float stackMaxDegrees = 24.0f;
+    float stackScaleFactor = 0.975f;
+    int stackMaxDepth = 5;
+    int stackRotationDirection = -1;
 };
 
 struct LayoutEntry {
     std::wstring fingerprint;
     RectF world = {};
     bool pinned = false;
+    bool grouped = true;
 };
 
 struct LayoutSnapshot {
@@ -1441,6 +1489,23 @@ static void LoadSettings() {
     settings.cardFillColor =
         ReadColorSetting(L"Appearance.card_fill_color", 0x111827);
 
+    settings.stacksEnabled =
+        yoko::GetClampedIntSetting(L"Canvas.card_stacks_enabled", 0, 1) != 0;
+    settings.stackStepDegrees =
+        static_cast<float>(yoko::GetClampedIntSetting(
+            L"Canvas.card_stack_step_degrees", 0, 900)) / 10.0f;
+    settings.stackMaxDegrees =
+        static_cast<float>(yoko::GetClampedIntSetting(
+            L"Canvas.card_stack_max_degrees", 0, 900)) / 10.0f;
+    settings.stackScaleFactor =
+        static_cast<float>(yoko::GetClampedIntSetting(
+            L"Canvas.card_stack_scale_percent", 800, 1000)) / 1000.0f;
+    settings.stackMaxDepth =
+        yoko::GetClampedIntSetting(L"Canvas.card_stack_max_depth", 0, kMaxStackDepth);
+    settings.stackRotationDirection =
+        yoko::GetClampedIntSetting(L"Canvas.card_stack_rotation_direction", -1,
+                                   1);
+
     WindhawkUtils::StringSetting initialLayout =
         WindhawkUtils::StringSetting::make(L"Canvas.initial_layout");
     const wchar_t* layoutText = initialLayout.get();
@@ -1633,6 +1698,9 @@ static std::string SerializeLayout(const LayoutSnapshot& layout) {
         output += numbers;
         if (entry.pinned) {
             output += ",\"pin\":1";
+        }
+        if (!entry.grouped) {
+            output += ",\"is_grouped\":0";
         }
         output += "}";
     }
@@ -2007,12 +2075,14 @@ struct JsonEntryFields {
     double width = 0.0;
     double height = 0.0;
     double pin = 0.0;
+    double grouped = 1.0;
     bool hasFingerprint = false;
     bool hasX = false;
     bool hasY = false;
     bool hasWidth = false;
     bool hasHeight = false;
     bool hasPin = false;
+    bool hasGrouped = false;
 };
 
 struct JsonEntryCursor {
@@ -2067,6 +2137,10 @@ static bool ReadJsonEntryField(JsonEntryCursor& cursor,
         return ReadJsonEntryNumber(cursor, cursor.fields.hasPin,
                                    cursor.fields.pin);
     }
+    if (key == "is_grouped") {
+        return ReadJsonEntryNumber(cursor, cursor.fields.hasGrouped,
+                                   cursor.fields.grouped);
+    }
     return SkipJsonValue(cursor.text, cursor.index, 2);
 }
 
@@ -2089,6 +2163,9 @@ static bool BuildLayoutEntry(const JsonEntryFields& fields, LayoutEntry& entry) 
     if (fields.hasPin && fields.pin != 0.0 && fields.pin != 1.0) {
         return false;
     }
+    if (fields.hasGrouped && fields.grouped != 0.0 && fields.grouped != 1.0) {
+        return false;
+    }
     const float left = static_cast<float>(fields.x);
     const float top = static_cast<float>(fields.y);
     const float width = static_cast<float>(fields.width);
@@ -2102,6 +2179,7 @@ static bool BuildLayoutEntry(const JsonEntryFields& fields, LayoutEntry& entry) 
     entry.fingerprint = fields.fingerprint;
     entry.world = world;
     entry.pinned = fields.hasPin && fields.pin == 1.0;
+    entry.grouped = !fields.hasGrouped || fields.grouped == 1.0;
     return true;
 }
 
@@ -2710,13 +2788,14 @@ static const LayoutEntry* FindLayoutEntry(const std::wstring& fingerprint) {
 }
 
 static void RememberLayoutPin(const std::wstring& fingerprint,
-                              const RectF& world, bool pinned);
+                              const RectF& world, bool pinned, bool grouped);
 
 static void RememberLayoutEntry(const std::wstring& fingerprint,
                                 const RectF& world) {
     const LayoutEntry* existing = FindLayoutEntry(fingerprint);
     const bool pinned = existing != nullptr && existing->pinned;
-    RememberLayoutPin(fingerprint, world, pinned);
+    const bool grouped = existing == nullptr || existing->grouped;
+    RememberLayoutPin(fingerprint, world, pinned, grouped);
 }
 
 static void MoveLayoutEntryToBack(size_t index) {
@@ -2741,7 +2820,7 @@ static bool EvictFirstUnpinnedLayoutEntry() {
 }
 
 static void RememberLayoutPin(const std::wstring& fingerprint,
-                              const RectF& world, bool pinned) {
+                              const RectF& world, bool pinned, bool grouped) {
     auto& entries = context.layout.entries;
     const auto existing = std::find_if(
         entries.begin(), entries.end(),
@@ -2751,6 +2830,7 @@ static void RememberLayoutPin(const std::wstring& fingerprint,
     if (existing != entries.end()) {
         existing->world = world;
         existing->pinned = pinned;
+        existing->grouped = grouped;
         MoveLayoutEntryToBack(
             static_cast<size_t>(existing - entries.begin()));
         return;
@@ -2759,7 +2839,7 @@ static void RememberLayoutPin(const std::wstring& fingerprint,
         !EvictFirstUnpinnedLayoutEntry()) {
         return;
     }
-    entries.push_back(LayoutEntry{fingerprint, world, pinned});
+    entries.push_back(LayoutEntry{fingerprint, world, pinned, grouped});
 }
 
 // Card creation, packing and snapping.
@@ -2771,6 +2851,260 @@ static void RememberLayoutPin(const std::wstring& fingerprint,
 // The one deliberate move lives in interaction.h: activating an other-desktop
 // card pulls that window onto the desktop that displays the canvas.
 
+
+
+#include <algorithm>
+#include <array>
+#include <cmath>
+#include <numbers>
+#include <string>
+#include <utility>
+#include <vector>
+
+struct StackMember {
+    size_t index;
+    std::wstring groupKey;
+};
+
+inline Vec2 RotatePoint(Vec2 point, Vec2 center, float radians) {
+    const float cosine = std::cos(radians);
+    const float sine = std::sin(radians);
+    const float x = point.x - center.x;
+    const float y = point.y - center.y;
+    return Vec2{center.x + x * cosine - y * sine,
+                center.y + x * sine + y * cosine};
+}
+
+inline Vec2 CardLocalPoint(Vec2 screenPoint, const RectF& bounds,
+                           const CardStackPlacement& placement) {
+    const Vec2 center{bounds.centerX(), bounds.centerY()};
+    const Vec2 unrotated = RotatePoint(screenPoint, center,
+                                       -placement.rotationRadians);
+    const float scale = placement.scale > 0.0f ? placement.scale : 1.0f;
+    return Vec2{center.x + (unrotated.x - center.x) / scale,
+                center.y + (unrotated.y - center.y) / scale};
+}
+
+inline std::array<Vec2, 4> CardScreenQuad(const RectF& bounds,
+                                         const CardStackPlacement& placement) {
+    const Vec2 center{bounds.centerX(), bounds.centerY()};
+    const float scale = placement.scale > 0.0f ? placement.scale : 1.0f;
+    const std::array<Vec2, 4> corners = {
+        Vec2{bounds.left, bounds.top}, Vec2{bounds.right, bounds.top},
+        Vec2{bounds.right, bounds.bottom}, Vec2{bounds.left, bounds.bottom}};
+    std::array<Vec2, 4> quad{};
+    for (size_t index = 0; index < corners.size(); ++index) {
+        const Vec2 scaled{center.x + (corners[index].x - center.x) * scale,
+                          center.y + (corners[index].y - center.y) * scale};
+        quad[index] = RotatePoint(scaled, center, placement.rotationRadians);
+    }
+    return quad;
+}
+
+inline CardStackPlacement StackPlacementForSlot(size_t slot,
+                                               const std::wstring& groupKey,
+                                               const CanvasSettings& settings) {
+    const auto fanDepth = static_cast<size_t>(
+        std::clamp(settings.stackMaxDepth, 0, kMaxStackDepth));
+    const float depth = static_cast<float>(slot);
+    const float degrees = std::min(depth * settings.stackStepDegrees,
+                                   settings.stackMaxDegrees);
+    const float radians = degrees * (std::numbers::pi_v<float> / 180.0f) *
+                          static_cast<float>(settings.stackRotationDirection);
+    return CardStackPlacement{groupKey, slot, true, slot <= fanDepth, radians,
+                              std::pow(settings.stackScaleFactor, depth)};
+}
+
+inline bool IsStackFront(const Card& card, const std::wstring& groupKey) {
+    return card.stack.grouped && card.stack.slot == 0 &&
+           card.stack.groupKey == groupKey;
+}
+
+inline void ResetStackPlacement(Card& card) {
+    card.stack.groupKey.clear();
+    card.stack.slot = 0;
+    card.stack.rotationRadians = 0.0f;
+    card.stack.scale = 1.0f;
+    card.stack.visible = true;
+}
+
+inline void ClearAllStackPlacements(std::vector<Card>& cards) {
+    for (Card& card : cards) {
+        ResetStackPlacement(card);
+    }
+}
+
+inline void ClearIneligibleStackPlacements(std::vector<Card>& cards) {
+    for (Card& card : cards) {
+        if (!card.stack.grouped || card.exePath.empty()) {
+            ResetStackPlacement(card);
+        }
+    }
+}
+
+inline std::vector<StackMember> CollectStackMembers(const std::vector<Card>& cards) {
+    std::vector<StackMember> members;
+    members.reserve(cards.size());
+    for (size_t index = 0; index < cards.size(); ++index) {
+        const Card& card = cards[index];
+        if (card.stack.grouped && !card.exePath.empty()) {
+            members.push_back({index, ToLowerText(card.exePath)});
+        }
+    }
+    return members;
+}
+
+inline size_t StackFrontPosition(const std::vector<Card>& cards,
+                                 const std::vector<StackMember>& members,
+                                 const std::wstring& groupKey) {
+    const auto previous = std::find_if(
+        members.begin(), members.end(), [&cards, &groupKey](const StackMember& member) {
+            return IsStackFront(cards[member.index], groupKey);
+        });
+    if (previous == members.end()) {
+        return 0;
+    }
+    return static_cast<size_t>(previous - members.begin());
+}
+
+inline void ApplyStackOrder(std::vector<Card>& cards,
+                            const std::vector<size_t>& order,
+                            const CanvasSettings& settings) {
+    for (size_t slot = 0; slot < order.size(); ++slot) {
+        const size_t index = order[slot];
+        if (index >= cards.size()) {
+            continue;
+        }
+        const std::wstring groupKey = cards[index].stack.groupKey;
+        cards[index].stack = StackPlacementForSlot(slot, groupKey, settings);
+    }
+}
+
+inline void AssignStack(std::vector<Card>& cards,
+                        const std::vector<StackMember>& members,
+                        const CanvasSettings& settings) {
+    if (members.empty()) {
+        return;
+    }
+    const std::wstring groupKey = members.front().groupKey;
+    const size_t start = StackFrontPosition(cards, members, groupKey);
+    std::vector<size_t> order;
+    order.reserve(members.size());
+    for (size_t slot = 0; slot < members.size(); ++slot) {
+        const StackMember& member = members[(start + slot) % members.size()];
+        cards[member.index].stack.groupKey = member.groupKey;
+        cards[member.index].stack.grouped = true;
+        order.push_back(member.index);
+    }
+    ApplyStackOrder(cards, order, settings);
+}
+
+inline void AssignStackGroups(std::vector<Card>& cards,
+                              const std::vector<StackMember>& members,
+                              const CanvasSettings& settings) {
+    std::vector<StackMember> sorted = members;
+    std::stable_sort(sorted.begin(), sorted.end(), [&cards](const StackMember& left,
+                                                            const StackMember& right) {
+        if (left.groupKey != right.groupKey) {
+            return left.groupKey < right.groupKey;
+        }
+        return cards[left.index].fingerprint < cards[right.index].fingerprint;
+    });
+    for (auto group = sorted.begin(); group != sorted.end();) {
+        const auto end = std::find_if(group + 1, sorted.end(), [&group](const StackMember& member) {
+            return member.groupKey != group->groupKey;
+        });
+        AssignStack(cards, std::vector<StackMember>(group, end), settings);
+        group = end;
+    }
+}
+
+inline void ReconcileCardStacks(std::vector<Card>& cards, const CanvasSettings& settings) {
+    if (!settings.stacksEnabled) {
+        ClearAllStackPlacements(cards);
+        return;
+    }
+    ClearIneligibleStackPlacements(cards);
+    const auto members = CollectStackMembers(cards);
+    AssignStackGroups(cards, members, settings);
+}
+
+inline void CollectStackSlots(const std::vector<Card>& cards,
+                              const std::wstring& groupKey,
+                              std::vector<std::pair<size_t, size_t>>& slots) {
+    slots.reserve(cards.size());
+    for (size_t index = 0; index < cards.size(); ++index) {
+        const CardStackPlacement& placement = cards[index].stack;
+        if (placement.grouped && placement.groupKey == groupKey) {
+            slots.emplace_back(placement.slot, index);
+        }
+    }
+}
+
+inline bool HasDuplicateSlot(const std::vector<std::pair<size_t, size_t>>& slots) {
+    for (size_t index = 1; index < slots.size(); ++index) {
+        if (slots[index].first == slots[index - 1].first) {
+            return true;
+        }
+    }
+    return false;
+}
+
+inline bool StackMemberOrder(const std::vector<Card>& cards,
+                             const std::wstring& groupKey,
+                             std::vector<size_t>& members) {
+    members.clear();
+    std::vector<std::pair<size_t, size_t>> slots;
+    CollectStackSlots(cards, groupKey, slots);
+    std::stable_sort(slots.begin(), slots.end(), [](const auto& left, const auto& right) {
+        return left.first < right.first;
+    });
+    if (HasDuplicateSlot(slots)) {
+        return false;
+    }
+    members.reserve(slots.size());
+    for (const auto& slot : slots) {
+        members.push_back(slot.second);
+    }
+    return !members.empty();
+}
+
+inline std::vector<size_t> RotateStackOrder(const std::vector<size_t>& members, int shift) {
+    std::vector<size_t> order;
+    order.reserve(members.size());
+    const int count = static_cast<int>(members.size());
+    for (int slot = 0; slot < count; ++slot) {
+        order.push_back(members[static_cast<size_t>((shift + slot) % count)]);
+    }
+    return order;
+}
+
+inline bool CycleCardStack(std::vector<Card>& cards, const CanvasSettings& settings,
+                           int hitIndex, int steps) {
+    if (!settings.stacksEnabled || hitIndex < 0 || steps == 0 ||
+        static_cast<size_t>(hitIndex) >= cards.size()) {
+        return false;
+    }
+    const CardStackPlacement& hitPlacement = cards[static_cast<size_t>(hitIndex)].stack;
+    if (!hitPlacement.grouped || hitPlacement.groupKey.empty()) {
+        return false;
+    }
+    std::vector<size_t> members;
+    if (!StackMemberOrder(cards, hitPlacement.groupKey, members) || members.size() <= 1) {
+        return false;
+    }
+    if (hitPlacement.slot >= members.size() ||
+        members[hitPlacement.slot] != static_cast<size_t>(hitIndex)) {
+        return false;
+    }
+    const int count = static_cast<int>(members.size());
+    const int shift = (steps % count + count) % count;
+    if (shift == 0) {
+        return false;
+    }
+    ApplyStackOrder(cards, RotateStackOrder(members, shift), settings);
+    return true;
+}
 
 
 
@@ -2965,6 +3299,7 @@ inline bool UpdateCardFromScan(size_t index, const ScannedWindow& window) {
     if (const LayoutEntry* saved = FindLayoutEntry(window.fingerprint);
         saved != nullptr) {
         card.pinned = saved->pinned;
+        card.stack.grouped = saved->grouped;
     }
     return changed;
 }
@@ -3012,6 +3347,7 @@ inline bool MergeScan(const std::vector<ScannedWindow>& scanned) {
             InsertCard(ScannedWindow{window}, world);
             if (saved != nullptr) {
                 context.cards.back().pinned = saved->pinned;
+                context.cards.back().stack.grouped = saved->grouped;
             }
             RememberLayoutEntry(window.fingerprint, world);
             changed = true;
@@ -3019,6 +3355,9 @@ inline bool MergeScan(const std::vector<ScannedWindow>& scanned) {
         if (changed) {
             MarkLayoutDirty(now);
         }
+    }
+    if (changed) {
+        ReconcileCardStacks(context.cards, context.settings);
     }
     return changed;
 }
@@ -4458,6 +4797,7 @@ inline void DismissCard(int index) {
     context.dismissedFingerprints.insert(
         context.cards[static_cast<size_t>(index)].fingerprint);
     RemoveCardAt(static_cast<size_t>(index));
+    ReconcileCardStacks(context.cards, context.settings);
     context.hoverHeaderAction = CardHeaderAction::None;
     context.sceneDirty = true;
 }
@@ -4468,7 +4808,7 @@ inline void ToggleCardPin(int index) {
     }
     Card& card = context.cards[static_cast<size_t>(index)];
     card.pinned = !card.pinned;
-    RememberLayoutPin(card.fingerprint, card.world, card.pinned);
+    RememberLayoutPin(card.fingerprint, card.world, card.pinned, card.stack.grouped);
     MarkLayoutDirty(GetTickCount());
     context.sceneDirty = true;
 }
@@ -4998,6 +5338,7 @@ inline void ApplyPendingSettings() {
         return;
     }
     LoadSettings();
+    ReconcileCardStacks(context.cards, context.settings);
     RegisterCanvasHotkey();
     context.camera.targetZoom = ClampZoom(context.camera.targetZoom);
     context.camera.zoomAnchored = false;
