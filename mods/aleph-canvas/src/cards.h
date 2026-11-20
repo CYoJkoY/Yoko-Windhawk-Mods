@@ -135,6 +135,7 @@ inline void InsertCard(ScannedWindow&& window, RectF world) {
     card.title = std::move(window.title);
     card.fingerprint = std::move(window.fingerprint);
     card.exePath = std::move(window.exePath);
+    card.zOrder = window.zOrder;
     context.cards.push_back(std::move(card));
 }
 
@@ -197,7 +198,8 @@ inline void ClearCards() {
 inline bool UpdateCardFromScan(size_t index, const ScannedWindow& window) {
     Card& card = context.cards[index];
     const bool changed = card.state != window.state || card.title != window.title ||
-                         !EqualRect(&card.framePx, &window.framePx);
+                         !EqualRect(&card.framePx, &window.framePx) ||
+                         card.zOrder != window.zOrder;
     if (card.state != window.state) {
         card.thumbnail.reset();
     }
@@ -209,6 +211,7 @@ inline bool UpdateCardFromScan(size_t index, const ScannedWindow& window) {
     card.framePx = window.framePx;
     card.title = window.title;
     card.exePath = window.exePath;
+    card.zOrder = window.zOrder;
     if (const LayoutEntry* saved = FindLayoutEntry(window.fingerprint);
         saved != nullptr) {
         card.pinned = saved->pinned;

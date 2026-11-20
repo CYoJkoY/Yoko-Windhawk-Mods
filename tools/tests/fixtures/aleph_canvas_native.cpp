@@ -1091,6 +1091,62 @@ static void StackSameExeNameGroups() {
     SameRect(CardScreenBounds(context.cards[1]), bounds);
 }
 
+static void StackZOrderFront() {
+    UseStackSettings();
+    context.cards.clear();
+    // Fingerprint order disagrees with Z-order on purpose: a#1 is first
+    // by fingerprint but last on the desktop, c#1 is topmost.
+    AddStackCard(L"a#1", L"C:\\App\\Editor.exe");
+    context.cards.back().zOrder = 2;
+    AddStackCard(L"b#1", L"C:\\App\\Editor.exe");
+    context.cards.back().zOrder = 1;
+    AddStackCard(L"c#1", L"C:\\App\\Editor.exe");
+    context.cards.back().zOrder = 0;
+    ReconcileCardStacks(context.cards, context.settings);
+    std::vector<size_t> members;
+    Require(StackMemberOrder(context.cards, L"editor.exe", members), "stack order was rejected");
+    Require(members.size() == 3 && members[0] == 2 && members[1] == 1 && members[2] == 0, "stack did not fan in Z-order");
+    Require(context.cards[2].stack.slot == 0, "topmost window is not the stack front");
+    Near(context.cards[2].stack.rotationRadians, 0.0f);
+    Near(context.cards[2].stack.scale, 1.0f);
+    Require(!IsStackBackground(context.cards[2]), "topmost window was marked as background");
+    Require(context.cards[1].stack.slot == 1 && context.cards[0].stack.slot == 2, "background slots do not follow Z-order");
+    Require(context.cards[1].stack.rotationRadians != 0.0f, "background card lost its fan rotation");
+    const std::vector<size_t> order = CardDrawOrder(context.cards);
+    Require(order.size() == 3 && order.back() == 2, "stack front was not drawn last");
+    // A front chosen by cycling survives a rescan: Z-order only picks
+    // the front for a newly formed stack.
+    Require(CycleCardStack(context.cards, context.settings, 2, 1), "forward cycle was rejected");
+    Require(context.cards[1].stack.slot == 0, "cycle did not promote the next card");
+    ReconcileCardStacks(context.cards, context.settings);
+    Require(context.cards[1].stack.slot == 0, "rescan reverted the cycled front");
+    Require(context.cards[2].stack.slot == 2, "rescan did not keep the old front at the back");
+}
+
+static void StackWheelCycle() {
+    Require(StackWheelSteps(-120) == 1, "wheel down did not map to the next card");
+    Require(StackWheelSteps(120) == -1, "wheel up did not map to the previous card");
+    Require(StackWheelSteps(-240) == 2, "two wheel-down detents did not map to two steps");
+    Require(StackWheelSteps(0) == 0, "zero wheel delta mapped to a cycle step");
+    Require(StackWheelSteps(60) == 0, "sub-detent wheel delta mapped to a cycle step");
+    UseStackSettings();
+    context.cards.clear();
+    AddStackCard(L"a#1", L"C:\\App\\Editor.exe");
+    AddStackCard(L"b#1", L"C:\\App\\Editor.exe");
+    AddStackCard(L"c#1", L"C:\\App\\Editor.exe");
+    ReconcileCardStacks(context.cards, context.settings);
+    Require(!CycleStackForWheel(context.cards, context.settings, 0, 0), "zero wheel delta cycled the stack");
+    Require(CycleStackForWheel(context.cards, context.settings, 0, -120), "wheel down was rejected");
+    Require(context.cards[1].stack.slot == 0, "wheel down did not bring the next card to the front");
+    Require(CycleStackForWheel(context.cards, context.settings, 1, 120), "wheel up was rejected");
+    Require(context.cards[0].stack.slot == 0, "wheel up did not bring the previous card back");
+    Require(!CycleStackForWheel(context.cards, context.settings, -1, -120), "wheel cycle accepted a bad hit index");
+    context.cards.clear();
+    AddStackCard(L"a#1", L"C:\\App\\Editor.exe");
+    ReconcileCardStacks(context.cards, context.settings);
+    Require(!CycleStackForWheel(context.cards, context.settings, 0, -120), "wheel cycle accepted a single-card stack");
+}
+
 static void LayoutGroupedRoundtrip() {
     const LayoutSnapshot legacy = ParseLayout(
         R"({"version":1,"entries":[{"key":"a","x":0,"y":0,"w":1,"h":1}]})");
@@ -1167,6 +1223,8 @@ static constexpr NativeCase kCases[] = {
     {"stack_removal", StackRemoval}, {"stack_invalid", StackInvalid},
     {"stack_same_exe_name_groups", StackSameExeNameGroups},
     {"hotkey_default_alt_z", HotkeyDefaultAltZ},
+    {"stack_z_order_front", StackZOrderFront},
+    {"stack_wheel_cycle", StackWheelCycle},
     {"stack_depth_visibility", StackDepthVisibility},
     {"stack_hit_rotation", StackHitRotation},
     {"layout_grouped_roundtrip", LayoutGroupedRoundtrip},

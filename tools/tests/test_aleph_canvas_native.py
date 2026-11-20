@@ -258,6 +258,12 @@ class AlephCanvasNativeTests(unittest.TestCase):
     def test_default_hotkey_is_alt_z(self) -> None:
         self.run_case("hotkey_default_alt_z")
 
+    def test_stack_front_follows_z_order(self) -> None:
+        self.run_case("stack_z_order_front")
+
+    def test_stack_wheel_cycle_direction(self) -> None:
+        self.run_case("stack_wheel_cycle")
+
     def test_stack_depth_controls_visibility(self) -> None:
         self.run_case("stack_depth_visibility")
 

@@ -26,6 +26,7 @@ Drag cards to arrange them without moving the real desktop windows.
 - `Alt+Z`: toggle the canvas (configurable). If the hotkey does
   nothing, another program may already use it; pick a different combination.
 - Mouse wheel: zoom around the pointer.
+- Alt+wheel over a stacked card: cycle the stack; plain wheel still zooms.
 - Middle mouse drag: pan the canvas.
 - Hold Space and drag empty canvas: pan.
 - Drag a card: arrange it; nearby edges snap into alignment.

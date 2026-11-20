@@ -370,6 +370,12 @@ static std::vector<ScannedWindow> ScanWindows(IVirtualDesktopManager* manager) {
     pass.desktopManager = manager;
     EnumWindows(&CollectPass::Thunk, reinterpret_cast<LPARAM>(&pass));
     PrepareScanCandidates(pass.windows);
+    // EnumWindows yields windows topmost first, so the vector index is
+    // the desktop Z-order rank. Record it before MergeScan reorders
+    // additions by area, or stacks would lose which window is on top.
+    for (size_t index = 0; index < pass.windows.size(); ++index) {
+        pass.windows[index].zOrder = index;
+    }
     return std::move(pass.windows);
 }
 

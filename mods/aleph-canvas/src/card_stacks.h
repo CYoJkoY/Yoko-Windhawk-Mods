@@ -179,6 +179,13 @@ inline void AssignStackGroups(std::vector<Card>& cards,
         if (left.groupKey != right.groupKey) {
             return left.groupKey < right.groupKey;
         }
+        // Within one app, members fan in desktop Z-order: the topmost /
+        // focused window is first, so a newly formed stack hands slot 0
+        // (0 degrees, scale 1, drawn on top) to that window. Fingerprint
+        // only breaks ties, e.g. cards built without a scan rank.
+        if (cards[left.index].zOrder != cards[right.index].zOrder) {
+            return cards[left.index].zOrder < cards[right.index].zOrder;
+        }
         return cards[left.index].fingerprint < cards[right.index].fingerprint;
     });
     for (auto group = sorted.begin(); group != sorted.end();) {
@@ -275,4 +282,21 @@ inline bool CycleCardStack(std::vector<Card>& cards, const CanvasSettings& setti
     }
     ApplyStackOrder(cards, RotateStackOrder(members, shift), settings);
     return true;
+}
+
+// Alt+wheel cycles a stack instead of zooming. Wheel delta is in
+// WHEEL_DELTA units (120 per detent, positive = wheel up): wheel down
+// brings the next card to the front, wheel up brings the previous one
+// back. A sub-detent delta maps to zero steps and cycles nothing.
+inline int StackWheelSteps(int wheelDelta) {
+    return -wheelDelta / WHEEL_DELTA;
+}
+
+inline bool CycleStackForWheel(std::vector<Card>& cards,
+                               const CanvasSettings& settings, int hitIndex,
+                               int wheelDelta) {
+    if (wheelDelta == 0) {
+        return false;
+    }
+    return CycleCardStack(cards, settings, hitIndex, StackWheelSteps(wheelDelta));
 }
