@@ -14,6 +14,8 @@
 #include "math_utils.h"
 #include "types.h"
 
+#include <algorithm>
+
 inline RectF CardHeaderRect(const Card& card) {
     const RectF bounds = CardScreenBounds(card);
     return RectF{bounds.left, bounds.top, bounds.right,
@@ -82,19 +84,21 @@ inline CardHeaderAction HitTestCardHeader(const RectF& header, Vec2 point,
 
 // Pinned cards are drawn last and hit-tested first, so pinning a card lifts it
 // above every unpinned card without reordering the scan-owned card vector.
+// Inside one stack the background slots are drawn first and the front slot
+// (slot 0) last, so the stack reads as one card with the front on top and
+// hit testing (which walks this order backwards) reaches the front first.
 inline std::vector<size_t> CardDrawOrder(const std::vector<Card>& cards) {
     std::vector<size_t> order;
     order.reserve(cards.size());
     for (size_t index = 0; index < cards.size(); ++index) {
-        if (!cards[index].pinned) {
-            order.push_back(index);
-        }
+        order.push_back(index);
     }
-    for (size_t index = 0; index < cards.size(); ++index) {
-        if (cards[index].pinned) {
-            order.push_back(index);
+    std::stable_sort(order.begin(), order.end(), [&cards](size_t left, size_t right) {
+        if (cards[left].pinned != cards[right].pinned) {
+            return !cards[left].pinned;
         }
-    }
+        return cards[left].stack.slot > cards[right].stack.slot;
+    });
     return order;
 }
 

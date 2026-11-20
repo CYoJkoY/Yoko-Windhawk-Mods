@@ -336,7 +336,7 @@ inline SnapResult ComputeSnap(const RectF& moving, int ignoreIndex) {
         if (static_cast<int>(index) == ignoreIndex) {
             continue;
         }
-        SnapAgainstCard(moving, context.cards[index].world, axes);
+        SnapAgainstCard(moving, StackWorldRect(context.cards[index]), axes);
     }
     result.snapVertical = axes.first.snapped;
     result.snapHorizontal = axes.second.snapped;

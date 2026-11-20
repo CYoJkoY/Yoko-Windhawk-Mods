@@ -252,6 +252,12 @@ class AlephCanvasNativeTests(unittest.TestCase):
     def test_stack_invalid_states_are_rejected_or_cleared(self) -> None:
         self.run_case("stack_invalid")
 
+    def test_stack_groups_same_exe_name_across_paths(self) -> None:
+        self.run_case("stack_same_exe_name_groups")
+
+    def test_default_hotkey_is_alt_z(self) -> None:
+        self.run_case("hotkey_default_alt_z")
+
     def test_stack_depth_controls_visibility(self) -> None:
         self.run_case("stack_depth_visibility")
 

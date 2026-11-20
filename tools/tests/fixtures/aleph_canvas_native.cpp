@@ -912,7 +912,7 @@ static void StackCycle() {
     AddStackCard(L"b#1", L"C:\\App\\Editor.exe");
     AddStackCard(L"c#1", L"C:\\App\\Editor.exe");
     ReconcileCardStacks(context.cards, context.settings);
-    const std::wstring key = L"c:\\app\\editor.exe";
+    const std::wstring key = L"editor.exe";
     for (const Card& card : context.cards) {
         Require(card.stack.groupKey == key, "stack member lost its lowercased group key");
     }
@@ -941,7 +941,7 @@ static void StackRemoval() {
     AddStackCard(L"b#1", L"C:\\App\\Editor.exe");
     AddStackCard(L"c#1", L"C:\\App\\Editor.exe");
     ReconcileCardStacks(context.cards, context.settings);
-    const std::wstring key = L"c:\\app\\editor.exe";
+    const std::wstring key = L"editor.exe";
     std::vector<size_t> members;
     Require(StackMemberOrder(context.cards, key, members), "stack order was rejected");
     const std::wstring promoted = context.cards[members[1]].fingerprint;
@@ -981,7 +981,7 @@ static void StackInvalid() {
     ReconcileCardStacks(context.cards, context.settings);
     Require(context.cards[0].stack.groupKey.empty(), "empty path joined a stack");
     Require(context.cards[1].stack.groupKey.empty(), "empty path joined a stack");
-    Require(context.cards[2].stack.groupKey == L"c:\\app\\editor.exe", "single member lost its group key");
+    Require(context.cards[2].stack.groupKey == L"editor.exe", "single member lost its group key");
     context.cards.clear();
     AddStackCard(L"a#1", L"C:\\App\\Editor.exe");
     AddStackCard(L"b#1", L"C:\\App\\Editor.exe");
@@ -1042,6 +1042,53 @@ static void StackHitRotation() {
     }
     Near(middleX * 0.25f, center.x);
     Near(middleY * 0.25f, center.y);
+}
+
+static void HotkeyDefaultAltZ() {
+    Require(CanvasSettings{}.toggleHotkey == L"Alt+Z", "default toggle hotkey is not Alt+Z");
+    UINT modifiers = 0;
+    UINT key = 0;
+    Require(ParseHotkeyText(L"Alt+Z", modifiers, key), "Alt+Z hotkey was rejected");
+    Require(modifiers == MOD_ALT && key == static_cast<UINT>('Z'), "Alt+Z parsed incorrectly");
+    Require(ParseHotkeyText(L"alt+z", modifiers, key), "lowercase alt+z hotkey was rejected");
+    Require(modifiers == MOD_ALT && key == static_cast<UINT>('Z'), "lowercase alt+z parsed incorrectly");
+}
+
+static void StackSameExeNameGroups() {
+    UseStackSettings();
+    context.cards.clear();
+    AddStackCard(L"a#1", L"C:\\App\\Editor.exe");
+    AddStackCard(L"b#1", L"D:\\Tools\\v2\\Editor.exe");
+    AddStackCard(L"c#1", L"C:\\App\\EDITOR.EXE");
+    AddStackCard(L"d#1", L"C:\\App\\Notepad.exe");
+    context.cards[0].world = MakeRectF(0.0f, 0.0f, 320.0f, 240.0f);
+    context.cards[1].world = MakeRectF(1000.0f, 0.0f, 320.0f, 240.0f);
+    context.cards[2].world = MakeRectF(2000.0f, 0.0f, 320.0f, 240.0f);
+    context.cards[3].world = MakeRectF(3000.0f, 0.0f, 320.0f, 240.0f);
+    ReconcileCardStacks(context.cards, context.settings);
+    const RectF anchor = MakeRectF(0.0f, 0.0f, 320.0f, 240.0f);
+    for (size_t index = 0; index < 3; ++index) {
+        Require(context.cards[index].stack.groupKey == L"editor.exe", "same exe name from different paths did not group");
+        Require(context.cards[index].stack.slot == index, "stack slot order is wrong");
+        SameRect(StackWorldRect(context.cards[index]), anchor);
+        SameRect(CardScreenBounds(context.cards[index]), CardScreenBounds(context.cards[0]));
+    }
+    Require(!IsStackBackground(context.cards[0]), "stack front was marked as background");
+    Require(IsStackBackground(context.cards[1]) && IsStackBackground(context.cards[2]), "stack background was not detected");
+    Require(context.cards[3].stack.groupKey == L"notepad.exe", "different exe joined the editor stack");
+    Require(context.cards[3].stack.slot == 0, "different exe lost its own front slot");
+    SameRect(StackWorldRect(context.cards[3]), context.cards[3].world);
+    const std::vector<size_t> order = CardDrawOrder(context.cards);
+    Require(order.size() == 4 && order[0] == 2 && order[1] == 1 && order[2] == 0, "stack background was not drawn before the front");
+    const RectF bounds = CardScreenBounds(context.cards[0]);
+    const Vec2 center{bounds.centerX(), bounds.centerY()};
+    Require(HitTestCardInOrder(context.cards, center) == 0, "stack hit test did not reach the front card");
+    Require(CycleCardStack(context.cards, context.settings, 0, 1), "stack cycle was rejected");
+    Require(context.cards[1].stack.slot == 0, "cycle did not promote the second card");
+    for (size_t index = 0; index < 3; ++index) {
+        SameRect(StackWorldRect(context.cards[index]), anchor);
+    }
+    SameRect(CardScreenBounds(context.cards[1]), bounds);
 }
 
 static void LayoutGroupedRoundtrip() {
@@ -1118,6 +1165,8 @@ static constexpr NativeCase kCases[] = {
     {"localization_badge_selection", LocalizationBadgeSelection},
     {"stack_geometry", StackGeometry}, {"stack_cycle", StackCycle},
     {"stack_removal", StackRemoval}, {"stack_invalid", StackInvalid},
+    {"stack_same_exe_name_groups", StackSameExeNameGroups},
+    {"hotkey_default_alt_z", HotkeyDefaultAltZ},
     {"stack_depth_visibility", StackDepthVisibility},
     {"stack_hit_rotation", StackHitRotation},
     {"layout_grouped_roundtrip", LayoutGroupedRoundtrip},

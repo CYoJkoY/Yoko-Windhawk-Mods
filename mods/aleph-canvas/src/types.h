@@ -146,6 +146,11 @@ struct CardStackPlacement {
     bool visible = true;
     float rotationRadians = 0.0f;
     float scale = 1.0f;
+    // Shared world rectangle for the whole stack. Empty until the stack
+    // is formed; the front card's world rectangle is captured as the
+    // anchor so every member renders at one place instead of at its own
+    // unrelated window position.
+    RectF anchorWorld{};
 };
 
 struct Card {
@@ -169,6 +174,22 @@ struct Card {
     bool pinned = false;
 };
 
+// World rectangle a card occupies on the canvas. Grouped cards share
+// their stack anchor once it is captured; ungrouped cards and stacks
+// without an anchor keep their own world rectangle.
+inline RectF StackWorldRect(const Card& card) {
+    if (card.stack.grouped && !card.stack.groupKey.empty() &&
+        !card.stack.anchorWorld.empty()) {
+        return card.stack.anchorWorld;
+    }
+    return card.world;
+}
+
+inline bool IsStackBackground(const Card& card) {
+    return card.stack.grouped && !card.stack.groupKey.empty() &&
+           card.stack.slot != 0;
+}
+
 struct ScannedWindow {
     HWND hwnd = nullptr;
     DWORD processId = 0;
@@ -190,7 +211,7 @@ inline bool MatchesWindow(const Card& card, const ScannedWindow& window) {
 }
 
 struct CanvasSettings {
-    std::wstring toggleHotkey = L"Ctrl+Alt+F12";
+    std::wstring toggleHotkey = L"Alt+Z";
     LanguageId language = LanguageId::English;
     bool openOnStart = false;
     int animationMs = 140;

@@ -61,7 +61,7 @@ inline RectF WorldToScreen(const RectF& world, const Camera& camera) {
 }
 
 inline RectF CardScreenBounds(const Card& card) {
-    RectF rect = WorldToScreen(card.world, context.camera);
+    RectF rect = WorldToScreen(StackWorldRect(card), context.camera);
     rect.top -= CardHeaderHeight();
     return rect;
 }

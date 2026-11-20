@@ -77,6 +77,7 @@ inline void ResetStackPlacement(Card& card) {
     card.stack.rotationRadians = 0.0f;
     card.stack.scale = 1.0f;
     card.stack.visible = true;
+    card.stack.anchorWorld = RectF{};
 }
 
 inline void ClearAllStackPlacements(std::vector<Card>& cards) {
@@ -99,7 +100,7 @@ inline std::vector<StackMember> CollectStackMembers(const std::vector<Card>& car
     for (size_t index = 0; index < cards.size(); ++index) {
         const Card& card = cards[index];
         if (card.stack.grouped && !card.exePath.empty()) {
-            members.push_back({index, ToLowerText(card.exePath)});
+            members.push_back({index, ExecutableName(card.exePath)});
         }
     }
     return members;
@@ -127,7 +128,9 @@ inline void ApplyStackOrder(std::vector<Card>& cards,
             continue;
         }
         const std::wstring groupKey = cards[index].stack.groupKey;
+        const RectF anchor = cards[index].stack.anchorWorld;
         cards[index].stack = StackPlacementForSlot(slot, groupKey, settings);
+        cards[index].stack.anchorWorld = anchor;
     }
 }
 
@@ -146,6 +149,23 @@ inline void AssignStack(std::vector<Card>& cards,
         cards[member.index].stack.groupKey = member.groupKey;
         cards[member.index].stack.grouped = true;
         order.push_back(member.index);
+    }
+    // Keep the stack at one place: reuse the anchor captured when the
+    // stack was formed, and only capture the front card's world rectangle
+    // the first time. Recapturing on every rescan or cycle would move the
+    // stack to the new front card's unrelated window position.
+    RectF anchor{};
+    for (const size_t index : order) {
+        if (!cards[index].stack.anchorWorld.empty()) {
+            anchor = cards[index].stack.anchorWorld;
+            break;
+        }
+    }
+    if (anchor.empty() && !order.empty()) {
+        anchor = cards[order.front()].world;
+    }
+    for (const size_t index : order) {
+        cards[index].stack.anchorWorld = anchor;
     }
     ApplyStackOrder(cards, order, settings);
 }

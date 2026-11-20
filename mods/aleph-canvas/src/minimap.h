@@ -13,7 +13,7 @@ inline RectF MinimapInnerRect(const RectF& minimap) {
 inline RectF CanvasWorldBounds() {
     RectF bounds{};
     for (const Card& card : context.cards) {
-        bounds = UnionRect(bounds, card.world);
+        bounds = UnionRect(bounds, StackWorldRect(card));
     }
     if (bounds.empty()) {
         return RectF{-500.0f, -500.0f, 500.0f, 500.0f};
