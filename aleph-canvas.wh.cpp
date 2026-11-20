@@ -531,6 +531,7 @@ constexpr float kZoomStep = 1.15f;
 constexpr float kCameraSmoothingPerSecond = 20.0f;
 constexpr float kCameraEpsilonPx = 0.2f;
 constexpr float kZoomEpsilon = 0.001f;
+constexpr float kCardOpacityEpsilon = 0.001f;
 
 constexpr float kCardHeaderPx = 28.0f;
 constexpr float kCardHeaderMinPx = 10.0f;
@@ -881,11 +882,31 @@ struct CardStackPlacement {
     bool visible = true;
     float rotationRadians = 0.0f;
     float scale = 1.0f;
+    float opacity = 1.0f;
+    bool drawAboveStack = false;
     // Shared world rectangle for the whole stack. Empty until the stack
     // is formed; the front card's world rectangle is captured as the
     // anchor so every member renders at one place instead of at its own
     // unrelated window position.
     RectF anchorWorld{};
+};
+
+struct StackCardTransition {
+    std::wstring fingerprint;
+    float fromRotation = 0.0f;
+    float fromScale = 1.0f;
+    float fromOpacity = 1.0f;
+    float toRotation = 0.0f;
+    float toScale = 1.0f;
+    bool outgoing = false;
+    bool incoming = false;
+};
+
+struct StackCycleTransition {
+    std::wstring groupKey;
+    DWORD startTick = 0;
+    DWORD durationMs = 0;
+    std::vector<StackCardTransition> cards;
 };
 
 struct Card {
@@ -1028,6 +1049,7 @@ struct CanvasContext {
 
     // Cards and camera.
     std::vector<Card> cards;
+    std::vector<StackCycleTransition> stackTransitions;
     Camera camera{};
     bool cameraMotion = false;
     DWORD lastRescanTick = 0;
@@ -2962,6 +2984,8 @@ inline void ResetStackPlacement(Card& card) {
     card.stack.slot = 0;
     card.stack.rotationRadians = 0.0f;
     card.stack.scale = 1.0f;
+    card.stack.opacity = 1.0f;
+    card.stack.drawAboveStack = false;
     card.stack.visible = true;
     card.stack.anchorWorld = RectF{};
 }
@@ -3185,6 +3209,176 @@ inline bool CycleStackForWheel(std::vector<Card>& cards,
         return false;
     }
     return CycleCardStack(cards, settings, hitIndex, StackWheelSteps(wheelDelta));
+}
+
+// Alt+wheel cycle phases, as fractions of the transition duration. The
+// outgoing front card lifts above the stack and fades out first, then the
+// incoming front fades in while every member eases into its new slot, so the
+// stack reads as one set of cards rotating under the new front.
+constexpr float kStackCycleLiftFraction = 0.35f;
+constexpr float kStackCycleIncomingFraction = 0.65f;
+constexpr float kStackCycleFadeSpan =
+    kStackCycleIncomingFraction - kStackCycleLiftFraction;
+constexpr float kStackCycleSettleSpan = 1.0f - kStackCycleIncomingFraction;
+
+struct StackCycleRequest {
+    const CanvasSettings& settings;
+    int hitIndex;
+    int steps;
+    DWORD now;
+};
+
+inline Card* FindStackCard(std::vector<Card>& cards, const std::wstring& groupKey,
+                          const std::wstring& fingerprint) {
+    const auto card = std::find_if(
+        cards.begin(), cards.end(), [&fingerprint, &groupKey](const Card& candidate) {
+            return candidate.fingerprint == fingerprint &&
+                   candidate.stack.groupKey == groupKey;
+        });
+    return card == cards.end() ? nullptr : &*card;
+}
+
+inline float StackCycleProgress(const StackCycleTransition& transition, DWORD now) {
+    if (transition.durationMs == 0) {
+        return 1.0f;
+    }
+    const float elapsed = static_cast<float>(now - transition.startTick);
+    return std::clamp(elapsed / static_cast<float>(transition.durationMs), 0.0f, 1.0f);
+}
+
+inline float StackCycleOpacity(const StackCardTransition& pose, float progress) {
+    if (pose.outgoing) {
+        if (progress < kStackCycleLiftFraction) {
+            return pose.fromOpacity * (1.0f - progress / kStackCycleLiftFraction);
+        }
+        if (progress < kStackCycleIncomingFraction) {
+            return 0.0f;
+        }
+        return std::clamp((progress - kStackCycleIncomingFraction) /
+                              kStackCycleSettleSpan,
+                          0.0f, 1.0f);
+    }
+    if (pose.incoming) {
+        if (progress < kStackCycleLiftFraction) {
+            return 0.0f;
+        }
+        if (progress < kStackCycleIncomingFraction) {
+            return std::clamp((progress - kStackCycleLiftFraction) /
+                                  kStackCycleFadeSpan,
+                              0.0f, 1.0f);
+        }
+    }
+    return pose.fromOpacity +
+        (1.0f - pose.fromOpacity) * progress;
+}
+
+inline void ApplyStackCyclePose(Card& card, const StackCardTransition& pose,
+                                float eased, float progress) {
+    card.stack.rotationRadians =
+        pose.fromRotation + (pose.toRotation - pose.fromRotation) * eased;
+    card.stack.scale = pose.fromScale + (pose.toScale - pose.fromScale) * eased;
+    card.stack.drawAboveStack = pose.outgoing && progress < kStackCycleLiftFraction;
+    card.stack.opacity = StackCycleOpacity(pose, progress);
+}
+
+inline void SettleStackCyclePose(Card& card, const StackCardTransition& pose) {
+    card.stack.rotationRadians = pose.toRotation;
+    card.stack.scale = pose.toScale;
+    card.stack.opacity = 1.0f;
+    card.stack.drawAboveStack = false;
+}
+
+inline void ApplyStackCycleFrame(std::vector<Card>& cards,
+                                const StackCycleTransition& transition,
+                                float progress) {
+    const float eased = progress * progress * (3.0f - 2.0f * progress);
+    for (const StackCardTransition& pose : transition.cards) {
+        Card* card = FindStackCard(cards, transition.groupKey, pose.fingerprint);
+        if (card == nullptr) {
+            continue;
+        }
+        if (progress >= 1.0f) {
+            SettleStackCyclePose(*card, pose);
+            continue;
+        }
+        ApplyStackCyclePose(*card, pose, eased, progress);
+    }
+}
+
+inline bool AdvanceStackCycleTransitions(
+    std::vector<Card>& cards, std::vector<StackCycleTransition>& transitions,
+    DWORD now) {
+    bool active = false;
+    for (size_t transitionIndex = transitions.size(); transitionIndex-- > 0;) {
+        const StackCycleTransition& transition = transitions[transitionIndex];
+        const float progress = StackCycleProgress(transition, now);
+        ApplyStackCycleFrame(cards, transition, progress);
+        if (progress >= 1.0f) {
+            transitions.erase(transitions.begin() +
+                              static_cast<std::ptrdiff_t>(transitionIndex));
+            continue;
+        }
+        active = true;
+    }
+    return active;
+}
+
+inline bool CycleStackWithAnimation(std::vector<Card>& cards,
+                                    const StackCycleRequest& request,
+                                    std::vector<StackCycleTransition>& transitions) {
+    if (request.steps == 0 || request.hitIndex < 0 ||
+        static_cast<size_t>(request.hitIndex) >= cards.size()) {
+        return false;
+    }
+    const std::wstring groupKey =
+        cards[static_cast<size_t>(request.hitIndex)].stack.groupKey;
+    if (groupKey.empty()) {
+        return false;
+    }
+    AdvanceStackCycleTransitions(cards, transitions, request.now);
+    std::vector<size_t> members;
+    if (!StackMemberOrder(cards, groupKey, members) || members.size() <= 1) {
+        return false;
+    }
+    const size_t frontIndex = members.front();
+    std::vector<StackCardTransition> poses;
+    poses.reserve(members.size());
+    for (const size_t index : members) {
+        const Card& card = cards[index];
+        poses.push_back(StackCardTransition{card.fingerprint,
+            card.stack.rotationRadians, card.stack.scale, card.stack.opacity,
+            0.0f, 1.0f, index == frontIndex, false});
+    }
+    if (!CycleCardStack(cards, request.settings, request.hitIndex, request.steps)) {
+        return false;
+    }
+    for (StackCardTransition& pose : poses) {
+        Card* card = FindStackCard(cards, groupKey, pose.fingerprint);
+        if (card != nullptr) {
+            pose.toRotation = card->stack.rotationRadians;
+            pose.toScale = card->stack.scale;
+            pose.incoming = card->stack.slot == 0 && !pose.outgoing;
+            card->stack.opacity = pose.fromOpacity;
+            card->stack.drawAboveStack = pose.outgoing;
+        }
+    }
+    transitions.erase(
+        std::remove_if(transitions.begin(), transitions.end(), [&groupKey](const auto& item) {
+            return item.groupKey == groupKey;
+        }), transitions.end());
+    if (request.settings.animationMs <= 0) {
+        for (Card& card : cards) {
+            if (card.stack.groupKey == groupKey) {
+                card.stack.opacity = 1.0f;
+                card.stack.drawAboveStack = false;
+            }
+        }
+        return true;
+    }
+    transitions.push_back(StackCycleTransition{groupKey, request.now,
+        static_cast<DWORD>(request.settings.animationMs), std::move(poses)});
+    AdvanceStackCycleTransitions(cards, transitions, request.now);
+    return true;
 }
 
 
@@ -3441,6 +3635,7 @@ inline bool MergeScan(const std::vector<ScannedWindow>& scanned) {
         }
     }
     if (changed) {
+        context.stackTransitions.clear();
         ReconcileCardStacks(context.cards, context.settings);
     }
     return changed;
@@ -4182,6 +4377,17 @@ inline void SubmitThumbnail(Card& card, const ThumbnailGeometry& geometry,
 }
 
 inline void UpdateThumbnail(Card& card, DWORD now) {
+    const bool stackAnimating = std::any_of(
+        context.stackTransitions.begin(), context.stackTransitions.end(),
+        [&card](const StackCycleTransition& transition) {
+            return transition.groupKey == card.stack.groupKey;
+        });
+    if (stackAnimating) {
+        if (card.thumbnail.valid() && card.thumbnailVisible) {
+            HideThumbnail(card, now);
+        }
+        return;
+    }
     // DWM thumbnails cannot be rotated or scaled, and a stack shows only
     // its front window live. Background members render as icon cards, so
     // never register or show a thumbnail for them.
@@ -4284,6 +4490,7 @@ inline void DrawHostScene(HDC dc) {
 
 
 #include <algorithm>
+#include <unordered_map>
 
 inline RectF CardHeaderRect(const Card& card) {
     const RectF bounds = CardScreenBounds(card);
@@ -4351,23 +4558,92 @@ inline CardHeaderAction HitTestCardHeader(const RectF& header, Vec2 point,
     return CardHeaderAction::None;
 }
 
+inline bool IsGroupedStackCard(const Card& card) {
+    return card.stack.grouped && !card.stack.groupKey.empty();
+}
+
+// Stack members share one draw group so they stay contiguous in paint order;
+// an ungrouped card is its own group and keeps its scan position.
+inline std::wstring CardDrawGroupKey(const Card& card, size_t index) {
+    if (IsGroupedStackCard(card)) {
+        return L"S:" + card.stack.groupKey;
+    }
+    return L"C:" + card.fingerprint + L":" + std::to_wstring(index);
+}
+
+inline std::unordered_map<std::wstring, bool> CollectStackPins(
+    const std::vector<Card>& cards) {
+    std::unordered_map<std::wstring, bool> stackPinned;
+    for (const Card& card : cards) {
+        if (!IsGroupedStackCard(card)) {
+            continue;
+        }
+        bool& pinned = stackPinned[card.stack.groupKey];
+        pinned = pinned || card.pinned;
+    }
+    return stackPinned;
+}
+
+inline std::vector<size_t> AssignDrawGroups(const std::vector<Card>& cards) {
+    std::unordered_map<std::wstring, size_t> groupIds;
+    std::vector<size_t> drawGroups(cards.size());
+    for (size_t index = 0; index < cards.size(); ++index) {
+        const auto entry = groupIds.try_emplace(
+            CardDrawGroupKey(cards[index], index), groupIds.size()).first;
+        drawGroups[index] = entry->second;
+    }
+    return drawGroups;
+}
+
+inline bool CardDrawPinned(
+    const Card& card, const std::unordered_map<std::wstring, bool>& stackPinned) {
+    if (!IsGroupedStackCard(card)) {
+        return card.pinned;
+    }
+    const auto entry = stackPinned.find(card.stack.groupKey);
+    return entry == stackPinned.end() ? card.pinned : entry->second;
+}
+
+// The card lifted out of the stack paints above its own members, then the
+// highest slot (deepest background card) paints first and the front slot
+// (slot 0) paints last, so a stack always reads as one card with its front on
+// top.
+inline bool StackDrawLess(const Card& left, const Card& right) {
+    if (left.stack.drawAboveStack != right.stack.drawAboveStack) {
+        return !left.stack.drawAboveStack;
+    }
+    return left.stack.slot > right.stack.slot;
+}
+
 // Pinned cards are drawn last and hit-tested first, so pinning a card lifts it
 // above every unpinned card without reordering the scan-owned card vector.
-// Inside one stack the background slots are drawn first and the front slot
-// (slot 0) last, so the stack reads as one card with the front on top and
-// hit testing (which walks this order backwards) reaches the front first.
+// Hit testing walks this order backwards, so it reaches a stack front first.
 inline std::vector<size_t> CardDrawOrder(const std::vector<Card>& cards) {
+    const std::unordered_map<std::wstring, bool> stackPinned =
+        CollectStackPins(cards);
+    const std::vector<size_t> drawGroups = AssignDrawGroups(cards);
     std::vector<size_t> order;
     order.reserve(cards.size());
     for (size_t index = 0; index < cards.size(); ++index) {
         order.push_back(index);
     }
-    std::stable_sort(order.begin(), order.end(), [&cards](size_t left, size_t right) {
-        if (cards[left].pinned != cards[right].pinned) {
-            return !cards[left].pinned;
-        }
-        return cards[left].stack.slot > cards[right].stack.slot;
-    });
+    std::stable_sort(
+        order.begin(), order.end(),
+        [&cards, &drawGroups, &stackPinned](size_t left, size_t right) {
+            const bool leftPinned = CardDrawPinned(cards[left], stackPinned);
+            const bool rightPinned = CardDrawPinned(cards[right], stackPinned);
+            if (leftPinned != rightPinned) {
+                return !leftPinned;
+            }
+            if (drawGroups[left] != drawGroups[right]) {
+                return drawGroups[left] < drawGroups[right];
+            }
+            if (!IsGroupedStackCard(cards[left]) ||
+                !IsGroupedStackCard(cards[right])) {
+                return false;
+            }
+            return StackDrawLess(cards[left], cards[right]);
+        });
     return order;
 }
 
@@ -4569,6 +4845,9 @@ inline void DrawCardBody(const Card& card, const RectF& body, float scale) {
 }
 
 inline void DrawCard(const Card& card, int index, float scale) {
+    if (card.stack.opacity <= kCardOpacityEpsilon) {
+        return;
+    }
     const RectF rect = CardScreenBounds(card);
     if (rect.empty()) {
         return;
@@ -4608,12 +4887,22 @@ inline void DrawCard(const Card& card, int index, float scale) {
                                      D2D1::Point2F(center.x, center.y)) *
             D2D1::Matrix3x2F::Rotation(degrees, D2D1::Point2F(center.x, center.y)));
     }
+    D2D1_LAYER_PARAMETERS layerParameters = {};
+    layerParameters.contentBounds = D2D1::InfiniteRect();
+    layerParameters.maskAntialiasMode = D2D1_ANTIALIAS_MODE_PER_PRIMITIVE;
+    layerParameters.maskTransform = D2D1::IdentityMatrix();
+    layerParameters.opacity = card.stack.opacity;
+    layerParameters.layerOptions = D2D1_LAYER_OPTIONS_NONE;
+    // ID2D1DeviceContext::PushLayer returns void, so the layer is always
+    // popped on the matching path below.
+    context.hudTarget->PushLayer(&layerParameters, nullptr);
     DrawCardBody(card, body, scale);
     DrawCardHeader(card, index, header, scale);
     SetHudColor(emphasized ? context.settings.accentColor : context.settings.gridColor);
     context.hudTarget->DrawRoundedRectangle(
         RoundedRect(rect, radius), context.hudBrush,
         emphasized ? 2.0f * scale : 1.0f * scale);
+    context.hudTarget->PopLayer();
     if (transformed) {
         context.hudTarget->SetTransform(savedTransform);
     }
@@ -4928,6 +5217,7 @@ inline void DismissCard(int index) {
     context.dismissedFingerprints.insert(
         context.cards[static_cast<size_t>(index)].fingerprint);
     RemoveCardAt(static_cast<size_t>(index));
+    context.stackTransitions.clear();
     ReconcileCardStacks(context.cards, context.settings);
     context.hoverHeaderAction = CardHeaderAction::None;
     context.sceneDirty = true;
@@ -5211,8 +5501,11 @@ inline void HandleMouseWheel(WPARAM wParam, LPARAM lParam) {
     if ((GetKeyState(VK_MENU) & 0x8000) != 0) {
         const int hit = HitTestCard(Vec2{static_cast<float>(cursor.x),
                                          static_cast<float>(cursor.y)});
-        if (hit >= 0 && CycleStackForWheel(context.cards, context.settings, hit,
-                                           GET_WHEEL_DELTA_WPARAM(wParam))) {
+        if (hit >= 0 && CycleStackWithAnimation(
+                context.cards,
+                StackCycleRequest{context.settings, hit,
+                    StackWheelSteps(GET_WHEEL_DELTA_WPARAM(wParam)), GetTickCount()},
+                context.stackTransitions)) {
             const std::wstring groupKey =
                 context.cards[static_cast<size_t>(hit)].stack.groupKey;
             context.selectedCard = hit;
@@ -5518,6 +5811,7 @@ inline void ApplyPendingSettings() {
         return;
     }
     LoadSettings();
+    context.stackTransitions.clear();
     ReconcileCardStacks(context.cards, context.settings);
     RegisterCanvasHotkey();
     context.camera.targetZoom = ClampZoom(context.camera.targetZoom);
@@ -5546,6 +5840,12 @@ inline void AdvanceCanvasFrame(IVirtualDesktopManager* manager, DWORD now) {
     ApplyPendingSettings();
     ScanAndMerge(manager, now);
     UpdateCameraAndDive(now);
+    const bool stackAnimationWasActive = !context.stackTransitions.empty();
+    const bool stackAnimationActive = AdvanceStackCycleTransitions(
+        context.cards, context.stackTransitions, now);
+    if (stackAnimationWasActive || stackAnimationActive) {
+        context.sceneDirty = true;
+    }
     if (context.visible && (context.sceneDirty || context.cameraMotion ||
                             context.diving)) {
         RenderCanvasFrame();
@@ -5558,7 +5858,8 @@ inline void AdvanceCanvasFrame(IVirtualDesktopManager* manager, DWORD now) {
 }
 
 inline DWORD PacedCanvasTimeout(DWORD now) {
-    if (!context.visible || (!context.cameraMotion && !context.diving)) {
+    if (!context.visible || (!context.cameraMotion && !context.diving &&
+                             context.stackTransitions.empty())) {
         return CanvasWaitTimeout(now);
     }
     const DWORD started = GetTickCount();
