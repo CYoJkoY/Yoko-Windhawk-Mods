@@ -288,6 +288,9 @@ class AlephCanvasNativeTests(unittest.TestCase):
     def test_stack_thumbnail_occlusion_clips(self) -> None:
         self.run_case("stack_thumbnail_occlusion")
 
+    def test_stack_front_occlusion_holds_for_whole_stack(self) -> None:
+        self.run_case("stack_front_occlusion_full_stack")
+
     def test_layout_grouped_flag_roundtrips(self) -> None:
         self.run_case("layout_grouped_roundtrip")
 

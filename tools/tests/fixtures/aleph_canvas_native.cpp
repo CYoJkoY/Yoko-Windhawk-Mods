@@ -1135,6 +1135,63 @@ static void HotkeyDefaultAltZ() {
     Require(modifiers == MOD_ALT && key == static_cast<UINT>('Z'), "lowercase alt+z parsed incorrectly");
 }
 
+// The reported bug: with a real stack, the upright card at the front of the
+// stack was covered by the cards stacked beneath it. Every background member
+// must reserve the front preview, and the front itself must stay unclipped.
+static void StackFrontOcclusionFullStack() {
+    PrepareGeometry();
+    UseStackSettings();
+    context.cards.clear();
+    AddStackCard(L"a#1", L"C:\\App\\Editor.exe");
+    AddStackCard(L"b#1", L"C:\\App\\Editor.exe");
+    AddStackCard(L"c#1", L"C:\\App\\Editor.exe");
+    AddStackCard(L"d#1", L"C:\\App\\Editor.exe");
+    AddStackCard(L"e#1", L"C:\\App\\Editor.exe");
+    ReconcileCardStacks(context.cards, context.settings);
+    const std::vector<size_t> order = CardDrawOrder(context.cards);
+    Require(order.size() == 5, "draw order lost a stack member");
+    size_t frontPosition = order.size();
+    for (size_t position = 0; position < order.size(); ++position) {
+        if (context.cards[order[position]].stack.slot == 0) {
+            frontPosition = position;
+        }
+    }
+    Require(frontPosition == order.size() - 1,
+            "stack front was not painted last");
+
+    Card& front = context.cards[order[frontPosition]];
+    front.state = WindowVisualState::Live;
+    front.thumbnail.reset(reinterpret_cast<HTHUMBNAIL>(9));
+    front.thumbnailVisible = true;
+    front.thumbnailDestination =
+        ThumbnailRect(WorldToScreen(StackWorldRect(front), context.camera));
+    const RectF frontPreview = RectFromRect(front.thumbnailDestination);
+    Require(!frontPreview.empty(), "live stack front had no preview");
+    const RectF viewport = MakeRectF(
+        frontPreview.left - 64.0f, frontPreview.top - 64.0f,
+        frontPreview.width() + 128.0f, frontPreview.height() + 128.0f);
+
+    for (size_t position = 0; position < frontPosition; ++position) {
+        const Card& member = context.cards[order[position]];
+        Require(IsStackBackground(member),
+                "stack background was painted after the front");
+        const CardDrawClips clips = CardDrawRegions(
+            viewport, CardScreenQuad(CardScreenBounds(member), member.stack),
+            HigherThumbnailRects(context.cards, order, position));
+        Require(clips.clipped && !clips.regions.empty(),
+                "stack background was not clipped around the live front");
+        for (const RectF& region : clips.regions) {
+            Require(!RectsOverlap(region, frontPreview),
+                    "stack background covered the live front preview");
+        }
+    }
+
+    const CardDrawClips frontClips = CardDrawRegions(
+        viewport, CardScreenQuad(CardScreenBounds(front), front.stack),
+        HigherThumbnailRects(context.cards, order, frontPosition));
+    Require(!frontClips.clipped, "live stack front was clipped by lower cards");
+}
+
 static void StackSameExeNameGroups() {
     UseStackSettings();
     context.cards.clear();
@@ -1462,6 +1519,7 @@ static constexpr NativeCase kCases[] = {
     {"stack_depth_visibility", StackDepthVisibility},
     {"stack_hit_rotation", StackHitRotation},
     {"stack_thumbnail_occlusion", StackThumbnailOcclusionClips},
+    {"stack_front_occlusion_full_stack", StackFrontOcclusionFullStack},
     {"layout_grouped_roundtrip", LayoutGroupedRoundtrip},
 };
 
