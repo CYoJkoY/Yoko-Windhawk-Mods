@@ -32,6 +32,7 @@ Drag cards to arrange them without moving the real desktop windows.
 - Double-click a card or press Enter: focus the window; an other-desktop window is pulled onto this desktop first.
 - Tab / Shift+Tab: select a card; arrow keys pan; Home fits all cards; Escape hides the canvas.
 - Click or drag the minimap: navigate the canvas.
+- The canvas hides when another window takes input focus.
 
 ## Notes
 

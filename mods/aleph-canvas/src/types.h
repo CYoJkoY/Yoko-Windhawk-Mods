@@ -207,7 +207,6 @@ struct LayoutEntry {
     std::wstring fingerprint;
     RectF world = {};
     bool pinned = false;
-    DWORD lastSeenTick = 0;
 };
 
 struct LayoutSnapshot {

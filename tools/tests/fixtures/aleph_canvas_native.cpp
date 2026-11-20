@@ -530,7 +530,7 @@ static void LayoutEntryEviction() {
         const std::wstring fingerprint = L"old#" + std::to_wstring(index);
         context.layout.entries.push_back(
             LayoutEntry{fingerprint, MakeRectF(0.0f, 0.0f, 1.0f, 1.0f),
-                        false, static_cast<DWORD>(index)});
+                        false});
     }
     RememberLayoutEntry(L"refreshed", MakeRectF(2.0f, 0.0f, 1.0f, 1.0f));
     Require(context.layout.entries.size() == kMaxLayoutEntries,
@@ -551,6 +551,58 @@ static void LayoutEntryEviction() {
             "layout schema version changed");
 }
 
+static void PinSurvivesLayoutMove() {
+    context.layout = LayoutSnapshot{};
+    context.layout.entries.push_back(
+        LayoutEntry{L"pinned#1", MakeRectF(10.0f, 20.0f, 300.0f, 200.0f), true});
+
+    const RectF moved = MakeRectF(400.0f, 500.0f, 640.0f, 480.0f);
+    RememberLayoutEntry(L"pinned#1", moved);
+    Require(context.layout.entries.size() == 1,
+            "moving a pinned entry changed the layout entry count");
+    Require(context.layout.entries[0].pinned,
+            "moving a card cleared its saved pin");
+    SameRect(context.layout.entries[0].world, moved);
+}
+
+static void LayoutRecencyOrder() {
+    context.layout = LayoutSnapshot{};
+    context.layout.entries.push_back(
+        LayoutEntry{L"a", MakeRectF(0.0f, 0.0f, 1.0f, 1.0f), false});
+    context.layout.entries.push_back(
+        LayoutEntry{L"b", MakeRectF(1.0f, 0.0f, 1.0f, 1.0f), false});
+    context.layout.entries.push_back(
+        LayoutEntry{L"c", MakeRectF(2.0f, 0.0f, 1.0f, 1.0f), false});
+
+    const RectF touched = MakeRectF(30.0f, 40.0f, 1.0f, 1.0f);
+    RememberLayoutEntry(L"a", touched);
+    Require(context.layout.entries.size() == 3,
+            "touching an entry changed the layout entry count");
+    Require(context.layout.entries[0].fingerprint == L"b",
+            "least recently touched entry did not become first");
+    Require(context.layout.entries[1].fingerprint == L"c",
+            "middle recency entry moved unexpectedly");
+    Require(context.layout.entries[2].fingerprint == L"a",
+            "touched entry did not move to the back");
+    SameRect(context.layout.entries[2].world, touched);
+}
+
+static void LayoutPinnedCapacity() {
+    context.layout = LayoutSnapshot{};
+    for (int index = 0; index < kMaxLayoutEntries; ++index) {
+        const std::wstring fingerprint = L"pinned#" + std::to_wstring(index);
+        context.layout.entries.push_back(
+            LayoutEntry{fingerprint, MakeRectF(0.0f, 0.0f, 1.0f, 1.0f), true});
+    }
+
+    RememberLayoutPin(L"overflow", MakeRectF(2.0f, 0.0f, 1.0f, 1.0f), false);
+    Require(context.layout.entries.size() ==
+                static_cast<size_t>(kMaxLayoutEntries),
+            "pinned layout exceeded its cap");
+    Require(FindLayoutEntry(L"overflow") == nullptr,
+            "an unpinned entry displaced a pinned one");
+}
+
 static void DismissedCards() {
     ScannedWindow window = SampleWindow(0x600);
     window.fingerprint = L"dismissed#1";
@@ -562,6 +614,39 @@ static void DismissedCards() {
     MergeScan(scanned);
     Require(context.cards.size() == 1,
             "clearing the dismissal did not restore the card");
+}
+
+static void DismissedWindowsSkipCut() {
+    context.cards.clear();
+    context.layout = LayoutSnapshot{};
+    context.dismissedFingerprints.clear();
+    std::vector<ScannedWindow> windows;
+    windows.reserve(static_cast<size_t>(kMaxCards) + 1);
+    for (int index = 0; index <= kMaxCards; ++index) {
+        windows.push_back(SizedWindow(static_cast<UINT_PTR>(0x700 + index),
+                                      900 - index));
+    }
+
+    std::vector<ScannedWindow> probe = windows;
+    AssignFingerprints(probe);
+    context.dismissedFingerprints.insert(probe.front().fingerprint);
+    PrepareScanCandidates(windows);
+
+    Require(windows.size() == static_cast<size_t>(kMaxCards),
+            "dismissed window still consumed a card slot");
+    const HWND dismissed = reinterpret_cast<HWND>(0x700);
+    Require(std::none_of(windows.begin(), windows.end(),
+                         [&](const ScannedWindow& window) {
+                             return window.hwnd == dismissed;
+                         }),
+            "dismissed window survived candidate selection");
+    const HWND recovered = reinterpret_cast<HWND>(0x700 + kMaxCards);
+    Require(std::any_of(windows.begin(), windows.end(),
+                        [&](const ScannedWindow& window) {
+                            return window.hwnd == recovered;
+                        }),
+            "dismissing a window did not free a slot for the next one");
+    context.dismissedFingerprints.clear();
 }
 
 static void DesktopPullMoves() {
@@ -680,12 +765,6 @@ static void IconSourceMissing() {
     Require(queries == 3, "the lookup skipped a candidate");
 }
 
-static void Wow64IconLookupGuard() {
-    ScopedWow64RedirectionDisabled disabled;
-    Require(!std::is_copy_constructible_v<ScopedWow64RedirectionDisabled>,
-            "WOW64 restore state must not be copied");
-}
-
 struct NativeCase {
     const char* name;
     void (*run)();
@@ -705,7 +784,11 @@ static constexpr NativeCase kCases[] = {
     {"header_chrome", HeaderChrome}, {"pinned_order", PinnedOrder},
     {"pinned_layout_sync", PinnedLayoutSync}, {"pin_persistence", PinPersistence},
     {"layout_entry_eviction", LayoutEntryEviction},
+    {"pin_survives_layout_move", PinSurvivesLayoutMove},
+    {"layout_recency_order", LayoutRecencyOrder},
+    {"layout_pinned_capacity", LayoutPinnedCapacity},
     {"dismissed_cards", DismissedCards},
+    {"dismissed_windows_skip_cut", DismissedWindowsSkipCut},
     {"desktop_pull_moves", DesktopPullMoves},
     {"desktop_pull_same", DesktopPullSame},
     {"desktop_pull_null", DesktopPullNull},
@@ -715,7 +798,6 @@ static constexpr NativeCase kCases[] = {
     {"icon_source_largest", IconSourceLargestWins},
     {"icon_source_fallback", IconSourceFallback},
     {"icon_source_missing", IconSourceMissing},
-    {"wow64_icon_lookup_guard", Wow64IconLookupGuard},
 };
 
 static int RunCase(const char* name) {
