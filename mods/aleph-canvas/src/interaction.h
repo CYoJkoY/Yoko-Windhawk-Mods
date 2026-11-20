@@ -312,6 +312,29 @@ inline void HandleMouseWheel(WPARAM wParam, LPARAM lParam) {
     }
     POINT cursor = {GET_X_LPARAM(lParam) - context.virtualScreen.left,
                     GET_Y_LPARAM(lParam) - context.virtualScreen.top};
+    // Alt+wheel over a stack cycles it instead of zooming: the wheel is
+    // otherwise bound to canvas zoom, so a plain wheel can never switch
+    // cards. Alt+wheel that misses a cyclable stack falls through to
+    // zoom, and a plain wheel is unchanged.
+    if ((GetKeyState(VK_MENU) & 0x8000) != 0) {
+        const int hit = HitTestCard(Vec2{static_cast<float>(cursor.x),
+                                         static_cast<float>(cursor.y)});
+        if (hit >= 0 && CycleStackForWheel(context.cards, context.settings, hit,
+                                           GET_WHEEL_DELTA_WPARAM(wParam))) {
+            const std::wstring groupKey =
+                context.cards[static_cast<size_t>(hit)].stack.groupKey;
+            context.selectedCard = hit;
+            for (size_t index = 0; index < context.cards.size(); ++index) {
+                if (context.cards[index].stack.groupKey == groupKey &&
+                    context.cards[index].stack.slot == 0) {
+                    context.selectedCard = static_cast<int>(index);
+                    break;
+                }
+            }
+            context.sceneDirty = true;
+            return;
+        }
+    }
     const float steps = static_cast<float>(GET_WHEEL_DELTA_WPARAM(wParam)) /
                         static_cast<float>(WHEEL_DELTA);
     const float factor = std::pow(kZoomStep, steps);

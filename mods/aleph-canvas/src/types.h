@@ -165,6 +165,10 @@ struct Card {
     std::wstring title;
     std::wstring fingerprint;
     std::wstring exePath;
+    // Scan index from EnumWindows, topmost window first (0 = topmost).
+    // Copied from ScannedWindow on every merge so stack order follows
+    // the desktop Z-order instead of card insertion order.
+    size_t zOrder = 0;
     CardStackPlacement stack;
     Thumbnail thumbnail;
     bool thumbnailFailed = false;
@@ -200,6 +204,10 @@ struct ScannedWindow {
     std::wstring title;
     std::wstring fingerprint;
     std::wstring exePath;
+    // Scan index from EnumWindows, topmost window first (0 = topmost).
+    // Stacks order members by this rank so the focused/topmost window
+    // becomes the straight front card instead of an arbitrary member.
+    size_t zOrder = 0;
 };
 
 inline bool MatchesWindow(const Card& card, const ScannedWindow& window) {
