@@ -1044,6 +1044,87 @@ static void StackHitRotation() {
     Near(middleY * 0.25f, center.y);
 }
 
+static float RectArea(const RectF& rect) {
+    return rect.width() * rect.height();
+}
+
+static void StackThumbnailOcclusionClips() {
+    const RectF viewport = MakeRectF(0.0f, 0.0f, 100.0f, 100.0f);
+    const RectF card = MakeRectF(10.0f, 10.0f, 80.0f, 80.0f);
+    const CardStackPlacement untransformed;
+    const std::array<Vec2, 4> cardQuad = CardScreenQuad(card, untransformed);
+
+    const CardDrawClips noOcclusion = CardDrawRegions(
+        viewport, cardQuad, {MakeRectF(90.0f, 90.0f, 10.0f, 10.0f)});
+    Require(!noOcclusion.clipped && noOcclusion.regions.empty(),
+            "non-overlapping thumbnail added a clip");
+
+    const std::vector<RectF> holes = {
+        MakeRectF(20.0f, 20.0f, 40.0f, 40.0f),
+        MakeRectF(40.0f, 40.0f, 40.0f, 40.0f)};
+    const CardDrawClips clipped = CardDrawRegions(viewport, cardQuad, holes);
+    Require(clipped.clipped && !clipped.regions.empty(),
+            "overlapping thumbnails did not clip the background card");
+    float visibleArea = 0.0f;
+    for (const RectF& region : clipped.regions) {
+        visibleArea += RectArea(region);
+        for (const RectF& hole : holes) {
+            Require(!RectsOverlap(region, hole),
+                    "background card clip overlaps a live thumbnail");
+        }
+    }
+    Near(visibleArea, 7200.0f);
+
+    CardStackPlacement rotated;
+    rotated.rotationRadians = -0.35f;
+    rotated.scale = 0.9f;
+    const std::array<Vec2, 4> rotatedQuad = CardScreenQuad(card, rotated);
+    const CardDrawClips rotatedClip = CardDrawRegions(
+        viewport, rotatedQuad, {MakeRectF(5.0f, 5.0f, 20.0f, 20.0f)});
+    Require(rotatedClip.clipped && !rotatedClip.regions.empty(),
+            "rotated background card did not reserve the thumbnail hole");
+    for (const RectF& region : rotatedClip.regions) {
+        Require(!RectsOverlap(region, MakeRectF(5.0f, 5.0f, 20.0f, 20.0f)),
+                "rotated card clip covers the live thumbnail");
+    }
+
+    std::vector<Card> cards(2);
+    cards[0].state = WindowVisualState::Live;
+    cards[0].thumbnail.reset(reinterpret_cast<HTHUMBNAIL>(1));
+    cards[0].thumbnailVisible = true;
+    cards[0].thumbnailDestination = RECT{20, 20, 60, 60};
+    cards[1].state = WindowVisualState::Live;
+    cards[1].thumbnail.reset(reinterpret_cast<HTHUMBNAIL>(2));
+    cards[1].thumbnailVisible = true;
+    cards[1].thumbnailDestination = RECT{40, 40, 80, 80};
+    const std::vector<size_t> stackOrder = {1, 0};
+    Require(HigherThumbnailRects(cards, stackOrder, 0).size() == 1,
+            "lower card did not reserve the upper preview");
+    Require(HigherThumbnailRects(cards, stackOrder, 1).empty(),
+            "stack front reserved a lower preview");
+    const CardDrawClips frontClip = CardDrawRegions(
+        viewport, cardQuad, HigherThumbnailRects(cards, stackOrder, 1));
+    Require(!frontClip.clipped,
+            "upright stack front was clipped by lower cards");
+    const RectF frontPreview = RectFromRect(cards[0].thumbnailDestination);
+    const CardDrawClips backgroundClip = CardDrawRegions(
+        viewport, cardQuad, HigherThumbnailRects(cards, stackOrder, 0));
+    Require(backgroundClip.clipped,
+            "stack background ignored the front preview");
+    for (const RectF& region : backgroundClip.regions) {
+        Require(!RectsOverlap(region, frontPreview),
+                "stack background was painted over the live front preview");
+    }
+
+    const std::vector<bool> visible = SelectUnoccludedThumbnails(
+        {0, 1, 2, 3},
+        {MakeRectF(10.0f, 10.0f, 50.0f, 50.0f),
+         MakeRectF(40.0f, 40.0f, 50.0f, 50.0f), RectF{},
+         MakeRectF(120.0f, 120.0f, 40.0f, 40.0f)});
+    Require(!visible[0] && visible[1] && !visible[2] && visible[3],
+            "overlapping live previews ignored card draw priority");
+}
+
 static void HotkeyDefaultAltZ() {
     Require(CanvasSettings{}.toggleHotkey == L"Alt+Z", "default toggle hotkey is not Alt+Z");
     UINT modifiers = 0;
@@ -1052,6 +1133,63 @@ static void HotkeyDefaultAltZ() {
     Require(modifiers == MOD_ALT && key == static_cast<UINT>('Z'), "Alt+Z parsed incorrectly");
     Require(ParseHotkeyText(L"alt+z", modifiers, key), "lowercase alt+z hotkey was rejected");
     Require(modifiers == MOD_ALT && key == static_cast<UINT>('Z'), "lowercase alt+z parsed incorrectly");
+}
+
+// The reported bug: with a real stack, the upright card at the front of the
+// stack was covered by the cards stacked beneath it. Every background member
+// must reserve the front preview, and the front itself must stay unclipped.
+static void StackFrontOcclusionFullStack() {
+    PrepareGeometry();
+    UseStackSettings();
+    context.cards.clear();
+    AddStackCard(L"a#1", L"C:\\App\\Editor.exe");
+    AddStackCard(L"b#1", L"C:\\App\\Editor.exe");
+    AddStackCard(L"c#1", L"C:\\App\\Editor.exe");
+    AddStackCard(L"d#1", L"C:\\App\\Editor.exe");
+    AddStackCard(L"e#1", L"C:\\App\\Editor.exe");
+    ReconcileCardStacks(context.cards, context.settings);
+    const std::vector<size_t> order = CardDrawOrder(context.cards);
+    Require(order.size() == 5, "draw order lost a stack member");
+    size_t frontPosition = order.size();
+    for (size_t position = 0; position < order.size(); ++position) {
+        if (context.cards[order[position]].stack.slot == 0) {
+            frontPosition = position;
+        }
+    }
+    Require(frontPosition == order.size() - 1,
+            "stack front was not painted last");
+
+    Card& front = context.cards[order[frontPosition]];
+    front.state = WindowVisualState::Live;
+    front.thumbnail.reset(reinterpret_cast<HTHUMBNAIL>(9));
+    front.thumbnailVisible = true;
+    front.thumbnailDestination =
+        ThumbnailRect(WorldToScreen(StackWorldRect(front), context.camera));
+    const RectF frontPreview = RectFromRect(front.thumbnailDestination);
+    Require(!frontPreview.empty(), "live stack front had no preview");
+    const RectF viewport = MakeRectF(
+        frontPreview.left - 64.0f, frontPreview.top - 64.0f,
+        frontPreview.width() + 128.0f, frontPreview.height() + 128.0f);
+
+    for (size_t position = 0; position < frontPosition; ++position) {
+        const Card& member = context.cards[order[position]];
+        Require(IsStackBackground(member),
+                "stack background was painted after the front");
+        const CardDrawClips clips = CardDrawRegions(
+            viewport, CardScreenQuad(CardScreenBounds(member), member.stack),
+            HigherThumbnailRects(context.cards, order, position));
+        Require(clips.clipped && !clips.regions.empty(),
+                "stack background was not clipped around the live front");
+        for (const RectF& region : clips.regions) {
+            Require(!RectsOverlap(region, frontPreview),
+                    "stack background covered the live front preview");
+        }
+    }
+
+    const CardDrawClips frontClips = CardDrawRegions(
+        viewport, CardScreenQuad(CardScreenBounds(front), front.stack),
+        HigherThumbnailRects(context.cards, order, frontPosition));
+    Require(!frontClips.clipped, "live stack front was clipped by lower cards");
 }
 
 static void StackSameExeNameGroups() {
@@ -1123,33 +1261,6 @@ static void StackZOrderFront() {
     Require(context.cards[2].stack.slot == 2, "rescan did not keep the old front at the back");
 }
 
-// One stack must occupy one contiguous block of the draw order with its front
-// slot drawn last; otherwise a background card of a neighbouring stack can be
-// painted over another stack's front card.
-static void RequireStackGroupBlock(const std::vector<Card>& cards,
-                                   const std::vector<size_t>& order,
-                                   const std::wstring& groupKey) {
-    size_t firstPosition = order.size();
-    size_t frontPosition = order.size();
-    size_t lastPosition = 0;
-    size_t memberCount = 0;
-    for (size_t position = 0; position < order.size(); ++position) {
-        const Card& card = cards[order[position]];
-        if (card.stack.groupKey != groupKey) {
-            continue;
-        }
-        const bool isFront = card.stack.slot == 0;
-        firstPosition = memberCount == 0 ? position : firstPosition;
-        frontPosition = isFront ? position : frontPosition;
-        lastPosition = position;
-        ++memberCount;
-    }
-    Require(memberCount > 1, "stack group lost its members");
-    Require(frontPosition == lastPosition, "stack front was not drawn last");
-    Require(lastPosition - firstPosition + 1 == memberCount,
-            "stack members were interleaved in the draw order");
-}
-
 static void StackDrawOrderGroups() {
     UseStackSettings();
     context.cards.clear();
@@ -1157,13 +1268,18 @@ static void StackDrawOrderGroups() {
     AddStackCard(L"b#1", L"C:\\App\\Editor.exe");
     AddStackCard(L"c#1", L"C:\\App\\Player.exe");
     AddStackCard(L"d#1", L"C:\\App\\Player.exe");
+    Card looseCard;
+    looseCard.fingerprint = L"loose#1";
+    looseCard.world = MakeRectF(0.0f, 0.0f, 320.0f, 240.0f);
+    looseCard.pinned = true;
+    context.cards.push_back(std::move(looseCard));
     ReconcileCardStacks(context.cards, context.settings);
     const std::vector<size_t> order = CardDrawOrder(context.cards);
-    Require(order.size() == 4, "draw order lost a card");
-    RequireStackGroupBlock(context.cards, order, L"editor.exe");
-    RequireStackGroupBlock(context.cards, order, L"player.exe");
-    Require(context.cards[order.back()].stack.slot == 0,
-            "topmost drawn card was not a stack front");
+    Require(order.size() == 5, "draw order lost a card");
+    Require(order[0] == 1 && order[1] == 3 && order[2] == 4,
+            "stack backgrounds were not drawn before pinned cards");
+    Require(order[3] == 0 && order[4] == 2,
+            "stack fronts were not drawn above pinned cards");
 }
 
 static void StackWheelCycle() {
@@ -1402,6 +1518,8 @@ static constexpr NativeCase kCases[] = {
     {"stack_cycle_animation_disabled", StackCycleAnimationDisabled},
     {"stack_depth_visibility", StackDepthVisibility},
     {"stack_hit_rotation", StackHitRotation},
+    {"stack_thumbnail_occlusion", StackThumbnailOcclusionClips},
+    {"stack_front_occlusion_full_stack", StackFrontOcclusionFullStack},
     {"layout_grouped_roundtrip", LayoutGroupedRoundtrip},
 };
 

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "cards.h"
+#include "card_chrome.h"
 #include "constants.h"
 #include "context.h"
 #include "math_utils.h"
@@ -149,7 +150,7 @@ inline void SubmitThumbnail(Card& card, const ThumbnailGeometry& geometry,
     card.thumbnailVisible = true;
 }
 
-inline void UpdateThumbnail(Card& card, DWORD now) {
+inline bool CanPrepareThumbnail(Card& card, DWORD now) {
     const bool stackAnimating = std::any_of(
         context.stackTransitions.begin(), context.stackTransitions.end(),
         [&card](const StackCycleTransition& transition) {
@@ -159,7 +160,7 @@ inline void UpdateThumbnail(Card& card, DWORD now) {
         if (card.thumbnail.valid() && card.thumbnailVisible) {
             HideThumbnail(card, now);
         }
-        return;
+        return false;
     }
     // DWM thumbnails cannot be rotated or scaled, and a stack shows only
     // its front window live. Background members render as icon cards, so
@@ -168,32 +169,51 @@ inline void UpdateThumbnail(Card& card, DWORD now) {
         if (card.thumbnail.valid()) {
             HideThumbnail(card, now);
         }
-        return;
+        return false;
     }
-    if (!EnsureThumbnail(card, now)) {
-        return;
+    return EnsureThumbnail(card, now);
+}
+
+inline bool PrepareThumbnail(Card& card, DWORD now,
+                             ThumbnailGeometry& geometry) {
+    if (!CanPrepareThumbnail(card, now)) {
+        return false;
     }
-    ThumbnailGeometry geometry;
     geometry.destination = WorldToScreen(StackWorldRect(card), context.camera);
     if (ThumbnailViewportClip(geometry.destination).empty()) {
         HideThumbnail(card, now);
-        return;
+        return false;
     }
     if (!ReadThumbnailSource(card, geometry.source)) {
         FailThumbnail(card, now);
-        return;
+        return false;
     }
     if (!ClipThumbnailGeometry(geometry)) {
         HideThumbnail(card, now);
-        return;
+        return false;
     }
-    SubmitThumbnail(card, geometry, now);
+    return true;
 }
 
 inline void UpdateThumbnails() {
     const DWORD now = GetTickCount();
-    for (Card& card : context.cards) {
-        UpdateThumbnail(card, now);
+    std::vector<ThumbnailGeometry> geometries(context.cards.size());
+    std::vector<RectF> destinations(context.cards.size());
+    for (size_t index = 0; index < context.cards.size(); ++index) {
+        if (PrepareThumbnail(context.cards[index], now, geometries[index])) {
+            destinations[index] =
+                RectFromRect(ThumbnailRect(geometries[index].destination));
+        }
+    }
+    const std::vector<bool> selected = SelectUnoccludedThumbnails(
+        CardDrawOrder(context.cards), destinations);
+    for (size_t index = 0; index < context.cards.size(); ++index) {
+        Card& card = context.cards[index];
+        if (selected[index]) {
+            SubmitThumbnail(card, geometries[index], now);
+        } else if (card.thumbnail.valid() && card.thumbnailVisible) {
+            HideThumbnail(card, now);
+        }
     }
 }
 

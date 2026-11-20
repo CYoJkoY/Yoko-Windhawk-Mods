@@ -129,6 +129,11 @@ inline bool CardDrawPinned(
     return entry == stackPinned.end() ? card.pinned : entry->second;
 }
 
+inline bool IsStackFrontCard(const Card& card) {
+    return IsGroupedStackCard(card) &&
+           (card.stack.slot == 0 || card.stack.drawAboveStack);
+}
+
 // The card lifted out of the stack paints above its own members, then the
 // highest slot (deepest background card) paints first and the front slot
 // (slot 0) paints last, so a stack always reads as one card with its front on
@@ -140,9 +145,9 @@ inline bool StackDrawLess(const Card& left, const Card& right) {
     return left.stack.slot > right.stack.slot;
 }
 
-// Pinned cards are drawn last and hit-tested first, so pinning a card lifts it
-// above every unpinned card without reordering the scan-owned card vector.
-// Hit testing walks this order backwards, so it reaches a stack front first.
+// Stack fronts are the highest layer, followed by pinned cards, so a pin lifts
+// other cards without covering the upright card at the front of a stack.
+// Hit testing walks this order backwards, reaching the visible top card first.
 inline std::vector<size_t> CardDrawOrder(const std::vector<Card>& cards) {
     const std::unordered_map<std::wstring, bool> stackPinned =
         CollectStackPins(cards);
@@ -155,6 +160,11 @@ inline std::vector<size_t> CardDrawOrder(const std::vector<Card>& cards) {
     std::stable_sort(
         order.begin(), order.end(),
         [&cards, &drawGroups, &stackPinned](size_t left, size_t right) {
+            const bool leftFront = IsStackFrontCard(cards[left]);
+            const bool rightFront = IsStackFrontCard(cards[right]);
+            if (leftFront != rightFront) {
+                return !leftFront;
+            }
             const bool leftPinned = CardDrawPinned(cards[left], stackPinned);
             const bool rightPinned = CardDrawPinned(cards[right], stackPinned);
             if (leftPinned != rightPinned) {

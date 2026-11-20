@@ -205,19 +205,10 @@ inline void DrawCard(const Card& card, int index, float scale) {
     // Cull on the rotated/scaled quad, not the unrotated bounds: a fanned
     // stack member's corners extend past its own rectangle.
     const std::array<Vec2, 4> quad = CardScreenQuad(rect, card.stack);
-    float quadLeft = quad[0].x;
-    float quadTop = quad[0].y;
-    float quadRight = quad[0].x;
-    float quadBottom = quad[0].y;
-    for (const Vec2& corner : quad) {
-        quadLeft = std::min(quadLeft, corner.x);
-        quadTop = std::min(quadTop, corner.y);
-        quadRight = std::max(quadRight, corner.x);
-        quadBottom = std::max(quadBottom, corner.y);
-    }
-    if (quadRight < 0.0f || quadBottom < 0.0f ||
-        quadLeft > static_cast<float>(VirtualScreenWidth()) ||
-        quadTop > static_cast<float>(VirtualScreenHeight())) {
+    const RectF quadBounds = CardQuadBounds(quad);
+    if (quadBounds.right < 0.0f || quadBounds.bottom < 0.0f ||
+        quadBounds.left > static_cast<float>(VirtualScreenWidth()) ||
+        quadBounds.top > static_cast<float>(VirtualScreenHeight())) {
         return;
     }
     const float radius = kCardCornerRadiusPx * scale;
@@ -256,6 +247,71 @@ inline void DrawCard(const Card& card, int index, float scale) {
     if (transformed) {
         context.hudTarget->SetTransform(savedTransform);
     }
+}
+
+// A live preview is composited inside the host window, which sits below the HUD
+// layer, so HUD artwork is always above every preview. A card may therefore
+// only yield the preview rectangles of cards painted after it: reserving a
+// lower card's preview would punch that card through this one, and the upright
+// card at the front of a stack would show the cards stacked beneath it.
+inline std::vector<RectF> HigherThumbnailRects(
+    const std::vector<Card>& cards, const std::vector<size_t>& order,
+    size_t position) {
+    std::vector<RectF> thumbnails;
+    for (size_t slot = position + 1; slot < order.size(); ++slot) {
+        const size_t index = order[slot];
+        if (index >= cards.size()) {
+            continue;
+        }
+        const Card& card = cards[index];
+        if (card.state != WindowVisualState::Live || !card.thumbnail.valid() ||
+            !card.thumbnailVisible) {
+            continue;
+        }
+        const RectF destination = RectFromRect(card.thumbnailDestination);
+        if (!destination.empty()) {
+            thumbnails.push_back(destination);
+        }
+    }
+    return thumbnails;
+}
+
+// One card's paint request: the card, its index for hover/selection emphasis,
+// and the chrome scale shared by every card in the frame.
+struct HudCardPaint {
+    const Card& card;
+    int index;
+    float scale;
+};
+
+inline void DrawCardWithThumbnailClips(const HudCardPaint& paint,
+                                       const CardDrawClips& clips) {
+    if (!clips.clipped) {
+        DrawCard(paint.card, paint.index, paint.scale);
+        return;
+    }
+    for (const RectF& region : clips.regions) {
+        context.hudTarget->PushAxisAlignedClip(
+            D2D1::RectF(region.left, region.top, region.right, region.bottom),
+            D2D1_ANTIALIAS_MODE_ALIASED);
+        DrawCard(paint.card, paint.index, paint.scale);
+        context.hudTarget->PopAxisAlignedClip();
+    }
+}
+
+inline CardDrawClips CardThumbnailDrawClips(
+    const std::vector<Card>& cards, const std::vector<size_t>& order,
+    size_t position) {
+    const size_t index = order[position];
+    if (index >= cards.size()) {
+        return CardDrawClips{};
+    }
+    const RectF bounds = CardScreenBounds(cards[index]);
+    const std::array<Vec2, 4> quad = CardScreenQuad(bounds, cards[index].stack);
+    const RectF viewport{0.0f, 0.0f, static_cast<float>(VirtualScreenWidth()),
+                         static_cast<float>(VirtualScreenHeight())};
+    return CardDrawRegions(viewport, quad,
+                           HigherThumbnailRects(cards, order, position));
 }
 
 inline void DrawMinimapContents(const RectF& map, float scale) {
@@ -359,8 +415,14 @@ inline bool SubmitHudFrame() {
     context.hudTarget->BeginDraw();
     context.hudTarget->Clear(D2D1::ColorF(0, 0.0f));
     const float scale = ChromeScale();
-    for (const size_t index : CardDrawOrder(context.cards)) {
-        DrawCard(context.cards[index], static_cast<int>(index), scale);
+    const std::vector<size_t> order = CardDrawOrder(context.cards);
+    for (size_t position = 0; position < order.size(); ++position) {
+        const size_t index = order[position];
+        const CardDrawClips clips =
+            CardThumbnailDrawClips(context.cards, order, position);
+        DrawCardWithThumbnailClips(
+            HudCardPaint{context.cards[index], static_cast<int>(index), scale},
+            clips);
     }
     DrawEmptyCanvas(scale);
     DrawMinimap(scale);

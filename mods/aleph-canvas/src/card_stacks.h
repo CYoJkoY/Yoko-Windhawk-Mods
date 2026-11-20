@@ -52,6 +52,113 @@ inline std::array<Vec2, 4> CardScreenQuad(const RectF& bounds,
     return quad;
 }
 
+inline RectF CardQuadBounds(const std::array<Vec2, 4>& quad) {
+    RectF bounds{quad[0].x, quad[0].y, quad[0].x, quad[0].y};
+    for (const Vec2& point : quad) {
+        bounds.left = std::min(bounds.left, point.x);
+        bounds.top = std::min(bounds.top, point.y);
+        bounds.right = std::max(bounds.right, point.x);
+        bounds.bottom = std::max(bounds.bottom, point.y);
+    }
+    return bounds;
+}
+
+inline void SubtractRect(const RectF& source, const RectF& hole,
+                         std::vector<RectF>& result) {
+    if (!RectsOverlap(source, hole)) {
+        result.push_back(source);
+        return;
+    }
+    const RectF overlap{std::max(source.left, hole.left),
+                        std::max(source.top, hole.top),
+                        std::min(source.right, hole.right),
+                        std::min(source.bottom, hole.bottom)};
+    const RectF pieces[] = {
+        {source.left, source.top, source.right, overlap.top},
+        {source.left, overlap.bottom, source.right, source.bottom},
+        {source.left, overlap.top, overlap.left, overlap.bottom},
+        {overlap.right, overlap.top, source.right, overlap.bottom}};
+    for (const RectF& piece : pieces) {
+        if (!piece.empty()) {
+            result.push_back(piece);
+        }
+    }
+}
+
+struct CardDrawClips {
+    bool clipped = false;
+    std::vector<RectF> regions;
+};
+
+inline std::vector<bool> SelectUnoccludedThumbnails(
+    const std::vector<size_t>& drawOrder,
+    const std::vector<RectF>& destinations) {
+    std::vector<bool> selected(destinations.size(), false);
+    std::vector<RectF> visibleDestinations;
+    for (size_t position = drawOrder.size(); position-- > 0;) {
+        const size_t index = drawOrder[position];
+        if (index >= destinations.size() || destinations[index].empty()) {
+            continue;
+        }
+        const RectF& destination = destinations[index];
+        if (std::any_of(visibleDestinations.begin(), visibleDestinations.end(),
+                        [&destination](const RectF& visible) {
+                            return RectsOverlap(destination, visible);
+                        })) {
+            continue;
+        }
+        selected[index] = true;
+        visibleDestinations.push_back(destination);
+    }
+    return selected;
+}
+
+inline std::vector<RectF> CardOcclusionHoles(
+    const RectF& viewport, const RectF& cardBounds,
+    const std::vector<RectF>& holes) {
+    std::vector<RectF> relevantHoles;
+    for (const RectF& hole : holes) {
+        if (RectsOverlap(cardBounds, hole) && RectsOverlap(viewport, hole)) {
+            const RectF clippedHole{std::max(viewport.left, hole.left),
+                                    std::max(viewport.top, hole.top),
+                                    std::min(viewport.right, hole.right),
+                                    std::min(viewport.bottom, hole.bottom)};
+            relevantHoles.push_back(clippedHole);
+        }
+    }
+    return relevantHoles;
+}
+
+inline std::vector<RectF> SubtractCardOcclusionHoles(
+    const RectF& viewport, const std::vector<RectF>& holes) {
+    std::vector<RectF> regions{viewport};
+    for (const RectF& hole : holes) {
+        std::vector<RectF> remaining;
+        for (const RectF& region : regions) {
+            SubtractRect(region, hole, remaining);
+        }
+        regions = std::move(remaining);
+        if (regions.empty()) {
+            break;
+        }
+    }
+    return regions;
+}
+
+inline CardDrawClips CardDrawRegions(
+    const RectF& viewport, const std::array<Vec2, 4>& cardQuad,
+    const std::vector<RectF>& holes) {
+    if (viewport.empty()) {
+        return CardDrawClips{true, {}};
+    }
+    const std::vector<RectF> relevantHoles =
+        CardOcclusionHoles(viewport, CardQuadBounds(cardQuad), holes);
+    if (relevantHoles.empty()) {
+        return CardDrawClips{};
+    }
+    return CardDrawClips{true, SubtractCardOcclusionHoles(viewport, relevantHoles)};
+}
+
 inline CardStackPlacement StackPlacementForSlot(size_t slot,
                                                const std::wstring& groupKey,
                                                const CanvasSettings& settings) {
