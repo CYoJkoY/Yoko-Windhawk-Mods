@@ -10,6 +10,7 @@
 // card pulls that window onto the desktop that displays the canvas.
 
 #include "platform.h"
+#include "card_stacks.h"
 #include "constants.h"
 #include "context.h"
 #include "layout_store.h"
@@ -211,6 +212,7 @@ inline bool UpdateCardFromScan(size_t index, const ScannedWindow& window) {
     if (const LayoutEntry* saved = FindLayoutEntry(window.fingerprint);
         saved != nullptr) {
         card.pinned = saved->pinned;
+        card.stack.grouped = saved->grouped;
     }
     return changed;
 }
@@ -258,6 +260,7 @@ inline bool MergeScan(const std::vector<ScannedWindow>& scanned) {
             InsertCard(ScannedWindow{window}, world);
             if (saved != nullptr) {
                 context.cards.back().pinned = saved->pinned;
+                context.cards.back().stack.grouped = saved->grouped;
             }
             RememberLayoutEntry(window.fingerprint, world);
             changed = true;
@@ -265,6 +268,9 @@ inline bool MergeScan(const std::vector<ScannedWindow>& scanned) {
         if (changed) {
             MarkLayoutDirty(now);
         }
+    }
+    if (changed) {
+        ReconcileCardStacks(context.cards, context.settings);
     }
     return changed;
 }

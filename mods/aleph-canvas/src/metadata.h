@@ -155,6 +155,36 @@ activation then follows the normal rules for the current process.
       $options:zh-CN:
         - packed: 自动排列
         - desktop: 桌面位置
+    - card_stacks_enabled: true
+      $name: Group card stacks
+      $name:zh-CN: 启用卡片堆叠
+      $description: Group windows from the same application and fan older members behind the active card.
+      $description:zh-CN: 将同一应用程序的窗口分为一组，并把较早的成员展开到当前卡片后方。
+    - card_stack_step_degrees: 65
+      $name: Stack angle step
+      $name:zh-CN: 堆叠角度步进
+      $description: Rotation added by each stack position, in tenths of a degree. Range 0-900.
+      $description:zh-CN: 每个堆叠位置增加的旋转角度，单位为十分之一度。范围 0-900。
+    - card_stack_max_degrees: 240
+      $name: Stack maximum angle
+      $name:zh-CN: 堆叠最大角度
+      $description: Maximum rotation applied to a stack member, in tenths of a degree. Range 0-900.
+      $description:zh-CN: 堆叠成员可用的最大旋转角度，单位为十分之一度。范围 0-900。
+    - card_stack_scale_percent: 975
+      $name: Stack scale factor
+      $name:zh-CN: 堆叠缩放系数
+      $description: Per-level scale multiplier, in thousandths. Range 800-1000.
+      $description:zh-CN: 每一级堆叠使用的缩放系数，单位为千分之一。范围 800-1000。
+    - card_stack_max_depth: 5
+      $name: Stack depth
+      $name:zh-CN: 堆叠深度
+      $description: Maximum number of visible layers behind the active card. Range 0-8.
+      $description:zh-CN: 当前卡片后方可见的最大层数。范围 0-8。
+    - card_stack_rotation_direction: -1
+      $name: Stack rotation direction
+      $name:zh-CN: 堆叠旋转方向
+      $description: Use 1 for clockwise, -1 for counter-clockwise, or 0 for no rotation.
+      $description:zh-CN: 1 为顺时针，-1 为逆时针，0 为不旋转。
   $name: Canvas
   $name:zh-CN: 画布
 

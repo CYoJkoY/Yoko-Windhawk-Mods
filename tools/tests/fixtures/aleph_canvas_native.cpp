@@ -1,4 +1,5 @@
 #include "mods/aleph-canvas/src/cards.h"
+#include "mods/aleph-canvas/src/card_stacks.h"
 #include "mods/aleph-canvas/src/card_chrome.h"
 #include "mods/aleph-canvas/src/desktop_pull.h"
 #include "mods/aleph-canvas/src/icon_sources.h"
@@ -504,7 +505,7 @@ static void PinPersistence() {
     context.layout = LayoutSnapshot{};
     context.layout.entries.push_back(
         LayoutEntry{L"app#1", MakeRectF(10.0f, 20.0f, 300.0f, 200.0f), false});
-    RememberLayoutPin(L"app#1", MakeRectF(10.0f, 20.0f, 300.0f, 200.0f), true);
+    RememberLayoutPin(L"app#1", MakeRectF(10.0f, 20.0f, 300.0f, 200.0f), true, true);
     Require(context.layout.entries[0].pinned, "pin was not remembered");
 
     const std::string serialized = SerializeLayout(context.layout);
@@ -540,7 +541,7 @@ static void LayoutEntryEviction() {
             "refreshed layout entry was not retained");
     Require(FindLayoutEntry(L"old#0") == nullptr,
             "oldest unpinned layout entry was not evicted");
-    RememberLayoutPin(L"new", MakeRectF(3.0f, 0.0f, 1.0f, 1.0f), true);
+    RememberLayoutPin(L"new", MakeRectF(3.0f, 0.0f, 1.0f, 1.0f), true, true);
     Require(context.layout.entries.size() == kMaxLayoutEntries,
             "pinned eviction changed the layout cap");
     Require(FindLayoutEntry(L"new") != nullptr,
@@ -596,7 +597,7 @@ static void LayoutPinnedCapacity() {
             LayoutEntry{fingerprint, MakeRectF(0.0f, 0.0f, 1.0f, 1.0f), true});
     }
 
-    RememberLayoutPin(L"overflow", MakeRectF(2.0f, 0.0f, 1.0f, 1.0f), false);
+    RememberLayoutPin(L"overflow", MakeRectF(2.0f, 0.0f, 1.0f, 1.0f), false, true);
     Require(context.layout.entries.size() ==
                 static_cast<size_t>(kMaxLayoutEntries),
             "pinned layout exceeded its cap");
@@ -863,6 +864,219 @@ static void LocalizationBadgeSelection() {
             "a live card without a preview lost its placeholder badge");
 }
 
+static void AddStackCard(const wchar_t* fingerprint, const wchar_t* exePath) {
+    AddCard(MakeRectF(0.0f, 0.0f, 320.0f, 240.0f));
+    context.cards.back().fingerprint = fingerprint;
+    context.cards.back().exePath = exePath;
+}
+
+static void UseStackSettings() {
+    context.settings = CanvasSettings{};
+    context.settings.stacksEnabled = true;
+    context.settings.stackStepDegrees = 6.5f;
+    context.settings.stackMaxDegrees = 24.0f;
+    context.settings.stackScaleFactor = 0.975f;
+    context.settings.stackMaxDepth = 5;
+    context.settings.stackRotationDirection = -1;
+}
+
+static void StackGeometry() {
+    UseStackSettings();
+    const std::wstring key = L"c:\\app\\editor.exe";
+    const float radians = 3.14159265f / 180.0f;
+    const CardStackPlacement front = StackPlacementForSlot(0, key, context.settings);
+    Require(front.grouped && front.visible && front.slot == 0, "front slot lost its flags");
+    Require(front.groupKey == key, "front slot lost its group key");
+    Near(front.rotationRadians, 0.0f);
+    Near(front.scale, 1.0f);
+    const CardStackPlacement second = StackPlacementForSlot(1, key, context.settings);
+    Near(second.rotationRadians, -6.5f * radians);
+    Near(second.scale, 0.975f);
+    const CardStackPlacement fourth = StackPlacementForSlot(3, key, context.settings);
+    Near(fourth.rotationRadians, -19.5f * radians);
+    const CardStackPlacement fifth = StackPlacementForSlot(4, key, context.settings);
+    Near(fifth.rotationRadians, -24.0f * radians);
+    Near(fifth.scale, 0.975f * 0.975f * 0.975f * 0.975f);
+    const CardStackPlacement sixth = StackPlacementForSlot(5, key, context.settings);
+    Near(sixth.rotationRadians, -24.0f * radians);
+    Near(sixth.scale, 0.975f * 0.975f * 0.975f * 0.975f * 0.975f);
+    context.settings.stackRotationDirection = 0;
+    Near(StackPlacementForSlot(2, key, context.settings).rotationRadians, 0.0f);
+    context.settings.stackRotationDirection = 1;
+    Near(StackPlacementForSlot(2, key, context.settings).rotationRadians, 13.0f * radians);
+}
+
+static void StackCycle() {
+    UseStackSettings();
+    AddStackCard(L"a#1", L"C:\\App\\Editor.exe");
+    AddStackCard(L"b#1", L"C:\\App\\Editor.exe");
+    AddStackCard(L"c#1", L"C:\\App\\Editor.exe");
+    ReconcileCardStacks(context.cards, context.settings);
+    const std::wstring key = L"c:\\app\\editor.exe";
+    for (const Card& card : context.cards) {
+        Require(card.stack.groupKey == key, "stack member lost its lowercased group key");
+    }
+    std::vector<size_t> members;
+    Require(StackMemberOrder(context.cards, key, members), "stack order was rejected");
+    Require(members.size() == 3 && members[0] == 0, "initial stack front is not the first card");
+    Require(!CycleCardStack(context.cards, context.settings, 0, 0), "zero-step cycle was accepted");
+    Require(!CycleCardStack(context.cards, context.settings, -1, 1), "negative index cycle was accepted");
+    Require(!CycleCardStack(context.cards, context.settings, 99, 1), "out-of-range cycle was accepted");
+    Require(CycleCardStack(context.cards, context.settings, 0, 1), "forward cycle was rejected");
+    Require(context.cards[1].stack.slot == 0, "forward cycle did not promote the second card");
+    Require(context.cards[0].stack.slot == 2, "forward cycle did not move the front to the back");
+    Require(context.cards[1].stack.groupKey == key, "cycle changed the group key");
+    Require(CycleCardStack(context.cards, context.settings, 1, -1), "backward cycle was rejected");
+    Require(context.cards[0].stack.slot == 0, "backward cycle did not restore the front");
+    context.settings.stacksEnabled = false;
+    Require(!CycleCardStack(context.cards, context.settings, 0, 1), "disabled stack cycled");
+    context.settings.stacksEnabled = true;
+    context.cards[2].stack.grouped = false;
+    Require(!CycleCardStack(context.cards, context.settings, 2, 1), "ungrouped card cycled its stack");
+}
+
+static void StackRemoval() {
+    UseStackSettings();
+    AddStackCard(L"a#1", L"C:\\App\\Editor.exe");
+    AddStackCard(L"b#1", L"C:\\App\\Editor.exe");
+    AddStackCard(L"c#1", L"C:\\App\\Editor.exe");
+    ReconcileCardStacks(context.cards, context.settings);
+    const std::wstring key = L"c:\\app\\editor.exe";
+    std::vector<size_t> members;
+    Require(StackMemberOrder(context.cards, key, members), "stack order was rejected");
+    const std::wstring promoted = context.cards[members[1]].fingerprint;
+    RemoveCardAt(members[0]);
+    ReconcileCardStacks(context.cards, context.settings);
+    Require(context.cards.size() == 2, "front removal lost extra cards");
+    Require(StackMemberOrder(context.cards, key, members), "stack order broke after removal");
+    Require(context.cards[members[0]].fingerprint == promoted, "next member was not promoted");
+    Require(context.cards[members[0]].stack.slot == 0, "promoted member is not at slot zero");
+    const std::wstring front = context.cards[members[0]].fingerprint;
+    RemoveCardAt(members.back());
+    ReconcileCardStacks(context.cards, context.settings);
+    Require(context.cards.size() == 1, "back removal lost extra cards");
+    Require(context.cards[0].fingerprint == front && context.cards[0].stack.slot == 0,
+            "back removal changed the front");
+}
+
+static void StackInvalid() {
+    UseStackSettings();
+    AddStackCard(L"a#1", L"C:\\App\\Editor.exe");
+    AddStackCard(L"b#1", L"C:\\App\\Editor.exe");
+    ReconcileCardStacks(context.cards, context.settings);
+    Require(!context.cards[0].stack.groupKey.empty(), "stack was not formed before disable");
+    context.settings.stacksEnabled = false;
+    ReconcileCardStacks(context.cards, context.settings);
+    for (const Card& card : context.cards) {
+        Require(card.stack.groupKey.empty() && card.stack.slot == 0, "disabled stacks kept a placement");
+        Near(card.stack.rotationRadians, 0.0f);
+        Near(card.stack.scale, 1.0f);
+        Require(card.stack.visible, "disabled stacks hid a card");
+    }
+    context.settings.stacksEnabled = true;
+    context.cards.clear();
+    AddStackCard(L"x#1", L"");
+    AddStackCard(L"y#1", L"");
+    AddStackCard(L"z#1", L"C:\\App\\Editor.exe");
+    ReconcileCardStacks(context.cards, context.settings);
+    Require(context.cards[0].stack.groupKey.empty(), "empty path joined a stack");
+    Require(context.cards[1].stack.groupKey.empty(), "empty path joined a stack");
+    Require(context.cards[2].stack.groupKey == L"c:\\app\\editor.exe", "single member lost its group key");
+    context.cards.clear();
+    AddStackCard(L"a#1", L"C:\\App\\Editor.exe");
+    AddStackCard(L"b#1", L"C:\\App\\Editor.exe");
+    AddStackCard(L"c#1", L"C:\\App\\Editor.exe");
+    ReconcileCardStacks(context.cards, context.settings);
+    context.cards[1].stack.slot = context.cards[0].stack.slot;
+    std::vector<size_t> members;
+    Require(!StackMemberOrder(context.cards, L"c:\\app\\editor.exe", members),
+            "duplicate slots were accepted");
+    Require(!CycleCardStack(context.cards, context.settings, 99, 1), "out-of-range cycle was accepted");
+}
+
+static void StackDepthVisibility() {
+    UseStackSettings();
+    const std::wstring key = L"c:\\app\\editor.exe";
+    context.settings.stackMaxDepth = 2;
+    Require(StackPlacementForSlot(2, key, context.settings).visible, "slot at max depth was hidden");
+    Require(!StackPlacementForSlot(3, key, context.settings).visible, "slot past max depth stayed visible");
+    context.settings.stackMaxDepth = 99;
+    Require(StackPlacementForSlot(8, key, context.settings).visible, "slot at hard cap was hidden");
+    Require(!StackPlacementForSlot(9, key, context.settings).visible, "slot past hard cap stayed visible");
+    context.settings.stackMaxDepth = -1;
+    Require(StackPlacementForSlot(0, key, context.settings).visible, "front was hidden at zero depth");
+    Require(!StackPlacementForSlot(1, key, context.settings).visible, "slot past zero depth stayed visible");
+}
+
+static void StackHitRotation() {
+    const RectF bounds = MakeRectF(100.0f, 200.0f, 640.0f, 480.0f);
+    CardStackPlacement placement;
+    placement.groupKey = L"c:\\app\\editor.exe";
+    placement.slot = 1;
+    placement.rotationRadians = -0.4f;
+    placement.scale = 0.9f;
+    const Vec2 center{bounds.centerX(), bounds.centerY()};
+    const Vec2 local{200.0f, 300.0f};
+    const Vec2 scaled{center.x + (local.x - center.x) * placement.scale,
+                      center.y + (local.y - center.y) * placement.scale};
+    const Vec2 screen = RotatePoint(scaled, center, placement.rotationRadians);
+    const Vec2 roundtrip = CardLocalPoint(screen, bounds, placement);
+    Near(roundtrip.x, local.x);
+    Near(roundtrip.y, local.y);
+    const CardStackPlacement identity;
+    const std::array<Vec2, 4> quad = CardScreenQuad(bounds, identity);
+    Near(quad[0].x, bounds.left);
+    Near(quad[0].y, bounds.top);
+    Near(quad[1].x, bounds.right);
+    Near(quad[1].y, bounds.top);
+    Near(quad[2].x, bounds.right);
+    Near(quad[2].y, bounds.bottom);
+    Near(quad[3].x, bounds.left);
+    Near(quad[3].y, bounds.bottom);
+    const std::array<Vec2, 4> rotated = CardScreenQuad(bounds, placement);
+    float middleX = 0.0f;
+    float middleY = 0.0f;
+    for (const Vec2& corner : rotated) {
+        middleX += corner.x;
+        middleY += corner.y;
+    }
+    Near(middleX * 0.25f, center.x);
+    Near(middleY * 0.25f, center.y);
+}
+
+static void LayoutGroupedRoundtrip() {
+    const LayoutSnapshot legacy = ParseLayout(
+        R"({"version":1,"entries":[{"key":"a","x":0,"y":0,"w":1,"h":1}]})");
+    Require(legacy.entries.size() == 1 && legacy.entries[0].grouped, "legacy layout lost grouping");
+    Require(SerializeLayout(legacy).find("is_grouped") == std::string::npos,
+            "grouped entry emitted is_grouped");
+    const LayoutSnapshot ungrouped = ParseLayout(
+        R"({"version":1,"entries":[{"key":"a","x":0,"y":0,"w":1,"h":1,"is_grouped":0}]})");
+    Require(ungrouped.entries.size() == 1 && !ungrouped.entries[0].grouped,
+            "is_grouped zero was not parsed");
+    Require(SerializeLayout(ungrouped).find("\"is_grouped\":0") != std::string::npos,
+            "ungrouped entry was not serialized");
+    const LayoutSnapshot groupedOne = ParseLayout(
+        R"({"version":1,"entries":[{"key":"a","x":0,"y":0,"w":1,"h":1,"is_grouped":1}]})");
+    Require(groupedOne.entries.size() == 1 && groupedOne.entries[0].grouped,
+            "is_grouped one was not parsed");
+    Require(ParseLayout(R"({"version":1,"entries":[{"key":"a","x":0,"y":0,"w":1,"h":1,"is_grouped":2}]})").entries.empty(),
+            "out-of-range is_grouped was accepted");
+    Require(ParseLayout(R"({"version":1,"entries":[{"key":"a","x":0,"y":0,"w":1,"h":1,"is_grouped":0,"is_grouped":1}]})").entries.empty(),
+            "duplicate is_grouped was accepted");
+    Require(ParseLayout(R"({"version":1,"entries":[{"key":"a","x":0,"y":0,"w":1,"h":1,"is_grouped":"0"}]})").entries.empty(),
+            "string is_grouped was accepted");
+    context.layout = LayoutSnapshot{};
+    RememberLayoutPin(L"g#1", MakeRectF(0.0f, 0.0f, 10.0f, 10.0f), true, false);
+    Require(context.layout.entries.size() == 1 && !context.layout.entries[0].grouped,
+            "remembered pin lost its ungrouped flag");
+    Require(context.layout.entries[0].pinned, "remembered pin lost its pin flag");
+    RememberLayoutEntry(L"g#1", MakeRectF(5.0f, 5.0f, 10.0f, 10.0f));
+    Require(context.layout.entries.size() == 1 && !context.layout.entries[0].grouped,
+            "layout move restored grouping");
+    SameRect(context.layout.entries[0].world, MakeRectF(5.0f, 5.0f, 10.0f, 10.0f));
+}
+
 struct NativeCase {
     const char* name;
     void (*run)();
@@ -902,6 +1116,11 @@ static constexpr NativeCase kCases[] = {
     {"localization_fallback", LocalizationFallback},
     {"localization_out_of_range", LocalizationOutOfRange},
     {"localization_badge_selection", LocalizationBadgeSelection},
+    {"stack_geometry", StackGeometry}, {"stack_cycle", StackCycle},
+    {"stack_removal", StackRemoval}, {"stack_invalid", StackInvalid},
+    {"stack_depth_visibility", StackDepthVisibility},
+    {"stack_hit_rotation", StackHitRotation},
+    {"layout_grouped_roundtrip", LayoutGroupedRoundtrip},
 };
 
 static int RunCase(const char* name) {

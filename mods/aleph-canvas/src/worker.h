@@ -259,6 +259,7 @@ inline void ApplyPendingSettings() {
         return;
     }
     LoadSettings();
+    ReconcileCardStacks(context.cards, context.settings);
     RegisterCanvasHotkey();
     context.camera.targetZoom = ClampZoom(context.camera.targetZoom);
     context.camera.zoomAnchored = false;

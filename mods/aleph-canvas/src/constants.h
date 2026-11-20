@@ -12,6 +12,7 @@ constexpr UINT kToggleHotkeyId = 0xA1E1;
 constexpr int kMaxCards = 64;
 constexpr int kMaxLayoutEntries = 256;
 constexpr int kMaxExcludeEntries = 64;
+constexpr int kMaxStackDepth = 8;
 
 constexpr int kFrameIntervalMs = 16;
 constexpr int kMinRescanIntervalMs = 100;

@@ -36,6 +36,7 @@ inline void DismissCard(int index) {
     context.dismissedFingerprints.insert(
         context.cards[static_cast<size_t>(index)].fingerprint);
     RemoveCardAt(static_cast<size_t>(index));
+    ReconcileCardStacks(context.cards, context.settings);
     context.hoverHeaderAction = CardHeaderAction::None;
     context.sceneDirty = true;
 }
@@ -46,7 +47,7 @@ inline void ToggleCardPin(int index) {
     }
     Card& card = context.cards[static_cast<size_t>(index)];
     card.pinned = !card.pinned;
-    RememberLayoutPin(card.fingerprint, card.world, card.pinned);
+    RememberLayoutPin(card.fingerprint, card.world, card.pinned, card.stack.grouped);
     MarkLayoutDirty(GetTickCount());
     context.sceneDirty = true;
 }
