@@ -3,7 +3,6 @@
 // Direct2D, DirectWrite, WIC and shared GDI surfaces.
 
 #include "platform.h"
-#include "wow64_redirection.h"
 #include "constants.h"
 #include "context.h"
 #include "icon_sources.h"
@@ -297,15 +296,9 @@ inline HICON QueryShellIcon(const std::wstring& exePath) {
         return nullptr;
     }
     SHFILEINFOW info = {};
-    {
-        ScopedWow64RedirectionDisabled disabled;
-        if (!disabled.valid()) {
-            return nullptr;
-        }
-        if (SHGetFileInfoW(exePath.c_str(), 0, &info, sizeof(info),
-                           SHGFI_SYSICONINDEX) == 0) {
-            return nullptr;
-        }
+    if (SHGetFileInfoW(exePath.c_str(), 0, &info, sizeof(info),
+                       SHGFI_SYSICONINDEX) == 0) {
+        return nullptr;
     }
     return QueryFirstAvailableIcon(
         kShellIconListSizes,

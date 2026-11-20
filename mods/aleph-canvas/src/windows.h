@@ -346,12 +346,30 @@ static void AssignFingerprints(std::vector<ScannedWindow>& windows) {
     }
 }
 
+static void EraseDismissedWindows(std::vector<ScannedWindow>& windows) {
+    windows.erase(
+        std::remove_if(windows.begin(), windows.end(),
+                       [](const ScannedWindow& window) {
+                           return context.dismissedFingerprints.count(
+                                      window.fingerprint) != 0;
+                       }),
+        windows.end());
+}
+
+// Dismissed windows must not occupy a card slot, and a dismissal can only be
+// recognized after the window has a fingerprint, so identity assignment runs
+// before both the dismissal filter and the card cut.
+inline void PrepareScanCandidates(std::vector<ScannedWindow>& windows) {
+    AssignFingerprints(windows);
+    EraseDismissedWindows(windows);
+    SelectScanCandidates(windows);
+}
+
 static std::vector<ScannedWindow> ScanWindows(IVirtualDesktopManager* manager) {
     CollectPass pass;
     pass.desktopManager = manager;
     EnumWindows(&CollectPass::Thunk, reinterpret_cast<LPARAM>(&pass));
-    SelectScanCandidates(pass.windows);
-    AssignFingerprints(pass.windows);
+    PrepareScanCandidates(pass.windows);
     return std::move(pass.windows);
 }
 
@@ -369,35 +387,50 @@ static void RememberLayoutPin(const std::wstring& fingerprint,
 
 static void RememberLayoutEntry(const std::wstring& fingerprint,
                                 const RectF& world) {
-    RememberLayoutPin(fingerprint, world, false);
+    const LayoutEntry* existing = FindLayoutEntry(fingerprint);
+    const bool pinned = existing != nullptr && existing->pinned;
+    RememberLayoutPin(fingerprint, world, pinned);
+}
+
+static void MoveLayoutEntryToBack(size_t index) {
+    LayoutEntry moved = std::move(context.layout.entries[index]);
+    context.layout.entries.erase(
+        context.layout.entries.begin() + static_cast<std::ptrdiff_t>(index));
+    context.layout.entries.push_back(std::move(moved));
+}
+
+// The vector order is the recency order: index zero is the least recently
+// touched entry and the back is the most recent one.
+static bool EvictFirstUnpinnedLayoutEntry() {
+    for (auto entry = context.layout.entries.begin();
+         entry != context.layout.entries.end(); ++entry) {
+        if (entry->pinned) {
+            continue;
+        }
+        context.layout.entries.erase(entry);
+        return true;
+    }
+    return false;
 }
 
 static void RememberLayoutPin(const std::wstring& fingerprint,
                               const RectF& world, bool pinned) {
-    for (LayoutEntry& entry : context.layout.entries) {
-        if (entry.fingerprint == fingerprint) {
-            entry.world = world;
-            entry.pinned = pinned;
-            entry.lastSeenTick = GetTickCount();
-            return;
-        }
-    }
-    if (context.layout.entries.size() >=
-        static_cast<size_t>(kMaxLayoutEntries)) {
-        const auto oldest = std::min_element(
-            context.layout.entries.begin(), context.layout.entries.end(),
-            [](const LayoutEntry& left, const LayoutEntry& right) {
-                if (left.pinned != right.pinned) {
-                    return right.pinned;
-                }
-                return left.lastSeenTick < right.lastSeenTick;
-            });
-        if (oldest == context.layout.entries.end()) {
-            return;
-        }
-        *oldest = LayoutEntry{fingerprint, world, pinned, GetTickCount()};
+    auto& entries = context.layout.entries;
+    const auto existing = std::find_if(
+        entries.begin(), entries.end(),
+        [&fingerprint](const LayoutEntry& entry) {
+            return entry.fingerprint == fingerprint;
+        });
+    if (existing != entries.end()) {
+        existing->world = world;
+        existing->pinned = pinned;
+        MoveLayoutEntryToBack(
+            static_cast<size_t>(existing - entries.begin()));
         return;
     }
-    context.layout.entries.push_back(
-        LayoutEntry{fingerprint, world, pinned, GetTickCount()});
+    if (entries.size() >= static_cast<size_t>(kMaxLayoutEntries) &&
+        !EvictFirstUnpinnedLayoutEntry()) {
+        return;
+    }
+    entries.push_back(LayoutEntry{fingerprint, world, pinned});
 }

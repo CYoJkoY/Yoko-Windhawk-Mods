@@ -33,6 +33,20 @@ Visible idle canvases rescan windows at the configured interval; they do not
 redraw continuously. The canvas also hides when another window takes input
 focus. Hidden canvases wait for events and pending layout saves.
 
+## Controls
+
+- The configured toggle hotkey shows and hides the canvas.
+- Mouse wheel: zoom around the pointer.
+- Middle mouse drag: pan the canvas.
+- Hold Space and drag empty canvas: pan.
+- Drag a card: arrange it; nearby edges snap into alignment.
+- Double-click a card or press Enter: focus the window; an other-desktop
+  window is pulled onto this desktop first.
+- Tab / Shift+Tab: select a card; arrow keys pan; Home fits all cards;
+  Escape hides the canvas.
+- Click or drag the minimap: navigate the canvas.
+- The canvas hides when another window takes input focus.
+
 ## Card controls
 
 Every card reserves a 28 DIP header above the window preview. The header shows

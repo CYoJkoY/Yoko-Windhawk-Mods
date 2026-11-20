@@ -92,7 +92,7 @@ inline LRESULT CALLBACK CanvasWindowProc(HWND window, UINT message,
                 !context.diving) {
                 HideCanvasWindows();
             }
-            return 0;
+            return DefWindowProcW(window, message, wParam, lParam);
         case WM_DISPLAYCHANGE:
         case WM_DPICHANGED:
             RefreshCanvasGeometry();

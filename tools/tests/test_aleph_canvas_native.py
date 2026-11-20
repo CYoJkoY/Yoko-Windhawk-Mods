@@ -180,6 +180,18 @@ class AlephCanvasNativeTests(unittest.TestCase):
     def test_layout_cap_evicts_the_oldest_unpinned_entry(self) -> None:
         self.run_case("layout_entry_eviction")
 
+    def test_pin_survives_drag_and_readd_without_a_scan(self) -> None:
+        self.run_case("pin_survives_layout_move")
+
+    def test_layout_recency_follows_vector_order(self) -> None:
+        self.run_case("layout_recency_order")
+
+    def test_layout_capacity_refuses_new_entries_when_all_are_pinned(self) -> None:
+        self.run_case("layout_pinned_capacity")
+
+    def test_dismissed_windows_free_their_candidate_slots(self) -> None:
+        self.run_case("dismissed_windows_skip_cut")
+
     def test_dismissed_window_stays_off_the_canvas(self) -> None:
         self.run_case("dismissed_cards")
 
@@ -209,10 +221,6 @@ class AlephCanvasNativeTests(unittest.TestCase):
 
     def test_missing_shell_icon_reports_no_source(self) -> None:
         self.run_case("icon_source_missing")
-
-    def test_wow64_icon_lookup_guard_cannot_be_copied(self) -> None:
-        self.run_case("wow64_icon_lookup_guard")
-
 
 if __name__ == "__main__":
     unittest.main()
