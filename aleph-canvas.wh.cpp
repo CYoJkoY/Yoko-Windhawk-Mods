@@ -39,6 +39,9 @@ Drag cards to arrange them without moving the real desktop windows.
 Card positions are saved in the Windhawk mod storage directory as
 `layout-<user-SID>.json`.
 Canvas coordinates use physical pixels relative to the virtual desktop origin.
+Card badges and the empty-canvas hint follow the interface language setting.
+`Auto` uses the system UI language and falls back to English when that language
+is not one of the thirteen supported ones.
 Icon cards ask the shell for the largest available icon (256 px when the jumbo
 image list exists) and fall back to smaller lists, then to the window icon.
 Arranging cards never moves real application windows. Activating an
@@ -52,6 +55,41 @@ activation then follows the normal rules for the current process.
 // ==WindhawkModSettings==
 /*
 - Behavior:
+    - language: auto
+      $name: Interface language
+      $name:zh-CN: 界面语言
+      $description: Language used by canvas interface text. Auto follows the system UI language and falls back to English when unsupported.
+      $description:zh-CN: 画布界面文本使用的语言。自动模式跟随系统界面语言，不支持时回退为英文。
+      $options:
+        - auto: Auto
+        - en: English
+        - fr: Français
+        - zh: 简体中文
+        - zh_TW: 繁體中文
+        - ja: 日本語
+        - ko: 한국어
+        - ru: Русский
+        - pl: Polski
+        - es: Español
+        - pt: Português
+        - de: Deutsch
+        - tr: Türkçe
+        - it: Italiano
+      $options:zh-CN:
+        - auto: 自动
+        - en: English
+        - fr: Français
+        - zh: 简体中文
+        - zh_TW: 繁體中文
+        - ja: 日本語
+        - ko: 한국어
+        - ru: Русский
+        - pl: Polski
+        - es: Español
+        - pt: Português
+        - de: Deutsch
+        - tr: Türkçe
+        - it: Italiano
     - toggle_hotkey: Ctrl+Alt+F12
       $name: Toggle hotkey
       $name:zh-CN: 显示/隐藏快捷键
@@ -486,6 +524,190 @@ constexpr DWORD kThumbnailRetryDelayMs = 2000;
 // Value types shared by the canvas modules.
 
 
+// Compile-time canvas interface strings and language resolution.
+//
+// The string table order is fixed: it mirrors LanguageId, the Windhawk setting
+// options, and the native localization regressions.
+
+
+#include <array>
+#include <cstdint>
+#include <string_view>
+
+enum class LanguageId : uint8_t {
+    English,
+    French,
+    SimplifiedChinese,
+    Japanese,
+    Korean,
+    TraditionalChinese,
+    Russian,
+    Polish,
+    Spanish,
+    Portuguese,
+    German,
+    Turkish,
+    Italian,
+    Count,
+};
+
+enum class CanvasTextId : uint8_t {
+    MinimizedBadge,
+    OtherDesktopBadge,
+    PreviewUnavailableBadge,
+    EmptyCanvas,
+    Count,
+};
+
+struct CanvasLocaleEntry {
+    std::wstring_view texts[static_cast<size_t>(LanguageId::Count)];
+};
+
+inline constexpr std::array<CanvasLocaleEntry,
+                            static_cast<size_t>(CanvasTextId::Count)>
+    kCanvasStrings = {{
+        {{L"MINIMIZED", L"RÉDUIT", L"已最小化", L"最小化", L"최소화",
+          L"已最小化", L"СВЁРНУТО", L"ZMINIMALIZOWANE", L"MINIMIZADO",
+          L"MINIMIZADO", L"MINIMIERT", L"KÜÇÜLTÜLDÜ", L"RIDOTTO"}},
+        {{L"OTHER DESKTOP", L"AUTRE BUREAU", L"其他桌面", L"別のデスクトップ",
+          L"다른 데스크톱", L"其他桌面", L"ДРУГОЙ РАБОЧИЙ СТОЛ",
+          L"INNY PULPIT", L"OTRO ESCRITORIO", L"OUTRA ÁREA DE TRABALHO",
+          L"ANDERER DESKTOP", L"BAŞKA MASAÜSTÜ", L"ALTRO DESKTOP"}},
+        {{L"PREVIEW UNAVAILABLE", L"APERÇU INDISPONIBLE", L"预览不可用",
+          L"プレビュー利用不可", L"미리 보기 사용 불가", L"預覽無法使用",
+          L"ПРЕДПРОСМОТР НЕДОСТУПЕН", L"PODGLĄD NIEDOSTĘPNY",
+          L"VISTA PREVIA NO DISPONIBLE", L"PRÉ-VISUALIZAÇÃO INDISPONÍVEL",
+          L"VORSCHAU NICHT VERFÜGBAR", L"ÖNİZLEME KULLANILAMIYOR",
+          L"ANTEPRIMA NON DISPONIBILE"}},
+        {{L"No eligible windows", L"Aucune fenêtre éligible", L"没有可用窗口",
+          L"対象のウィンドウがありません", L"대상 창이 없습니다",
+          L"沒有可用視窗", L"Нет подходящих окон", L"Brak kwalifikujących okien",
+          L"No hay ventanas aptas", L"Não há janelas elegíveis",
+          L"Keine geeigneten Fenster", L"Uygun pencere yok",
+          L"Nessuna finestra idonea"}},
+    }};
+
+// Setting key -> language. Keys are stable identifiers; display names live in
+// the Windhawk metadata so translators only touch one place.
+struct LanguageOption {
+    const wchar_t* code;
+    LanguageId language;
+};
+
+inline constexpr LanguageOption kLanguageOptions[] = {
+    {L"en", LanguageId::English},
+    {L"fr", LanguageId::French},
+    {L"zh", LanguageId::SimplifiedChinese},
+    {L"zh_TW", LanguageId::TraditionalChinese},
+    {L"ja", LanguageId::Japanese},
+    {L"ko", LanguageId::Korean},
+    {L"ru", LanguageId::Russian},
+    {L"pl", LanguageId::Polish},
+    {L"es", LanguageId::Spanish},
+    {L"pt", LanguageId::Portuguese},
+    {L"de", LanguageId::German},
+    {L"tr", LanguageId::Turkish},
+    {L"it", LanguageId::Italian},
+};
+
+inline constexpr wchar_t kAutoLanguageCode[] = L"auto";
+
+// System UI language -> canvas language, in addition to the Chinese sublanguage
+// rule that needs the sublanguage identifier.
+struct SystemLanguageRule {
+    WORD primary;
+    LanguageId language;
+};
+
+inline constexpr SystemLanguageRule kSystemLanguageRules[] = {
+    {LANG_FRENCH, LanguageId::French},
+    {LANG_JAPANESE, LanguageId::Japanese},
+    {LANG_KOREAN, LanguageId::Korean},
+    {LANG_RUSSIAN, LanguageId::Russian},
+    {LANG_POLISH, LanguageId::Polish},
+    {LANG_SPANISH, LanguageId::Spanish},
+    {LANG_PORTUGUESE, LanguageId::Portuguese},
+    {LANG_GERMAN, LanguageId::German},
+    {LANG_TURKISH, LanguageId::Turkish},
+    {LANG_ITALIAN, LanguageId::Italian},
+};
+
+[[nodiscard]] inline const wchar_t* CanvasText(CanvasTextId textId,
+                                               LanguageId language) {
+    const auto entryIndex = static_cast<size_t>(textId);
+    const auto languageIndex = static_cast<size_t>(language);
+    if (entryIndex >= static_cast<size_t>(CanvasTextId::Count) ||
+        languageIndex >= static_cast<size_t>(LanguageId::Count)) {
+        return L"";
+    }
+    return kCanvasStrings[entryIndex].texts[languageIndex].data();
+}
+
+[[nodiscard]] inline size_t CanvasTextLength(CanvasTextId textId,
+                                             LanguageId language) {
+    const auto entryIndex = static_cast<size_t>(textId);
+    const auto languageIndex = static_cast<size_t>(language);
+    if (entryIndex >= static_cast<size_t>(CanvasTextId::Count) ||
+        languageIndex >= static_cast<size_t>(LanguageId::Count)) {
+        return 0;
+    }
+    return kCanvasStrings[entryIndex].texts[languageIndex].size();
+}
+
+// Simplified Chinese is the default for every non-traditional Chinese
+// sublanguage, including Hong Kong and Macau.
+[[nodiscard]] inline bool IsTraditionalChineseSubLanguage(WORD subLanguage) {
+    return subLanguage == SUBLANG_CHINESE_TRADITIONAL ||
+           subLanguage == SUBLANG_CHINESE_HONGKONG ||
+           subLanguage == SUBLANG_CHINESE_MACAU;
+}
+
+[[nodiscard]] inline LanguageId DetectSystemLanguage() {
+    const LANGID identifier = GetUserDefaultUILanguage();
+    const WORD primary = PRIMARYLANGID(identifier);
+    if (primary == LANG_CHINESE) {
+        return IsTraditionalChineseSubLanguage(SUBLANGID(identifier))
+                   ? LanguageId::TraditionalChinese
+                   : LanguageId::SimplifiedChinese;
+    }
+    for (const SystemLanguageRule& rule : kSystemLanguageRules) {
+        if (rule.primary == primary) {
+            return rule.language;
+        }
+    }
+    return LanguageId::English;
+}
+
+// Matches an explicit setting key. "auto" is not a language and is handled by
+// ResolveLanguageSetting instead.
+[[nodiscard]] inline bool TryParseLanguageCode(const wchar_t* code,
+                                               LanguageId& language) {
+    if (code == nullptr) {
+        return false;
+    }
+    for (const LanguageOption& option : kLanguageOptions) {
+        if (_wcsicmp(option.code, code) == 0) {
+            language = option.language;
+            return true;
+        }
+    }
+    return false;
+}
+
+// Resolves the stored setting value. "auto" and a missing value follow the
+// system UI language; an unrecognized key falls back to English so a corrupted
+// setting never leaves the canvas without text.
+[[nodiscard]] inline LanguageId ResolveLanguageSetting(const wchar_t* code) {
+    if (code == nullptr || _wcsicmp(code, kAutoLanguageCode) == 0) {
+        return DetectSystemLanguage();
+    }
+    LanguageId language = LanguageId::English;
+    if (!TryParseLanguageCode(code, language)) {
+        return LanguageId::English;
+    }
+    return language;
+}
+
 struct Vec2 {
     float x = 0.0f;
     float y = 0.0f;
@@ -661,6 +883,7 @@ inline bool MatchesWindow(const Card& card, const ScannedWindow& window) {
 
 struct CanvasSettings {
     std::wstring toggleHotkey = L"Ctrl+Alt+F12";
+    LanguageId language = LanguageId::English;
     bool openOnStart = false;
     int animationMs = 140;
     int rescanIntervalMs = 400;
@@ -1163,6 +1386,10 @@ static void LoadExcludeList() {
 
 static void LoadSettings() {
     CanvasSettings& settings = context.settings;
+
+    WindhawkUtils::StringSetting language =
+        WindhawkUtils::StringSetting::make(L"Behavior.language");
+    settings.language = ResolveLanguageSetting(language.get());
 
     WindhawkUtils::StringSetting hotkey =
         WindhawkUtils::StringSetting::make(L"Behavior.toggle_hotkey");
@@ -3717,11 +3944,6 @@ inline int HitTestCardInOrder(const std::vector<Card>& cards, Vec2 point) {
     return -1;
 }
 
-inline constexpr wchar_t kMinimizedBadge[] = L"MINIMIZED";
-inline constexpr wchar_t kOtherDesktopBadge[] = L"OTHER DESKTOP";
-inline constexpr wchar_t kUnavailableBadge[] = L"PREVIEW UNAVAILABLE";
-inline constexpr wchar_t kEmptyCanvasText[] = L"No eligible windows";
-
 inline void SetHudColor(uint32_t rgb, float alpha = 1.0f) {
     context.hudBrush->SetColor(ToColorF(rgb, alpha));
 }
@@ -3863,19 +4085,29 @@ inline void DrawCardIcon(const Card& card, const RectF& area) {
         0.9f, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR);
 }
 
+[[nodiscard]] inline CanvasTextId CardBadgeTextId(WindowVisualState state) {
+    switch (state) {
+        case WindowVisualState::Minimized:
+            return CanvasTextId::MinimizedBadge;
+        case WindowVisualState::OtherDesktop:
+            return CanvasTextId::OtherDesktopBadge;
+        case WindowVisualState::Live:
+            break;
+    }
+    return CanvasTextId::PreviewUnavailableBadge;
+}
+
 inline void DrawCardBadge(const Card& card, const RectF& rect) {
     if (rect.empty() || context.badgeFormat == nullptr) {
         return;
     }
-    const wchar_t* badge = card.state == WindowVisualState::Minimized
-                               ? kMinimizedBadge
-                               : kUnavailableBadge;
-    if (card.state == WindowVisualState::OtherDesktop) {
-        badge = kOtherDesktopBadge;
-    }
+    const CanvasTextId badgeId = CardBadgeTextId(card.state);
     SetHudColor(context.settings.mutedTextColor);
     context.hudTarget->DrawTextW(
-        badge, static_cast<UINT32>(wcslen(badge)), context.badgeFormat,
+        CanvasText(badgeId, context.settings.language),
+        static_cast<UINT32>(
+            CanvasTextLength(badgeId, context.settings.language)),
+        context.badgeFormat,
         D2D1::RectF(rect.left, rect.top, rect.right, rect.bottom),
         context.hudBrush, D2D1_DRAW_TEXT_OPTIONS_CLIP);
 }
@@ -3972,7 +4204,9 @@ inline void DrawEmptyCanvas(float scale) {
         static_cast<float>(VirtualScreenHeight()) - 24.0f * scale);
     SetHudColor(context.settings.mutedTextColor);
     context.hudTarget->DrawTextW(
-        kEmptyCanvasText, ARRAYSIZE(kEmptyCanvasText) - 1, context.titleFormat,
+        CanvasText(CanvasTextId::EmptyCanvas, context.settings.language),
+        CanvasTextLength(CanvasTextId::EmptyCanvas, context.settings.language),
+        context.titleFormat,
         emptyRect, context.hudBrush, D2D1_DRAW_TEXT_OPTIONS_CLIP);
 }
 
