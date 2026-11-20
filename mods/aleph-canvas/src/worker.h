@@ -259,6 +259,7 @@ inline void ApplyPendingSettings() {
         return;
     }
     LoadSettings();
+    context.stackTransitions.clear();
     ReconcileCardStacks(context.cards, context.settings);
     RegisterCanvasHotkey();
     context.camera.targetZoom = ClampZoom(context.camera.targetZoom);
@@ -287,6 +288,12 @@ inline void AdvanceCanvasFrame(IVirtualDesktopManager* manager, DWORD now) {
     ApplyPendingSettings();
     ScanAndMerge(manager, now);
     UpdateCameraAndDive(now);
+    const bool stackAnimationWasActive = !context.stackTransitions.empty();
+    const bool stackAnimationActive = AdvanceStackCycleTransitions(
+        context.cards, context.stackTransitions, now);
+    if (stackAnimationWasActive || stackAnimationActive) {
+        context.sceneDirty = true;
+    }
     if (context.visible && (context.sceneDirty || context.cameraMotion ||
                             context.diving)) {
         RenderCanvasFrame();
@@ -299,7 +306,8 @@ inline void AdvanceCanvasFrame(IVirtualDesktopManager* manager, DWORD now) {
 }
 
 inline DWORD PacedCanvasTimeout(DWORD now) {
-    if (!context.visible || (!context.cameraMotion && !context.diving)) {
+    if (!context.visible || (!context.cameraMotion && !context.diving &&
+                             context.stackTransitions.empty())) {
         return CanvasWaitTimeout(now);
     }
     const DWORD started = GetTickCount();

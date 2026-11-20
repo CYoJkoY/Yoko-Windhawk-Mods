@@ -15,6 +15,7 @@
 #include "types.h"
 
 #include <algorithm>
+#include <unordered_map>
 
 inline RectF CardHeaderRect(const Card& card) {
     const RectF bounds = CardScreenBounds(card);
@@ -82,23 +83,92 @@ inline CardHeaderAction HitTestCardHeader(const RectF& header, Vec2 point,
     return CardHeaderAction::None;
 }
 
+inline bool IsGroupedStackCard(const Card& card) {
+    return card.stack.grouped && !card.stack.groupKey.empty();
+}
+
+// Stack members share one draw group so they stay contiguous in paint order;
+// an ungrouped card is its own group and keeps its scan position.
+inline std::wstring CardDrawGroupKey(const Card& card, size_t index) {
+    if (IsGroupedStackCard(card)) {
+        return L"S:" + card.stack.groupKey;
+    }
+    return L"C:" + card.fingerprint + L":" + std::to_wstring(index);
+}
+
+inline std::unordered_map<std::wstring, bool> CollectStackPins(
+    const std::vector<Card>& cards) {
+    std::unordered_map<std::wstring, bool> stackPinned;
+    for (const Card& card : cards) {
+        if (!IsGroupedStackCard(card)) {
+            continue;
+        }
+        bool& pinned = stackPinned[card.stack.groupKey];
+        pinned = pinned || card.pinned;
+    }
+    return stackPinned;
+}
+
+inline std::vector<size_t> AssignDrawGroups(const std::vector<Card>& cards) {
+    std::unordered_map<std::wstring, size_t> groupIds;
+    std::vector<size_t> drawGroups(cards.size());
+    for (size_t index = 0; index < cards.size(); ++index) {
+        const auto entry = groupIds.try_emplace(
+            CardDrawGroupKey(cards[index], index), groupIds.size()).first;
+        drawGroups[index] = entry->second;
+    }
+    return drawGroups;
+}
+
+inline bool CardDrawPinned(
+    const Card& card, const std::unordered_map<std::wstring, bool>& stackPinned) {
+    if (!IsGroupedStackCard(card)) {
+        return card.pinned;
+    }
+    const auto entry = stackPinned.find(card.stack.groupKey);
+    return entry == stackPinned.end() ? card.pinned : entry->second;
+}
+
+// The card lifted out of the stack paints above its own members, then the
+// highest slot (deepest background card) paints first and the front slot
+// (slot 0) paints last, so a stack always reads as one card with its front on
+// top.
+inline bool StackDrawLess(const Card& left, const Card& right) {
+    if (left.stack.drawAboveStack != right.stack.drawAboveStack) {
+        return !left.stack.drawAboveStack;
+    }
+    return left.stack.slot > right.stack.slot;
+}
+
 // Pinned cards are drawn last and hit-tested first, so pinning a card lifts it
 // above every unpinned card without reordering the scan-owned card vector.
-// Inside one stack the background slots are drawn first and the front slot
-// (slot 0) last, so the stack reads as one card with the front on top and
-// hit testing (which walks this order backwards) reaches the front first.
+// Hit testing walks this order backwards, so it reaches a stack front first.
 inline std::vector<size_t> CardDrawOrder(const std::vector<Card>& cards) {
+    const std::unordered_map<std::wstring, bool> stackPinned =
+        CollectStackPins(cards);
+    const std::vector<size_t> drawGroups = AssignDrawGroups(cards);
     std::vector<size_t> order;
     order.reserve(cards.size());
     for (size_t index = 0; index < cards.size(); ++index) {
         order.push_back(index);
     }
-    std::stable_sort(order.begin(), order.end(), [&cards](size_t left, size_t right) {
-        if (cards[left].pinned != cards[right].pinned) {
-            return !cards[left].pinned;
-        }
-        return cards[left].stack.slot > cards[right].stack.slot;
-    });
+    std::stable_sort(
+        order.begin(), order.end(),
+        [&cards, &drawGroups, &stackPinned](size_t left, size_t right) {
+            const bool leftPinned = CardDrawPinned(cards[left], stackPinned);
+            const bool rightPinned = CardDrawPinned(cards[right], stackPinned);
+            if (leftPinned != rightPinned) {
+                return !leftPinned;
+            }
+            if (drawGroups[left] != drawGroups[right]) {
+                return drawGroups[left] < drawGroups[right];
+            }
+            if (!IsGroupedStackCard(cards[left]) ||
+                !IsGroupedStackCard(cards[right])) {
+                return false;
+            }
+            return StackDrawLess(cards[left], cards[right]);
+        });
     return order;
 }
 

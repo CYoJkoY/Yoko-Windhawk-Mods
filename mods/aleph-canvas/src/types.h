@@ -146,11 +146,31 @@ struct CardStackPlacement {
     bool visible = true;
     float rotationRadians = 0.0f;
     float scale = 1.0f;
+    float opacity = 1.0f;
+    bool drawAboveStack = false;
     // Shared world rectangle for the whole stack. Empty until the stack
     // is formed; the front card's world rectangle is captured as the
     // anchor so every member renders at one place instead of at its own
     // unrelated window position.
     RectF anchorWorld{};
+};
+
+struct StackCardTransition {
+    std::wstring fingerprint;
+    float fromRotation = 0.0f;
+    float fromScale = 1.0f;
+    float fromOpacity = 1.0f;
+    float toRotation = 0.0f;
+    float toScale = 1.0f;
+    bool outgoing = false;
+    bool incoming = false;
+};
+
+struct StackCycleTransition {
+    std::wstring groupKey;
+    DWORD startTick = 0;
+    DWORD durationMs = 0;
+    std::vector<StackCardTransition> cards;
 };
 
 struct Card {

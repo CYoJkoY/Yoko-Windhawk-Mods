@@ -76,6 +76,8 @@ inline void ResetStackPlacement(Card& card) {
     card.stack.slot = 0;
     card.stack.rotationRadians = 0.0f;
     card.stack.scale = 1.0f;
+    card.stack.opacity = 1.0f;
+    card.stack.drawAboveStack = false;
     card.stack.visible = true;
     card.stack.anchorWorld = RectF{};
 }
@@ -299,4 +301,174 @@ inline bool CycleStackForWheel(std::vector<Card>& cards,
         return false;
     }
     return CycleCardStack(cards, settings, hitIndex, StackWheelSteps(wheelDelta));
+}
+
+// Alt+wheel cycle phases, as fractions of the transition duration. The
+// outgoing front card lifts above the stack and fades out first, then the
+// incoming front fades in while every member eases into its new slot, so the
+// stack reads as one set of cards rotating under the new front.
+constexpr float kStackCycleLiftFraction = 0.35f;
+constexpr float kStackCycleIncomingFraction = 0.65f;
+constexpr float kStackCycleFadeSpan =
+    kStackCycleIncomingFraction - kStackCycleLiftFraction;
+constexpr float kStackCycleSettleSpan = 1.0f - kStackCycleIncomingFraction;
+
+struct StackCycleRequest {
+    const CanvasSettings& settings;
+    int hitIndex;
+    int steps;
+    DWORD now;
+};
+
+inline Card* FindStackCard(std::vector<Card>& cards, const std::wstring& groupKey,
+                          const std::wstring& fingerprint) {
+    const auto card = std::find_if(
+        cards.begin(), cards.end(), [&fingerprint, &groupKey](const Card& candidate) {
+            return candidate.fingerprint == fingerprint &&
+                   candidate.stack.groupKey == groupKey;
+        });
+    return card == cards.end() ? nullptr : &*card;
+}
+
+inline float StackCycleProgress(const StackCycleTransition& transition, DWORD now) {
+    if (transition.durationMs == 0) {
+        return 1.0f;
+    }
+    const float elapsed = static_cast<float>(now - transition.startTick);
+    return std::clamp(elapsed / static_cast<float>(transition.durationMs), 0.0f, 1.0f);
+}
+
+inline float StackCycleOpacity(const StackCardTransition& pose, float progress) {
+    if (pose.outgoing) {
+        if (progress < kStackCycleLiftFraction) {
+            return pose.fromOpacity * (1.0f - progress / kStackCycleLiftFraction);
+        }
+        if (progress < kStackCycleIncomingFraction) {
+            return 0.0f;
+        }
+        return std::clamp((progress - kStackCycleIncomingFraction) /
+                              kStackCycleSettleSpan,
+                          0.0f, 1.0f);
+    }
+    if (pose.incoming) {
+        if (progress < kStackCycleLiftFraction) {
+            return 0.0f;
+        }
+        if (progress < kStackCycleIncomingFraction) {
+            return std::clamp((progress - kStackCycleLiftFraction) /
+                                  kStackCycleFadeSpan,
+                              0.0f, 1.0f);
+        }
+    }
+    return pose.fromOpacity +
+        (1.0f - pose.fromOpacity) * progress;
+}
+
+inline void ApplyStackCyclePose(Card& card, const StackCardTransition& pose,
+                                float eased, float progress) {
+    card.stack.rotationRadians =
+        pose.fromRotation + (pose.toRotation - pose.fromRotation) * eased;
+    card.stack.scale = pose.fromScale + (pose.toScale - pose.fromScale) * eased;
+    card.stack.drawAboveStack = pose.outgoing && progress < kStackCycleLiftFraction;
+    card.stack.opacity = StackCycleOpacity(pose, progress);
+}
+
+inline void SettleStackCyclePose(Card& card, const StackCardTransition& pose) {
+    card.stack.rotationRadians = pose.toRotation;
+    card.stack.scale = pose.toScale;
+    card.stack.opacity = 1.0f;
+    card.stack.drawAboveStack = false;
+}
+
+inline void ApplyStackCycleFrame(std::vector<Card>& cards,
+                                const StackCycleTransition& transition,
+                                float progress) {
+    const float eased = progress * progress * (3.0f - 2.0f * progress);
+    for (const StackCardTransition& pose : transition.cards) {
+        Card* card = FindStackCard(cards, transition.groupKey, pose.fingerprint);
+        if (card == nullptr) {
+            continue;
+        }
+        if (progress >= 1.0f) {
+            SettleStackCyclePose(*card, pose);
+            continue;
+        }
+        ApplyStackCyclePose(*card, pose, eased, progress);
+    }
+}
+
+inline bool AdvanceStackCycleTransitions(
+    std::vector<Card>& cards, std::vector<StackCycleTransition>& transitions,
+    DWORD now) {
+    bool active = false;
+    for (size_t transitionIndex = transitions.size(); transitionIndex-- > 0;) {
+        const StackCycleTransition& transition = transitions[transitionIndex];
+        const float progress = StackCycleProgress(transition, now);
+        ApplyStackCycleFrame(cards, transition, progress);
+        if (progress >= 1.0f) {
+            transitions.erase(transitions.begin() +
+                              static_cast<std::ptrdiff_t>(transitionIndex));
+            continue;
+        }
+        active = true;
+    }
+    return active;
+}
+
+inline bool CycleStackWithAnimation(std::vector<Card>& cards,
+                                    const StackCycleRequest& request,
+                                    std::vector<StackCycleTransition>& transitions) {
+    if (request.steps == 0 || request.hitIndex < 0 ||
+        static_cast<size_t>(request.hitIndex) >= cards.size()) {
+        return false;
+    }
+    const std::wstring groupKey =
+        cards[static_cast<size_t>(request.hitIndex)].stack.groupKey;
+    if (groupKey.empty()) {
+        return false;
+    }
+    AdvanceStackCycleTransitions(cards, transitions, request.now);
+    std::vector<size_t> members;
+    if (!StackMemberOrder(cards, groupKey, members) || members.size() <= 1) {
+        return false;
+    }
+    const size_t frontIndex = members.front();
+    std::vector<StackCardTransition> poses;
+    poses.reserve(members.size());
+    for (const size_t index : members) {
+        const Card& card = cards[index];
+        poses.push_back(StackCardTransition{card.fingerprint,
+            card.stack.rotationRadians, card.stack.scale, card.stack.opacity,
+            0.0f, 1.0f, index == frontIndex, false});
+    }
+    if (!CycleCardStack(cards, request.settings, request.hitIndex, request.steps)) {
+        return false;
+    }
+    for (StackCardTransition& pose : poses) {
+        Card* card = FindStackCard(cards, groupKey, pose.fingerprint);
+        if (card != nullptr) {
+            pose.toRotation = card->stack.rotationRadians;
+            pose.toScale = card->stack.scale;
+            pose.incoming = card->stack.slot == 0 && !pose.outgoing;
+            card->stack.opacity = pose.fromOpacity;
+            card->stack.drawAboveStack = pose.outgoing;
+        }
+    }
+    transitions.erase(
+        std::remove_if(transitions.begin(), transitions.end(), [&groupKey](const auto& item) {
+            return item.groupKey == groupKey;
+        }), transitions.end());
+    if (request.settings.animationMs <= 0) {
+        for (Card& card : cards) {
+            if (card.stack.groupKey == groupKey) {
+                card.stack.opacity = 1.0f;
+                card.stack.drawAboveStack = false;
+            }
+        }
+        return true;
+    }
+    transitions.push_back(StackCycleTransition{groupKey, request.now,
+        static_cast<DWORD>(request.settings.animationMs), std::move(poses)});
+    AdvanceStackCycleTransitions(cards, transitions, request.now);
+    return true;
 }
