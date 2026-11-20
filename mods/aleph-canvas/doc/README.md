@@ -47,6 +47,14 @@ focus. Hidden canvases wait for events and pending layout saves.
 - Click or drag the minimap: navigate the canvas.
 - The canvas hides when another window takes input focus.
 
+## Interface language
+
+Card badges and the empty-canvas hint are localized in thirteen languages.
+The `Interface language` setting under `Behavior` defaults to `Auto`, which
+follows the Windows UI language and falls back to English when that language is
+not supported. An explicit choice overrides the system language, and an
+unrecognized stored value also falls back to English.
+
 ## Card controls
 
 Every card reserves a 28 DIP header above the window preview. The header shows

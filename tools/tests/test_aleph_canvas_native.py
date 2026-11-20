@@ -222,5 +222,23 @@ class AlephCanvasNativeTests(unittest.TestCase):
     def test_missing_shell_icon_reports_no_source(self) -> None:
         self.run_case("icon_source_missing")
 
+    def test_every_canvas_string_exists_for_every_language(self) -> None:
+        self.run_case("localization_strings")
+
+    def test_localized_badges_keep_their_translations(self) -> None:
+        self.run_case("localization_badges")
+
+    def test_language_option_table_covers_every_language(self) -> None:
+        self.run_case("localization_codes")
+
+    def test_unknown_or_auto_language_setting_falls_back_safely(self) -> None:
+        self.run_case("localization_fallback")
+
+    def test_out_of_range_localization_lookups_return_nothing(self) -> None:
+        self.run_case("localization_out_of_range")
+
+    def test_card_state_selects_the_matching_badge(self) -> None:
+        self.run_case("localization_badge_selection")
+
 if __name__ == "__main__":
     unittest.main()

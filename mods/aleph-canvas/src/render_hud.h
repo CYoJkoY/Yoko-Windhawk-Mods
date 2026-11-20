@@ -2,14 +2,10 @@
 
 #include "card_chrome.h"
 #include "context.h"
+#include "localization.h"
 #include "minimap.h"
 #include "resources.h"
 #include "thumbnails.h"
-
-inline constexpr wchar_t kMinimizedBadge[] = L"MINIMIZED";
-inline constexpr wchar_t kOtherDesktopBadge[] = L"OTHER DESKTOP";
-inline constexpr wchar_t kUnavailableBadge[] = L"PREVIEW UNAVAILABLE";
-inline constexpr wchar_t kEmptyCanvasText[] = L"No eligible windows";
 
 inline void SetHudColor(uint32_t rgb, float alpha = 1.0f) {
     context.hudBrush->SetColor(ToColorF(rgb, alpha));
@@ -152,19 +148,29 @@ inline void DrawCardIcon(const Card& card, const RectF& area) {
         0.9f, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR);
 }
 
+[[nodiscard]] inline CanvasTextId CardBadgeTextId(WindowVisualState state) {
+    switch (state) {
+        case WindowVisualState::Minimized:
+            return CanvasTextId::MinimizedBadge;
+        case WindowVisualState::OtherDesktop:
+            return CanvasTextId::OtherDesktopBadge;
+        case WindowVisualState::Live:
+            break;
+    }
+    return CanvasTextId::PreviewUnavailableBadge;
+}
+
 inline void DrawCardBadge(const Card& card, const RectF& rect) {
     if (rect.empty() || context.badgeFormat == nullptr) {
         return;
     }
-    const wchar_t* badge = card.state == WindowVisualState::Minimized
-                               ? kMinimizedBadge
-                               : kUnavailableBadge;
-    if (card.state == WindowVisualState::OtherDesktop) {
-        badge = kOtherDesktopBadge;
-    }
+    const CanvasTextId badgeId = CardBadgeTextId(card.state);
     SetHudColor(context.settings.mutedTextColor);
     context.hudTarget->DrawTextW(
-        badge, static_cast<UINT32>(wcslen(badge)), context.badgeFormat,
+        CanvasText(badgeId, context.settings.language),
+        static_cast<UINT32>(
+            CanvasTextLength(badgeId, context.settings.language)),
+        context.badgeFormat,
         D2D1::RectF(rect.left, rect.top, rect.right, rect.bottom),
         context.hudBrush, D2D1_DRAW_TEXT_OPTIONS_CLIP);
 }
@@ -261,7 +267,9 @@ inline void DrawEmptyCanvas(float scale) {
         static_cast<float>(VirtualScreenHeight()) - 24.0f * scale);
     SetHudColor(context.settings.mutedTextColor);
     context.hudTarget->DrawTextW(
-        kEmptyCanvasText, ARRAYSIZE(kEmptyCanvasText) - 1, context.titleFormat,
+        CanvasText(CanvasTextId::EmptyCanvas, context.settings.language),
+        CanvasTextLength(CanvasTextId::EmptyCanvas, context.settings.language),
+        context.titleFormat,
         emptyRect, context.hudBrush, D2D1_DRAW_TEXT_OPTIONS_CLIP);
 }
 

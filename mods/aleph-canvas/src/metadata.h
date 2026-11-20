@@ -39,6 +39,9 @@ Drag cards to arrange them without moving the real desktop windows.
 Card positions are saved in the Windhawk mod storage directory as
 `layout-<user-SID>.json`.
 Canvas coordinates use physical pixels relative to the virtual desktop origin.
+Card badges and the empty-canvas hint follow the interface language setting.
+`Auto` uses the system UI language and falls back to English when that language
+is not one of the thirteen supported ones.
 Icon cards ask the shell for the largest available icon (256 px when the jumbo
 image list exists) and fall back to smaller lists, then to the window icon.
 Arranging cards never moves real application windows. Activating an
@@ -52,6 +55,41 @@ activation then follows the normal rules for the current process.
 // ==WindhawkModSettings==
 /*
 - Behavior:
+    - language: auto
+      $name: Interface language
+      $name:zh-CN: 界面语言
+      $description: Language used by canvas interface text. Auto follows the system UI language and falls back to English when unsupported.
+      $description:zh-CN: 画布界面文本使用的语言。自动模式跟随系统界面语言，不支持时回退为英文。
+      $options:
+        - auto: Auto
+        - en: English
+        - fr: Français
+        - zh: 简体中文
+        - zh_TW: 繁體中文
+        - ja: 日本語
+        - ko: 한국어
+        - ru: Русский
+        - pl: Polski
+        - es: Español
+        - pt: Português
+        - de: Deutsch
+        - tr: Türkçe
+        - it: Italiano
+      $options:zh-CN:
+        - auto: 自动
+        - en: English
+        - fr: Français
+        - zh: 简体中文
+        - zh_TW: 繁體中文
+        - ja: 日本語
+        - ko: 한국어
+        - ru: Русский
+        - pl: Polski
+        - es: Español
+        - pt: Português
+        - de: Deutsch
+        - tr: Türkçe
+        - it: Italiano
     - toggle_hotkey: Ctrl+Alt+F12
       $name: Toggle hotkey
       $name:zh-CN: 显示/隐藏快捷键
