@@ -4,6 +4,7 @@
 
 #include "platform.h"
 #include "constants.h"
+#include "localization.h"
 
 struct Vec2 {
     float x = 0.0f;
@@ -180,6 +181,7 @@ inline bool MatchesWindow(const Card& card, const ScannedWindow& window) {
 
 struct CanvasSettings {
     std::wstring toggleHotkey = L"Ctrl+Alt+F12";
+    LanguageId language = LanguageId::English;
     bool openOnStart = false;
     int animationMs = 140;
     int rescanIntervalMs = 400;

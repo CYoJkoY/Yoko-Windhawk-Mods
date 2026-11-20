@@ -159,6 +159,10 @@ static void LoadExcludeList() {
 static void LoadSettings() {
     CanvasSettings& settings = context.settings;
 
+    WindhawkUtils::StringSetting language =
+        WindhawkUtils::StringSetting::make(L"Behavior.language");
+    settings.language = ResolveLanguageSetting(language.get());
+
     WindhawkUtils::StringSetting hotkey =
         WindhawkUtils::StringSetting::make(L"Behavior.toggle_hotkey");
     const wchar_t* hotkeyText = hotkey.get();

@@ -5,6 +5,7 @@
 #include "mods/aleph-canvas/src/math_utils.h"
 #include "mods/aleph-canvas/src/minimap.h"
 #include "mods/aleph-canvas/src/layout_store.h"
+#include "mods/aleph-canvas/src/render_hud.h"
 #include "mods/aleph-canvas/src/resources.h"
 #include "mods/aleph-canvas/src/settings.h"
 #include "mods/aleph-canvas/src/windows.h"
@@ -765,6 +766,103 @@ static void IconSourceMissing() {
     Require(queries == 3, "the lookup skipped a candidate");
 }
 
+static void LocalizationStrings() {
+    for (size_t text = 0; text < static_cast<size_t>(CanvasTextId::Count);
+         ++text) {
+        for (size_t language = 0;
+             language < static_cast<size_t>(LanguageId::Count); ++language) {
+            const auto textId = static_cast<CanvasTextId>(text);
+            const auto languageId = static_cast<LanguageId>(language);
+            const size_t length = CanvasTextLength(textId, languageId);
+            Require(length > 0,
+                    "a canvas string is missing for a supported language");
+            Require(wcslen(CanvasText(textId, languageId)) == length,
+                    "canvas string length disagrees with its text");
+        }
+    }
+}
+
+static void LocalizationBadges() {
+    Require(wcscmp(CanvasText(CanvasTextId::MinimizedBadge,
+                              LanguageId::English),
+                   L"MINIMIZED") == 0,
+            "English minimized badge changed");
+    Require(wcscmp(CanvasText(CanvasTextId::MinimizedBadge,
+                              LanguageId::SimplifiedChinese),
+                   L"已最小化") == 0,
+            "Simplified Chinese minimized badge changed");
+    Require(wcscmp(CanvasText(CanvasTextId::OtherDesktopBadge,
+                              LanguageId::Turkish),
+                   L"BAŞKA MASAÜSTÜ") == 0,
+            "Turkish other-desktop badge changed");
+    Require(wcscmp(CanvasText(CanvasTextId::EmptyCanvas, LanguageId::German),
+                   L"Keine geeigneten Fenster") == 0,
+            "German empty-canvas text changed");
+    Require(wcscmp(CanvasText(CanvasTextId::PreviewUnavailableBadge,
+                              LanguageId::Japanese),
+                   L"プレビュー利用不可") == 0,
+            "Japanese preview badge changed");
+}
+
+static void LocalizationCodes() {
+    Require(ARRAYSIZE(kLanguageOptions) ==
+                static_cast<size_t>(LanguageId::Count),
+            "the language option table does not cover every language");
+    for (const LanguageOption& option : kLanguageOptions) {
+        LanguageId parsed = LanguageId::Count;
+        Require(TryParseLanguageCode(option.code, parsed),
+                "a listed language code did not parse");
+        Require(parsed == option.language,
+                "a language code resolved to the wrong language");
+    }
+}
+
+static void LocalizationFallback() {
+    LanguageId parsed = LanguageId::Count;
+    Require(!TryParseLanguageCode(nullptr, parsed),
+            "a null language code was accepted");
+    Require(!TryParseLanguageCode(kAutoLanguageCode, parsed),
+            "auto was treated as an explicit language");
+    Require(!TryParseLanguageCode(L"xx", parsed),
+            "an unknown language code was accepted");
+    Require(parsed == LanguageId::Count,
+            "a rejected language code modified the output");
+    Require(ResolveLanguageSetting(L"xx") == LanguageId::English,
+            "an unknown setting did not fall back to English");
+    Require(ResolveLanguageSetting(L"zh_TW") == LanguageId::TraditionalChinese,
+            "an explicit traditional Chinese code was ignored");
+    const LanguageId detected = ResolveLanguageSetting(nullptr);
+    Require(static_cast<size_t>(detected) <
+                static_cast<size_t>(LanguageId::Count),
+            "auto resolved outside the language range");
+}
+
+static void LocalizationOutOfRange() {
+    Require(wcscmp(CanvasText(CanvasTextId::Count, LanguageId::English),
+                   L"") == 0,
+            "an out-of-range text id returned text");
+    Require(CanvasTextLength(CanvasTextId::Count, LanguageId::English) == 0,
+            "an out-of-range text id returned a length");
+    Require(wcscmp(CanvasText(CanvasTextId::MinimizedBadge, LanguageId::Count),
+                   L"") == 0,
+            "an out-of-range language returned text");
+    Require(CanvasTextLength(CanvasTextId::MinimizedBadge, LanguageId::Count) ==
+                0,
+            "an out-of-range language returned a length");
+}
+
+static void LocalizationBadgeSelection() {
+    Require(CardBadgeTextId(WindowVisualState::Minimized) ==
+                CanvasTextId::MinimizedBadge,
+            "a minimized card lost its badge");
+    Require(CardBadgeTextId(WindowVisualState::OtherDesktop) ==
+                CanvasTextId::OtherDesktopBadge,
+            "an other-desktop card lost its badge");
+    Require(CardBadgeTextId(WindowVisualState::Live) ==
+                CanvasTextId::PreviewUnavailableBadge,
+            "a live card without a preview lost its placeholder badge");
+}
+
 struct NativeCase {
     const char* name;
     void (*run)();
@@ -798,6 +896,12 @@ static constexpr NativeCase kCases[] = {
     {"icon_source_largest", IconSourceLargestWins},
     {"icon_source_fallback", IconSourceFallback},
     {"icon_source_missing", IconSourceMissing},
+    {"localization_strings", LocalizationStrings},
+    {"localization_badges", LocalizationBadges},
+    {"localization_codes", LocalizationCodes},
+    {"localization_fallback", LocalizationFallback},
+    {"localization_out_of_range", LocalizationOutOfRange},
+    {"localization_badge_selection", LocalizationBadgeSelection},
 };
 
 static int RunCase(const char* name) {
