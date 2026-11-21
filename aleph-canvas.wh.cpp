@@ -4,7 +4,7 @@
 // @name:zh-CN      Aleph - 无限窗口画布
 // @description     Arrange open windows across a pannable canvas with live DWM previews.
 // @description:zh-CN 在可平移画布上管理已打开的窗口，并显示 DWM 实时预览。
-// @version         1.5.0
+// @version         1.6.0
 // @author          CYoJkoY
 // @github          https://github.com/CYoJkoY
 // @license         MIT
@@ -23,7 +23,8 @@ Drag cards to arrange them without moving the real desktop windows.
 
 ## Controls
 
-- `Alt+Z`: toggle the canvas (configurable). If the hotkey does
+- `Ctrl+Alt+Shift+F12`: toggle the canvas. Leave the setting empty to disable
+  the hotkey. If the hotkey does
   nothing, another program may already use it; pick a different combination.
 - Mouse wheel: zoom around the pointer.
 - Alt+wheel over a stacked card: cycle the stack; plain wheel still zooms.
@@ -37,7 +38,7 @@ Drag cards to arrange them without moving the real desktop windows.
 - Hold Space and drag empty canvas: pan.
 - Drag a card: arrange it; nearby edges snap into alignment.
 - Shift+click a stacked card: bring the next window of the same app to the front.
-- Double-click a card or press Enter: focus the window; an other-desktop window is pulled onto this desktop first.
+- Double-click a card or press Enter: focus the window; for an other-desktop window, first try to move it here.
 - Tab / Shift+Tab: select a card; arrow keys pan; Home fits all cards; Escape hides the canvas.
 - Click or drag the minimap: navigate the canvas.
 - The canvas hides when another window takes input focus.
@@ -54,9 +55,9 @@ Icon cards ask the shell for the largest available icon (256 px when the jumbo
 image list exists) and fall back to smaller lists, then to the window icon.
 Arranging cards never moves real application windows. Activating an
 other-desktop card asks the documented `IVirtualDesktopManager` interface to
-move that window onto the desktop that displays the canvas, then focuses it. A
-window that refuses the move is reported in the Windhawk log; foreground
-activation then follows the normal rules for the current process.
+move that window onto the desktop displaying the canvas. Windows can reject
+requests for windows owned by another process. A failed move is logged and
+the mod still attempts normal foreground activation, which can also fail.
 */
 // ==/WindhawkModReadme==
 
@@ -98,11 +99,11 @@ activation then follows the normal rules for the current process.
         - de: Deutsch
         - tr: Türkçe
         - it: Italiano
-    - toggle_hotkey: Alt+Z
+    - toggle_hotkey: Ctrl+Alt+Shift+F12
       $name: Toggle hotkey
       $name:zh-CN: 显示/隐藏快捷键
-      $description: Global hotkey used to show or hide the canvas. Use modifiers such as Ctrl, Alt, Shift, or Win plus one key. Avoid AltGr combinations. If it does nothing, another program may already use the combination.
-      $description:zh-CN: 用于显示或隐藏画布的全局快捷键。可组合 Ctrl、Alt、Shift 或 Win 与一个按键；避免使用 AltGr 组合。若快捷键无效，可能是其他程序已占用该组合。
+      $description: Global hotkey used to show or hide the canvas. Leave blank to disable. Prefer modifiers plus a function key; Ctrl+Alt with a letter can collide with AltGr.
+      $description:zh-CN: 用于显示或隐藏画布的全局快捷键，留空禁用。建议使用修饰键加功能键；Ctrl+Alt 加字母可能与 AltGr 冲突。
     - open_on_start: false
       $name: Open on startup
       $name:zh-CN: 启动时打开
@@ -169,18 +170,18 @@ activation then follows the normal rules for the current process.
       $description: Group windows from the same application and fan older members behind the active card.
       $description:zh-CN: 将同一应用程序的窗口分为一组，并把较早的成员展开到当前卡片后方。
     - card_stack_step_degrees: 65
-      $name: Stack angle step
-      $name:zh-CN: 堆叠角度步进
+      $name: Stack angle step (tenths of a degree)
+      $name:zh-CN: 堆叠角度步进（十分之一度）
       $description: Rotation added by each stack position, in tenths of a degree. Range 0-900.
       $description:zh-CN: 每个堆叠位置增加的旋转角度，单位为十分之一度。范围 0-900。
     - card_stack_max_degrees: 240
-      $name: Stack maximum angle
-      $name:zh-CN: 堆叠最大角度
+      $name: Stack maximum angle (tenths of a degree)
+      $name:zh-CN: 堆叠最大角度（十分之一度）
       $description: Maximum rotation applied to a stack member, in tenths of a degree. Range 0-900.
       $description:zh-CN: 堆叠成员可用的最大旋转角度，单位为十分之一度。范围 0-900。
     - card_stack_scale_percent: 975
-      $name: Stack scale factor
-      $name:zh-CN: 堆叠缩放系数
+      $name: Stack scale factor (thousandths)
+      $name:zh-CN: 堆叠缩放系数（千分之一）
       $description: Per-level scale multiplier, in thousandths. Range 800-1000.
       $description:zh-CN: 每一级堆叠使用的缩放系数，单位为千分之一。范围 800-1000。
     - card_stack_max_depth: 5
@@ -564,9 +565,11 @@ constexpr DWORD kThumbnailRetryDelayMs = 2000;
 // A hotkey registration can fail transiently, for example right after a
 // settings reload while another program still holds the combination. The
 // worker retries with a capped exponential backoff so a reloaded hotkey
-// becomes active without the user touching the settings again.
+// becomes active without the user touching the settings again. The cap is a
+// full minute: a combination held for good by another program costs the idle
+// worker one wake-up per minute, not one every few seconds.
 constexpr DWORD kHotkeyRetryInitialMs = 1000;
-constexpr DWORD kHotkeyRetryMaxMs = 5000;
+constexpr DWORD kHotkeyRetryMaxMs = 60000;
 
 [[nodiscard]] inline DWORD NextHotkeyRetryDelay(DWORD previous) {
     if (previous == 0) {
@@ -732,8 +735,8 @@ inline constexpr SystemLanguageRule kSystemLanguageRules[] = {
     return kCanvasStrings[entryIndex].texts[languageIndex].size();
 }
 
-// Simplified Chinese is the default for every non-traditional Chinese
-// sublanguage, including Hong Kong and Macau.
+// Every Chinese sublanguage listed here uses Traditional characters: Taiwan,
+// Hong Kong and Macau. Simplified Chinese is the fallback for the rest.
 [[nodiscard]] inline bool IsTraditionalChineseSubLanguage(WORD subLanguage) {
     return subLanguage == SUBLANG_CHINESE_TRADITIONAL ||
            subLanguage == SUBLANG_CHINESE_HONGKONG ||
@@ -929,10 +932,10 @@ struct CardStackPlacement {
     float scale = 1.0f;
     float opacity = 1.0f;
     bool drawAboveStack = false;
-    // Shared world rectangle for the whole stack. Empty until the stack
-    // is formed; the front card's world rectangle is captured as the
-    // anchor so every member renders at one place instead of at its own
-    // unrelated window position.
+    // Position of the whole stack, used as its centre only: the anchor is
+    // captured from the front card's world rectangle when a stack of two or
+    // more forms, and each member keeps its own size. Empty while the card
+    // stands alone, so a lone window never gets a stale size.
     RectF anchorWorld{};
 };
 
@@ -966,6 +969,8 @@ struct Card {
     std::wstring title;
     std::wstring fingerprint;
     std::wstring exePath;
+    std::wstring applicationKey;
+    bool hasApplicationPeers = false;
     // Scan index from EnumWindows, topmost window first (0 = topmost).
     // Copied from ScannedWindow on every merge so stack order follows
     // the desktop Z-order instead of card insertion order.
@@ -979,13 +984,18 @@ struct Card {
     bool pinned = false;
 };
 
-// World rectangle a card occupies on the canvas. Grouped cards share
-// their stack anchor once it is captured; ungrouped cards and stacks
-// without an anchor keep their own world rectangle.
+// World rectangle a card occupies on the canvas. A grouped card takes the
+// size of its own window and the centre of the stack anchor, so resized or
+// maximized windows keep their real proportions and a stack member shown at
+// the front is never stretched. Ungrouped cards and stacks without an anchor
+// use their own world rectangle.
 inline RectF StackWorldRect(const Card& card) {
     if (card.stack.grouped && !card.stack.groupKey.empty() &&
         !card.stack.anchorWorld.empty()) {
-        return card.stack.anchorWorld;
+        const RectF& anchor = card.stack.anchorWorld;
+        return MakeRectF(anchor.centerX() - card.world.width() * 0.5f,
+                         anchor.centerY() - card.world.height() * 0.5f,
+                         card.world.width(), card.world.height());
     }
     return card.world;
 }
@@ -993,6 +1003,11 @@ inline RectF StackWorldRect(const Card& card) {
 inline bool IsStackBackground(const Card& card) {
     return card.stack.grouped && !card.stack.groupKey.empty() &&
            card.stack.slot != 0;
+}
+
+inline bool SameActiveStack(const Card& left, const Card& right) {
+    return left.stack.grouped && right.stack.grouped &&
+           !left.stack.groupKey.empty() && left.stack.groupKey == right.stack.groupKey;
 }
 
 struct ScannedWindow {
@@ -1005,6 +1020,7 @@ struct ScannedWindow {
     std::wstring title;
     std::wstring fingerprint;
     std::wstring exePath;
+    std::wstring applicationKey;
     // Scan index from EnumWindows, topmost window first (0 = topmost).
     // Stacks order members by this rank so the focused/topmost window
     // becomes the straight front card instead of an arbitrary member.
@@ -1020,7 +1036,7 @@ inline bool MatchesWindow(const Card& card, const ScannedWindow& window) {
 }
 
 struct CanvasSettings {
-    std::wstring toggleHotkey = L"Alt+Z";
+    std::wstring toggleHotkey = L"Ctrl+Alt+Shift+F12";
     LanguageId language = LanguageId::English;
     bool openOnStart = false;
     int animationMs = 140;
@@ -1151,7 +1167,6 @@ struct CanvasContext {
     int hudHeight = 0;
     std::unordered_map<std::wstring, ID2D1Bitmap*> iconCache;
     std::unordered_map<std::wstring, DWORD> iconRetryTick;
-    std::unordered_set<std::wstring> dismissedFingerprints;
 
     // Settings and persisted layout.
     CanvasSettings settings{};
@@ -1545,10 +1560,9 @@ static void LoadSettings() {
     WindhawkUtils::StringSetting hotkey =
         WindhawkUtils::StringSetting::make(L"Behavior.toggle_hotkey");
     const wchar_t* hotkeyText = hotkey.get();
-    settings.toggleHotkey =
-        hotkeyText != nullptr && *hotkeyText != L'\0'
-            ? TrimText(hotkeyText)
-            : L"Alt+Z";
+    if (hotkeyText != nullptr) {
+        settings.toggleHotkey = TrimText(hotkeyText);
+    }
 
     settings.openOnStart =
         yoko::GetClampedIntSetting(L"Behavior.open_on_start", 0, 1) != 0;
@@ -2518,6 +2532,29 @@ inline float CardArea(const ScannedWindow& window) {
            static_cast<float>(window.framePx.bottom - window.framePx.top);
 }
 
+#include <propkey.h>
+
+static std::wstring ReadApplicationKey(HWND window, const std::wstring& exeName) {
+    IPropertyStore* store = nullptr;
+    if (FAILED(SHGetPropertyStoreForWindow(window, IID_PPV_ARGS(&store)))) {
+        return exeName;
+    }
+    PROPVARIANT value{};
+    const HRESULT result = store->GetValue(PKEY_AppUserModel_ID, &value);
+    store->Release();
+    std::wstring key;
+    if (SUCCEEDED(result) && value.vt == VT_LPWSTR &&
+        value.pwszVal != nullptr && value.pwszVal[0] != L'\0') {
+        key = L"aumid:" + ToLowerText(value.pwszVal);
+    }
+    const HRESULT clearResult = PropVariantClear(&value);
+    if (FAILED(clearResult)) {
+        Wh_Log(L"Aleph: PropVariantClear failed: 0x%08X",
+               static_cast<unsigned>(clearResult));
+    }
+    return key.empty() ? exeName : key;
+}
+
 static bool IsOwnProcessWindow(HWND window) {
     DWORD pid = 0;
     GetWindowThreadProcessId(window, &pid);
@@ -2854,22 +2891,8 @@ static void AssignFingerprints(std::vector<ScannedWindow>& windows) {
     }
 }
 
-static void EraseDismissedWindows(std::vector<ScannedWindow>& windows) {
-    windows.erase(
-        std::remove_if(windows.begin(), windows.end(),
-                       [](const ScannedWindow& window) {
-                           return context.dismissedFingerprints.count(
-                                      window.fingerprint) != 0;
-                       }),
-        windows.end());
-}
-
-// Dismissed windows must not occupy a card slot, and a dismissal can only be
-// recognized after the window has a fingerprint, so identity assignment runs
-// before both the dismissal filter and the card cut.
 inline void PrepareScanCandidates(std::vector<ScannedWindow>& windows) {
     AssignFingerprints(windows);
-    EraseDismissedWindows(windows);
     SelectScanCandidates(windows);
 }
 
@@ -2882,7 +2905,12 @@ static std::vector<ScannedWindow> ScanWindows(IVirtualDesktopManager* manager) {
     // the desktop Z-order rank. Record it before MergeScan reorders
     // additions by area, or stacks would lose which window is on top.
     for (size_t index = 0; index < pass.windows.size(); ++index) {
-        pass.windows[index].zOrder = index;
+        ScannedWindow& window = pass.windows[index];
+        window.zOrder = index;
+        if (context.settings.stacksEnabled) {
+            window.applicationKey = ReadApplicationKey(window.hwnd,
+                                                       ExecutableName(window.exePath));
+        }
     }
     return std::move(pass.windows);
 }
@@ -3048,29 +3076,6 @@ struct CardDrawClips {
     std::vector<RectF> regions;
 };
 
-inline std::vector<bool> SelectUnoccludedThumbnails(
-    const std::vector<size_t>& drawOrder,
-    const std::vector<RectF>& destinations) {
-    std::vector<bool> selected(destinations.size(), false);
-    std::vector<RectF> visibleDestinations;
-    for (size_t position = drawOrder.size(); position-- > 0;) {
-        const size_t index = drawOrder[position];
-        if (index >= destinations.size() || destinations[index].empty()) {
-            continue;
-        }
-        const RectF& destination = destinations[index];
-        if (std::any_of(visibleDestinations.begin(), visibleDestinations.end(),
-                        [&destination](const RectF& visible) {
-                            return RectsOverlap(destination, visible);
-                        })) {
-            continue;
-        }
-        selected[index] = true;
-        visibleDestinations.push_back(destination);
-    }
-    return selected;
-}
-
 inline std::vector<RectF> CardOcclusionHoles(
     const RectF& viewport, const RectF& cardBounds,
     const std::vector<RectF>& holes) {
@@ -3101,6 +3106,23 @@ inline std::vector<RectF> SubtractCardOcclusionHoles(
         }
     }
     return regions;
+}
+
+inline RectF UnoccludedThumbnailRect(const RectF& destination,
+                                     const std::vector<RectF>& higherThumbnails) {
+    const auto occlusion = CardOcclusionHoles(destination, destination, higherThumbnails);
+    if (occlusion.empty()) {
+        return destination;
+    }
+    const auto visible = SubtractCardOcclusionHoles(destination, occlusion);
+    RectF bounds{};
+    double area = 0.0;
+    for (const RectF& region : visible) {
+        bounds = UnionRect(bounds, region);
+        area += static_cast<double>(region.width()) * static_cast<double>(region.height());
+    }
+    return area == static_cast<double>(bounds.width()) * static_cast<double>(bounds.height())
+               ? bounds : RectF{};
 }
 
 inline CardDrawClips CardDrawRegions(
@@ -3155,7 +3177,7 @@ inline void ClearAllStackPlacements(std::vector<Card>& cards) {
 
 inline void ClearIneligibleStackPlacements(std::vector<Card>& cards) {
     for (Card& card : cards) {
-        if (!card.stack.grouped || card.exePath.empty()) {
+        if (!card.stack.grouped || card.applicationKey.empty()) {
             ResetStackPlacement(card);
         }
     }
@@ -3166,8 +3188,8 @@ inline std::vector<StackMember> CollectStackMembers(const std::vector<Card>& car
     members.reserve(cards.size());
     for (size_t index = 0; index < cards.size(); ++index) {
         const Card& card = cards[index];
-        if (card.stack.grouped && !card.exePath.empty()) {
-            members.push_back({index, ExecutableName(card.exePath)});
+        if (card.stack.grouped && !card.applicationKey.empty()) {
+            members.push_back({index, card.applicationKey});
         }
     }
     return members;
@@ -3204,7 +3226,10 @@ inline void ApplyStackOrder(std::vector<Card>& cards,
 inline void AssignStack(std::vector<Card>& cards,
                         const std::vector<StackMember>& members,
                         const CanvasSettings& settings) {
-    if (members.empty()) {
+    if (members.size() == 1) {
+        Card& card = cards[members.front().index];
+        card.world = StackWorldRect(card);
+        ResetStackPlacement(card);
         return;
     }
     const std::wstring groupKey = members.front().groupKey;
@@ -3217,19 +3242,12 @@ inline void AssignStack(std::vector<Card>& cards,
         cards[member.index].stack.grouped = true;
         order.push_back(member.index);
     }
-    // Keep the stack at one place: reuse the anchor captured when the
-    // stack was formed, and only capture the front card's world rectangle
-    // the first time. Recapturing on every rescan or cycle would move the
-    // stack to the new front card's unrelated window position.
-    RectF anchor{};
+    RectF anchor = cards[order.front()].world;
     for (const size_t index : order) {
         if (!cards[index].stack.anchorWorld.empty()) {
             anchor = cards[index].stack.anchorWorld;
             break;
         }
-    }
-    if (anchor.empty() && !order.empty()) {
-        anchor = cards[order.front()].world;
     }
     for (const size_t index : order) {
         cards[index].stack.anchorWorld = anchor;
@@ -3268,6 +3286,16 @@ inline void ReconcileCardStacks(std::vector<Card>& cards, const CanvasSettings& 
     if (!settings.stacksEnabled) {
         ClearAllStackPlacements(cards);
         return;
+    }
+    std::unordered_map<std::wstring, size_t> applicationCounts;
+    for (const Card& card : cards) {
+        if (!card.applicationKey.empty()) {
+            ++applicationCounts[card.applicationKey];
+        }
+    }
+    for (Card& card : cards) {
+        const auto count = applicationCounts.find(card.applicationKey);
+        card.hasApplicationPeers = count != applicationCounts.end() && count->second > 1;
     }
     ClearIneligibleStackPlacements(cards);
     const auto members = CollectStackMembers(cards);
@@ -3654,6 +3682,7 @@ inline void InsertCard(ScannedWindow&& window, RectF world) {
     card.title = std::move(window.title);
     card.fingerprint = std::move(window.fingerprint);
     card.exePath = std::move(window.exePath);
+    card.applicationKey = std::move(window.applicationKey);
     card.zOrder = window.zOrder;
     context.cards.push_back(std::move(card));
 }
@@ -3716,9 +3745,15 @@ inline void ClearCards() {
 // along; only the descriptive fields follow the window.
 inline bool UpdateCardFromScan(size_t index, const ScannedWindow& window) {
     Card& card = context.cards[index];
+    const bool applicationChanged = card.applicationKey != window.applicationKey;
     const bool changed = card.state != window.state || card.title != window.title ||
                          !EqualRect(&card.framePx, &window.framePx) ||
-                         card.zOrder != window.zOrder;
+                         card.zOrder != window.zOrder || applicationChanged;
+    if (applicationChanged) {
+        card.world = StackWorldRect(card);
+        ResetStackPlacement(card);
+        card.applicationKey = window.applicationKey;
+    }
     if (card.state != window.state) {
         card.thumbnail.reset();
     }
@@ -3748,9 +3783,6 @@ inline bool MergeScan(const std::vector<ScannedWindow>& scanned) {
     std::vector<ScannedWindow> additions;
     bool changed = false;
     for (const ScannedWindow& window : scanned) {
-        if (context.dismissedFingerprints.count(window.fingerprint) != 0) {
-            continue;
-        }
         const int existing = FindCardIndex(window);
         if (existing >= 0) {
             seen[static_cast<size_t>(existing)] = true;
@@ -3855,8 +3887,12 @@ inline SnapResult ComputeSnap(const RectF& moving, int ignoreIndex) {
     }
     std::pair<SnapAxis, SnapAxis> axes{SnapAxis{distance, distance + 1.0f},
                                       SnapAxis{distance, distance + 1.0f}};
+    const bool hasMovingCard = ignoreIndex >= 0 &&
+        static_cast<size_t>(ignoreIndex) < context.cards.size();
     for (size_t index = 0; index < context.cards.size(); ++index) {
-        if (static_cast<int>(index) == ignoreIndex) {
+        if (static_cast<int>(index) == ignoreIndex ||
+            (hasMovingCard && SameActiveStack(
+                context.cards[static_cast<size_t>(ignoreIndex)], context.cards[index]))) {
             continue;
         }
         SnapAgainstCard(moving, StackWorldRect(context.cards[index]), axes);
@@ -4455,17 +4491,7 @@ inline int CardHeaderButtonCount(const std::vector<Card>& cards, size_t index,
     if (!stacksEnabled || index >= cards.size()) {
         return 2;
     }
-    const std::wstring name = ExecutableName(cards[index].exePath);
-    if (name.empty()) {
-        return 2;
-    }
-    size_t sameName = 0;
-    for (const Card& card : cards) {
-        if (ExecutableName(card.exePath) == name) {
-            ++sameName;
-        }
-    }
-    return sameName >= 2 ? 3 : 2;
+    return cards[index].hasApplicationPeers ? 3 : 2;
 }
 
 inline float CardHeaderButtonRowWidth(const RectF& header, float scale,
@@ -4761,8 +4787,11 @@ inline bool ReadThumbnailSource(const Card& card, RectF& source) {
     return !source.empty();
 }
 
-inline bool ClipThumbnailGeometry(ThumbnailGeometry& geometry) {
-    const RectF clipped = ThumbnailViewportClip(geometry.destination);
+inline bool ClipThumbnailGeometry(ThumbnailGeometry& geometry, const RectF& clip) {
+    const RectF clipped{std::max(clip.left, geometry.destination.left),
+                        std::max(clip.top, geometry.destination.top),
+                        std::min(clip.right, geometry.destination.right),
+                        std::min(clip.bottom, geometry.destination.bottom)};
     if (clipped.empty() || geometry.destination.empty() || geometry.source.empty()) {
         return false;
     }
@@ -4849,31 +4878,42 @@ inline bool PrepareThumbnail(Card& card, DWORD now,
         FailThumbnail(card, now);
         return false;
     }
-    if (!ClipThumbnailGeometry(geometry)) {
+    if (!ClipThumbnailGeometry(geometry, ThumbnailViewportClip(geometry.destination))) {
         HideThumbnail(card, now);
         return false;
     }
     return true;
 }
 
+inline void UpdateCardThumbnail(Card& card, DWORD now,
+                                const std::vector<RectF>& higherThumbnails) {
+    ThumbnailGeometry geometry;
+    if (!PrepareThumbnail(card, now, geometry)) {
+        return;
+    }
+    const RECT destination = ThumbnailRect(geometry.destination);
+    const RectF visible = UnoccludedThumbnailRect(RectFromRect(destination), higherThumbnails);
+    const RECT cropped = ThumbnailRect(visible);
+    if (EqualRect(&destination, &cropped) == FALSE &&
+        !ClipThumbnailGeometry(geometry, visible)) {
+        if (card.thumbnailVisible) {
+            HideThumbnail(card, now);
+        }
+        return;
+    }
+    SubmitThumbnail(card, geometry, now);
+}
+
 inline void UpdateThumbnails() {
     const DWORD now = GetTickCount();
-    std::vector<ThumbnailGeometry> geometries(context.cards.size());
-    std::vector<RectF> destinations(context.cards.size());
-    for (size_t index = 0; index < context.cards.size(); ++index) {
-        if (PrepareThumbnail(context.cards[index], now, geometries[index])) {
-            destinations[index] =
-                RectFromRect(ThumbnailRect(geometries[index].destination));
-        }
-    }
-    const std::vector<bool> selected = SelectUnoccludedThumbnails(
-        CardDrawOrder(context.cards), destinations);
-    for (size_t index = 0; index < context.cards.size(); ++index) {
-        Card& card = context.cards[index];
-        if (selected[index]) {
-            SubmitThumbnail(card, geometries[index], now);
-        } else if (card.thumbnail.valid() && card.thumbnailVisible) {
-            HideThumbnail(card, now);
+    const auto drawOrder = CardDrawOrder(context.cards);
+    std::vector<RectF> higherThumbnails;
+    higherThumbnails.reserve(drawOrder.size());
+    for (auto index = drawOrder.rbegin(); index != drawOrder.rend(); ++index) {
+        Card& card = context.cards[*index];
+        UpdateCardThumbnail(card, now, higherThumbnails);
+        if (card.thumbnailVisible) {
+            higherThumbnails.push_back(RectFromRect(card.thumbnailDestination));
         }
     }
 }
@@ -5328,6 +5368,11 @@ inline void DrawCardBadge(const Card& card, const RectF& rect) {
         context.hudBrush, D2D1_DRAW_TEXT_OPTIONS_CLIP);
 }
 
+inline bool CardShowsBadge(const Card& card) {
+    return card.state != WindowVisualState::Live ||
+           (card.thumbnailFailed && !IsStackBackground(card));
+}
+
 inline void DrawCardBody(const Card& card, const RectF& body, float scale) {
     if (body.empty() || (card.state == WindowVisualState::Live &&
                          card.thumbnail.valid() && card.thumbnailVisible)) {
@@ -5336,7 +5381,7 @@ inline void DrawCardBody(const Card& card, const RectF& body, float scale) {
     SetHudColor(context.settings.cardFillColor);
     context.hudTarget->FillRoundedRectangle(
         RoundedRect(body, kCardCornerRadiusPx * scale), context.hudBrush);
-    const RectF badge = CardBadgeBounds(body, scale);
+    const RectF badge = CardShowsBadge(card) ? CardBadgeBounds(body, scale) : RectF{};
     const float padding = kCardTitlePaddingPx * scale;
     RectF iconArea = GrowRect(body, -padding);
     if (!badge.empty()) {
@@ -5380,22 +5425,24 @@ inline void DrawCard(const Card& card, int index, float scale) {
                                      D2D1::Point2F(center.x, center.y)) *
             D2D1::Matrix3x2F::Rotation(degrees, D2D1::Point2F(center.x, center.y)));
     }
-    D2D1_LAYER_PARAMETERS layerParameters = {};
-    layerParameters.contentBounds = D2D1::InfiniteRect();
-    layerParameters.maskAntialiasMode = D2D1_ANTIALIAS_MODE_PER_PRIMITIVE;
-    layerParameters.maskTransform = D2D1::IdentityMatrix();
-    layerParameters.opacity = card.stack.opacity;
-    layerParameters.layerOptions = D2D1_LAYER_OPTIONS_NONE;
-    // ID2D1DeviceContext::PushLayer returns void, so the layer is always
-    // popped on the matching path below.
-    context.hudTarget->PushLayer(&layerParameters, nullptr);
+    const bool translucent = card.stack.opacity < 1.0f;
+    if (translucent) {
+        const RectF bounds = GrowRect(rect, scale + 1.0f);
+        const auto layer = D2D1::LayerParameters(
+            D2D1::RectF(bounds.left, bounds.top, bounds.right, bounds.bottom),
+            nullptr, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE, D2D1::IdentityMatrix(),
+            card.stack.opacity);
+        context.hudTarget->PushLayer(&layer, nullptr);
+    }
     DrawCardBody(card, body, scale);
     DrawCardHeader(card, index, header, scale);
     SetHudColor(emphasized ? context.settings.accentColor : context.settings.gridColor);
     context.hudTarget->DrawRoundedRectangle(
         RoundedRect(rect, radius), context.hudBrush,
         emphasized ? 2.0f * scale : 1.0f * scale);
-    context.hudTarget->PopLayer();
+    if (translucent) {
+        context.hudTarget->PopLayer();
+    }
     if (transformed) {
         context.hudTarget->SetTransform(savedTransform);
     }
@@ -5662,7 +5709,6 @@ inline void HideCanvasWindows() {
         ShowWindow(context.hostWindow, SW_HIDE);
     }
     ReleaseAllThumbnails();
-    context.dismissedFingerprints.clear();
     context.panning = false;
     context.draggingMinimap = false;
     context.draggedCard = -1;
@@ -5755,6 +5801,8 @@ inline DesktopPullOutcome PullWindowToDesktop(IVirtualDesktopManager* manager,
     return outcome;
 }
 
+#include <optional>
+
 inline POINT CursorInCanvas() {
     POINT point = {};
     GetCursorPos(&point);
@@ -5781,26 +5829,13 @@ inline CardHeaderAction HeaderActionAt(int index, Vec2 point) {
     return HitTestCardHeader(header, point, scale, buttons);
 }
 
-inline void DismissCard(int index) {
-    if (index < 0 || static_cast<size_t>(index) >= context.cards.size()) {
-        return;
-    }
-    context.dismissedFingerprints.insert(
-        context.cards[static_cast<size_t>(index)].fingerprint);
-    RemoveCardAt(static_cast<size_t>(index));
-    context.stackTransitions.clear();
-    ReconcileCardStacks(context.cards, context.settings);
-    context.hoverHeaderAction = CardHeaderAction::None;
-    context.sceneDirty = true;
-}
-
 inline void ToggleCardPin(int index) {
     if (index < 0 || static_cast<size_t>(index) >= context.cards.size()) {
         return;
     }
     Card& card = context.cards[static_cast<size_t>(index)];
     card.pinned = !card.pinned;
-    RememberLayoutPin(card.fingerprint, card.world, card.pinned, card.stack.grouped);
+    RememberLayoutPin(card.fingerprint, StackWorldRect(card), card.pinned, card.stack.grouped);
     MarkLayoutDirty(GetTickCount());
     context.sceneDirty = true;
 }
@@ -5813,13 +5848,16 @@ inline void CloseCardWindow(int index) {
     if (index < 0 || static_cast<size_t>(index) >= context.cards.size()) {
         return;
     }
-    const HWND window = context.cards[static_cast<size_t>(index)].hwnd;
-    if (window == nullptr || IsWindow(window) == FALSE) {
-        // Nothing is left to close, so dismissal is the only remaining action.
-        DismissCard(index);
-        return;
-    }
-    if (PostMessageW(window, WM_CLOSE, 0, 0) == FALSE) {
+    const Card& card = context.cards[static_cast<size_t>(index)];
+    const HWND window = card.hwnd;
+    DWORD processId = 0;
+    const DWORD threadId = card.destroyed || window == nullptr
+                               ? 0 : GetWindowThreadProcessId(window, &processId);
+    if (threadId == 0 || threadId != card.threadId || processId != card.processId) {
+        RemoveCardAt(static_cast<size_t>(index));
+        context.stackTransitions.clear();
+        ReconcileCardStacks(context.cards, context.settings);
+    } else if (PostMessageW(window, WM_CLOSE, 0, 0) == FALSE) {
         Wh_Log(L"Aleph: WM_CLOSE could not be posted: %lu", GetLastError());
         return;
     }
@@ -5828,9 +5866,6 @@ inline void CloseCardWindow(int index) {
     context.sceneDirty = true;
 }
 
-// Group members share one executable: a grouped card is matched by the key its
-// stack already carries, an ungrouped card by its executable name, so toggling
-// either way touches exactly the windows the button refers to.
 inline std::vector<size_t> CollectGroupMemberIndices(
     const std::wstring& groupKey) {
     std::vector<size_t> members;
@@ -5839,10 +5874,7 @@ inline std::vector<size_t> CollectGroupMemberIndices(
     }
     for (size_t index = 0; index < context.cards.size(); ++index) {
         const Card& card = context.cards[index];
-        const bool matches = IsGroupedStackCard(card)
-                                 ? card.stack.groupKey == groupKey
-                                 : ExecutableName(card.exePath) == groupKey;
-        if (matches) {
+        if (card.applicationKey == groupKey) {
             members.push_back(index);
         }
     }
@@ -5888,9 +5920,7 @@ inline void GroupCards(const std::vector<size_t>& members,
         card.stack.anchorWorld = anchor;
         // The grouped flag is saved too: a later rescan restores the stack
         // from the layout instead of splitting the windows apart again.
-        RememberLayoutPin(card.fingerprint,
-                          anchor.empty() ? card.world : anchor, card.pinned,
-                          true);
+        RememberLayoutPin(card.fingerprint, StackWorldRect(card), card.pinned, true);
     }
     MarkLayoutDirty(GetTickCount());
 }
@@ -5900,24 +5930,17 @@ inline void GroupCards(const std::vector<size_t>& members,
 // its own desktop position. The ungrouped flag is saved with the layout so a
 // rescan does not restack the windows.
 inline void UngroupCards(const std::vector<size_t>& members) {
-    const RectF anchor = StackAnchorForMembers(members);
-    const float step =
-        anchor.width() + static_cast<float>(context.settings.gap);
-    // Only the windows that were part of the stack move. A window of the same
-    // executable that the user kept apart is a member of the group key but not
-    // of the stack, so it keeps the place it was put in.
-    size_t position = 0;
+    std::optional<float> nextLeft;
     for (const size_t index : members) {
         if (index >= context.cards.size()) {
             continue;
         }
         Card& card = context.cards[index];
-        const bool wasStacked = IsGroupedStackCard(card);
-        if (wasStacked && !anchor.empty()) {
-            card.world =
-                MakeRectF(anchor.left + step * static_cast<float>(position),
-                          anchor.top, anchor.width(), anchor.height());
-            ++position;
+        if (IsGroupedStackCard(card)) {
+            const RectF world = StackWorldRect(card);
+            card.world = MakeRectF(nextLeft.value_or(world.left), world.top,
+                                   world.width(), world.height());
+            nextLeft = card.world.right + static_cast<float>(context.settings.gap);
         }
         ResetStackPlacement(card);
         card.stack.grouped = false;
@@ -5933,8 +5956,7 @@ inline void ToggleCardGroup(int index) {
     }
     const Card& card = context.cards[static_cast<size_t>(index)];
     const bool grouped = IsGroupedStackCard(card);
-    const std::wstring groupKey =
-        grouped ? card.stack.groupKey : ExecutableName(card.exePath);
+    const std::wstring groupKey = card.applicationKey;
     const std::vector<size_t> members = CollectGroupMemberIndices(groupKey);
     if (members.size() < 2) {
         return;
@@ -6074,15 +6096,22 @@ inline void UpdateCardDrag(POINT cursor) {
     moved.top = snap.top;
     moved.right = moved.left + card.world.width();
     moved.bottom = moved.top + card.world.height();
-    card.world = moved;
-    // Dragging one member moves the whole stack: every member shares the
-    // anchor, so update it together instead of leaving the stack behind.
-    if (card.stack.grouped && !card.stack.groupKey.empty()) {
+    if (IsGroupedStackCard(card)) {
+        const RectF current = StackWorldRect(card);
+        const RectF previousAnchor = card.stack.anchorWorld;
+        const RectF anchor = MakeRectF(
+            previousAnchor.left + moved.left - current.left,
+            previousAnchor.top + moved.top - current.top,
+            previousAnchor.width(), previousAnchor.height());
         for (Card& member : context.cards) {
-            if (member.stack.grouped && member.stack.groupKey == card.stack.groupKey) {
-                member.stack.anchorWorld = moved;
+            if (SameActiveStack(card, member)) {
+                member.stack.anchorWorld = anchor;
             }
         }
+    } else {
+        card.world = moved;
+        RememberLayoutEntry(card.fingerprint, card.world);
+        MarkLayoutDirty(GetTickCount());
     }
     context.hasGuideVertical = snap.snapVertical;
     context.hasGuideHorizontal = snap.snapHorizontal;
@@ -6091,11 +6120,28 @@ inline void UpdateCardDrag(POINT cursor) {
     context.guideHorizontal = RectF{0.0f,
         (snap.guideY - context.camera.centerY) * context.camera.zoom + ScreenCenterY(),
         0.0f, 0.0f};
-    RememberLayoutEntry(card.fingerprint, card.world);
+}
+
+inline void RememberDraggedStack() {
+    if (context.draggedCard < 0 ||
+        static_cast<size_t>(context.draggedCard) >= context.cards.size()) {
+        return;
+    }
+    const Card& dragged = context.cards[static_cast<size_t>(context.draggedCard)];
+    if (!IsGroupedStackCard(dragged)) {
+        return;
+    }
+    for (const Card& member : context.cards) {
+        if (SameActiveStack(dragged, member)) {
+            RememberLayoutPin(member.fingerprint, StackWorldRect(member),
+                              member.pinned, member.stack.grouped);
+        }
+    }
     MarkLayoutDirty(GetTickCount());
 }
 
 inline void EndPointerDrag() {
+    RememberDraggedStack();
     context.panning = false;
     context.draggingMinimap = false;
     context.draggedCard = -1;
@@ -6426,6 +6472,17 @@ inline bool RegisterCanvasWindows(HINSTANCE instance) {
 // `logFailure` is false for the automatic backoff retries: a combination that
 // stays taken would otherwise log one failure every few seconds forever.
 inline bool RegisterCanvasHotkey(bool logFailure) {
+    if (context.settings.toggleHotkey.empty()) {
+        context.hotkeyRetryDelayMs = 0;
+        context.hotkeyRetryTick = 0;
+        if (context.hotkeyRegistered &&
+            UnregisterHotKey(nullptr, context.hotkeyId) == FALSE) {
+            Wh_Log(L"Aleph: UnregisterHotKey failed: %lu", GetLastError());
+            return false;
+        }
+        context.hotkeyRegistered = false;
+        return true;
+    }
     UINT modifiers = 0;
     UINT key = 0;
     if (!ParseHotkeyText(context.settings.toggleHotkey, modifiers, key)) {
@@ -6438,6 +6495,8 @@ inline bool RegisterCanvasHotkey(bool logFailure) {
     }
     if (context.hotkeyRegistered && context.hotkeyModifiers == modifiers &&
         context.hotkeyKey == key) {
+        context.hotkeyRetryDelayMs = 0;
+        context.hotkeyRetryTick = 0;
         return true;
     }
     const UINT nextId = context.hotkeyId == kToggleHotkeyId
@@ -6532,7 +6591,8 @@ inline void UpdateCameraAndDive(DWORD now) {
 }
 
 inline void ProcessCanvasMessage(const MSG& message) {
-    if (message.message == WM_HOTKEY && message.wParam == context.hotkeyId) {
+    if (message.message == WM_HOTKEY && context.hotkeyRegistered &&
+        !context.settings.toggleHotkey.empty() && message.wParam == context.hotkeyId) {
         ToggleCanvas();
         return;
     }
