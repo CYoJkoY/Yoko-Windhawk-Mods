@@ -86,6 +86,93 @@ inline void DrawPinGlyph(const RectF& rect, bool pinned, float scale) {
                                 context.hudBrush, stroke);
 }
 
+// Two overlapping squares read as "these windows are grouped".
+inline void DrawGroupedGlyph(const RectF& rect, float stroke) {
+    const float width = rect.width();
+    const float height = rect.height();
+    context.hudTarget->DrawRectangle(
+        D2D1::RectF(rect.left + width * 0.18f, rect.top + height * 0.18f,
+                    rect.left + width * 0.62f, rect.top + height * 0.62f),
+        context.hudBrush, stroke);
+    context.hudTarget->DrawRectangle(
+        D2D1::RectF(rect.left + width * 0.38f, rect.top + height * 0.38f,
+                    rect.left + width * 0.82f, rect.top + height * 0.82f),
+        context.hudBrush, stroke);
+}
+
+// Two separated squares read as "these windows can still be grouped".
+inline void DrawSplitGlyph(const RectF& rect, float stroke) {
+    const float width = rect.width();
+    const float height = rect.height();
+    context.hudTarget->DrawRectangle(
+        D2D1::RectF(rect.left + width * 0.12f, rect.top + height * 0.28f,
+                    rect.left + width * 0.46f, rect.top + height * 0.72f),
+        context.hudBrush, stroke);
+    context.hudTarget->DrawRectangle(
+        D2D1::RectF(rect.left + width * 0.54f, rect.top + height * 0.28f,
+                    rect.left + width * 0.88f, rect.top + height * 0.72f),
+        context.hudBrush, stroke);
+}
+
+inline void DrawGroupGlyph(const RectF& rect, bool grouped, float scale) {
+    if (rect.empty()) {
+        return;
+    }
+    SetHudColor(grouped ? context.settings.accentColor
+                        : context.settings.textColor,
+                grouped ? 1.0f : 0.85f);
+    const float stroke = 1.2f * scale;
+    if (grouped) {
+        DrawGroupedGlyph(rect, stroke);
+        return;
+    }
+    DrawSplitGlyph(rect, stroke);
+}
+// The header geometry is resolved once and then shared by the title, the
+// backdrops and the glyphs, so the three can never disagree about where a
+// button begins.
+struct CardHeaderRow {
+    RectF group;
+    RectF pin;
+    RectF close;
+    float scale = 1.0f;
+};
+
+[[nodiscard]] inline CardHeaderRow CardHeaderRowFor(const RectF& header,
+                                                    float scale, int buttons) {
+    return CardHeaderRow{CardGroupButtonRect(header, scale, buttons),
+                         CardPinButtonRect(header, scale, buttons),
+                         CardCloseButtonRect(header, scale, buttons), scale};
+}
+
+// The title stops before the leftmost button, so it never slides under one.
+[[nodiscard]] inline RectF CardHeaderTitleRect(const RectF& header,
+                                               const CardHeaderRow& row) {
+    const RectF titleLimit = row.group.empty() ? row.pin : row.group;
+    if (titleLimit.empty()) {
+        return header;
+    }
+    RectF title = header;
+    title.right = titleLimit.left;
+    return title;
+}
+
+// The row is drawn from the right edge inwards: close, then pin, then the
+// group button when the card has one. Each backdrop lights up under the
+// cursor, so the tooltip drawn above always names the button it points at.
+inline void DrawCardHeaderButtons(const Card& card, const CardHeaderRow& row,
+                                  CardHeaderAction hovered) {
+    DrawHeaderButtonBackdrop(row.group, hovered == CardHeaderAction::Group,
+                             row.scale);
+    DrawHeaderButtonBackdrop(row.pin, hovered == CardHeaderAction::Pin,
+                             row.scale);
+    DrawHeaderButtonBackdrop(row.close, hovered == CardHeaderAction::Close,
+                             row.scale);
+    DrawGroupGlyph(row.group, IsGroupedStackCard(card), row.scale);
+    DrawPinGlyph(row.pin, card.pinned, row.scale);
+    DrawCloseGlyph(row.close, row.scale);
+}
+
 inline void DrawCardHeader(const Card& card, int index, const RectF& header,
                            float scale) {
     if (header.empty()) {
@@ -95,26 +182,160 @@ inline void DrawCardHeader(const Card& card, int index, const RectF& header,
     context.hudTarget->FillRectangle(
         D2D1::RectF(header.left, header.top, header.right, header.bottom),
         context.hudBrush);
+    const int buttons = CardHeaderButtonCount(
+        context.cards, static_cast<size_t>(index),
+        context.settings.stacksEnabled);
+    const CardHeaderRow row = CardHeaderRowFor(header, scale, buttons);
+    DrawCardTitle(card, CardHeaderTitleRect(header, row), scale);
+    const CardHeaderAction hovered =
+        index == context.hoverCard ? context.hoverHeaderAction
+                                   : CardHeaderAction::None;
+    DrawCardHeaderButtons(card, row, hovered);
+}
 
-    const RectF pin = CardPinButtonRect(header, scale);
-    const RectF close = CardCloseButtonRect(header, scale);
-    RectF title = header;
-    if (!pin.empty()) {
-        title.right = pin.left;
+// Tooltips are drawn by the HUD itself: the HUD is a layered click-through
+// window, so a native Win32 tooltip on it would never receive hover input.
+struct TooltipMetrics {
+    float width = 0.0f;
+    float height = 0.0f;
+};
+
+inline bool MeasureTooltipText(const wchar_t* text, size_t length,
+                               TooltipMetrics& metrics) {
+    metrics = TooltipMetrics{};
+    if (text == nullptr || context.writeFactory == nullptr ||
+        context.tooltipFormat == nullptr || length == 0) {
+        return false;
     }
-    DrawCardTitle(card, title, scale);
+    IDWriteTextLayout* layout = nullptr;
+    const HRESULT created = context.writeFactory->CreateTextLayout(
+        text, static_cast<UINT32>(length), context.tooltipFormat,
+        static_cast<float>(VirtualScreenWidth()),
+        static_cast<float>(VirtualScreenHeight()), &layout);
+    if (FAILED(created) || layout == nullptr) {
+        return false;
+    }
+    DWRITE_TEXT_METRICS measured = {};
+    const HRESULT result = layout->GetMetrics(&measured);
+    // CreateTextLayout hands over the only reference, so it is released on
+    // both the success and the failure path.
+    layout->Release();
+    if (FAILED(result)) {
+        return false;
+    }
+    metrics.width = measured.width;
+    metrics.height = measured.height;
+    return true;
+}
 
-    const bool hovered = index == context.hoverCard;
-    DrawHeaderButtonBackdrop(pin, hovered &&
-                                      context.hoverHeaderAction ==
-                                          CardHeaderAction::Pin,
-                             scale);
-    DrawHeaderButtonBackdrop(close, hovered &&
-                                        context.hoverHeaderAction ==
-                                            CardHeaderAction::Close,
-                             scale);
-    DrawPinGlyph(pin, card.pinned, scale);
-    DrawCloseGlyph(close, scale);
+[[nodiscard]] inline CanvasTextId HeaderTooltipText(const Card& card) {
+    switch (context.hoverHeaderAction) {
+        case CardHeaderAction::Close:
+            return CanvasTextId::CloseTooltip;
+        case CardHeaderAction::Pin:
+            return card.pinned ? CanvasTextId::PinActiveTooltip
+                               : CanvasTextId::PinTooltip;
+        case CardHeaderAction::Group:
+            return IsGroupedStackCard(card) ? CanvasTextId::UngroupTooltip
+                                            : CanvasTextId::GroupTooltip;
+        case CardHeaderAction::None:
+            break;
+    }
+    return CanvasTextId::PinTooltip;
+}
+
+[[nodiscard]] inline RectF HeaderActionRect(const RectF& header, float scale,
+                                            CardHeaderAction action,
+                                            int buttons) {
+    switch (action) {
+        case CardHeaderAction::Close:
+            return CardCloseButtonRect(header, scale, buttons);
+        case CardHeaderAction::Pin:
+            return CardPinButtonRect(header, scale, buttons);
+        case CardHeaderAction::Group:
+            return CardGroupButtonRect(header, scale, buttons);
+        case CardHeaderAction::None:
+            break;
+    }
+    return {};
+}
+
+// Defaults above the button; flips below and clamps horizontally so a button
+// near a screen edge keeps its label fully visible.
+[[nodiscard]] inline RectF PlaceTooltipBox(const RectF& anchor,
+                                           const TooltipMetrics& metrics,
+                                           float scale) {
+    const float margin = 4.0f * scale;
+    const float gap = 6.0f * scale;
+    const float padding = 6.0f * scale;
+    const float width = metrics.width + padding * 2.0f;
+    const float height = metrics.height + padding;
+    const float screenWidth = static_cast<float>(VirtualScreenWidth());
+    const float maxLeft = std::max(margin, screenWidth - margin - width);
+    const float left =
+        std::max(margin, std::min(anchor.centerX() - width * 0.5f, maxLeft));
+    float top = anchor.top - gap - height;
+    if (top < margin) {
+        top = anchor.bottom + gap;
+    }
+    return MakeRectF(left, top, width, height);
+}
+
+// What the header tooltip needs to draw itself: the button it points at and
+// the already localized label. An empty anchor means nothing is hovered.
+struct HeaderTooltip {
+    RectF anchor;
+    const wchar_t* text = nullptr;
+    size_t length = 0;
+};
+
+[[nodiscard]] inline HeaderTooltip ResolveHeaderTooltip(float scale) {
+    HeaderTooltip tooltip;
+    if (context.hoverHeaderAction == CardHeaderAction::None ||
+        context.hoverCard < 0 ||
+        static_cast<size_t>(context.hoverCard) >= context.cards.size()) {
+        return tooltip;
+    }
+    const size_t cardIndex = static_cast<size_t>(context.hoverCard);
+    const Card& card = context.cards[cardIndex];
+    const int buttons = CardHeaderButtonCount(
+        context.cards, cardIndex, context.settings.stacksEnabled);
+    tooltip.anchor = HeaderActionRect(CardHeaderRect(card), scale,
+                                      context.hoverHeaderAction, buttons);
+    const CanvasTextId textId = HeaderTooltipText(card);
+    tooltip.text = CanvasText(textId, context.settings.language);
+    tooltip.length = CanvasTextLength(textId, context.settings.language);
+    return tooltip;
+}
+
+inline void DrawTooltipBox(const RectF& box, const HeaderTooltip& tooltip,
+                           float scale) {
+    SetHudColor(context.settings.backgroundColor, 0.95f);
+    context.hudTarget->FillRoundedRectangle(RoundedRect(box, 4.0f * scale),
+                                            context.hudBrush);
+    SetHudColor(context.settings.gridColor, 0.9f);
+    context.hudTarget->DrawRoundedRectangle(RoundedRect(box, 4.0f * scale),
+                                            context.hudBrush, 1.0f * scale);
+    const float padding = 6.0f * scale;
+    SetHudColor(context.settings.textColor);
+    context.hudTarget->DrawTextW(
+        tooltip.text, static_cast<UINT32>(tooltip.length), context.tooltipFormat,
+        D2D1::RectF(box.left + padding, box.top, box.right - padding,
+                    box.bottom),
+        context.hudBrush, D2D1_DRAW_TEXT_OPTIONS_CLIP);
+}
+
+inline void DrawHeaderTooltip(float scale) {
+    const HeaderTooltip tooltip = ResolveHeaderTooltip(scale);
+    if (tooltip.anchor.empty() || tooltip.text == nullptr) {
+        return;
+    }
+    TooltipMetrics metrics;
+    if (!MeasureTooltipText(tooltip.text, tooltip.length, metrics)) {
+        return;
+    }
+    DrawTooltipBox(PlaceTooltipBox(tooltip.anchor, metrics, scale), tooltip,
+                   scale);
 }
 
 inline RectF CardBadgeBounds(const RectF& body, float scale) {
@@ -427,6 +648,7 @@ inline bool SubmitHudFrame() {
     DrawEmptyCanvas(scale);
     DrawMinimap(scale);
     DrawAlignmentGuides(scale);
+    DrawHeaderTooltip(scale);
     if (FAILED(context.hudTarget->EndDraw())) {
         ReleaseHudSurface();
         return false;

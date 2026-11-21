@@ -2,9 +2,10 @@
 
 // Card header chrome.
 //
-// Every live card reserves a 28 DIP strip above its body. The strip carries the
-// title and two buttons: pin keeps a card above every unpinned card, close
-// dismisses the card until the canvas is shown again.
+// Every live card reserves a fixed DIP strip above its body. The strip carries
+// the title and its buttons: group joins or splits the windows of one
+// executable, pin keeps a card above every unpinned card, close closes the
+// card's real window.
 //
 // This header stays free of Direct2D and Win32 drawing calls so the native
 // regressions can exercise the geometry on its own.
@@ -12,6 +13,7 @@
 #include "platform.h"
 #include "constants.h"
 #include "math_utils.h"
+#include "text_utils.h"
 #include "types.h"
 
 #include <algorithm>
@@ -37,7 +39,42 @@ inline float CardHeaderButtonSize(float headerHeight, float scale) {
     return std::min(kCardHeaderButtonPx * scale, headerHeight - inset * 2.0f);
 }
 
-inline bool CardHeaderButtonsFit(const RectF& header, float scale) {
+// A window group only exists once another window of the same executable can
+// join it, so the group button appears only for those cards and only while
+// stacking is enabled. Tying the button count to the cards keeps every card's
+// row width predictable for both drawing and hit testing.
+inline int CardHeaderButtonCount(const std::vector<Card>& cards, size_t index,
+                                 bool stacksEnabled) {
+    if (!stacksEnabled || index >= cards.size()) {
+        return 2;
+    }
+    const std::wstring name = ExecutableName(cards[index].exePath);
+    if (name.empty()) {
+        return 2;
+    }
+    size_t sameName = 0;
+    for (const Card& card : cards) {
+        if (ExecutableName(card.exePath) == name) {
+            ++sameName;
+        }
+    }
+    return sameName >= 2 ? 3 : 2;
+}
+
+inline float CardHeaderButtonRowWidth(const RectF& header, float scale,
+                                      int buttons) {
+    if (buttons <= 0 || header.empty()) {
+        return 0.0f;
+    }
+    const float size = CardHeaderButtonSize(header.height(), scale);
+    const float inset = CardHeaderButtonInset(header.height(), scale);
+    const float gap = kCardHeaderButtonGapPx * scale;
+    const float count = static_cast<float>(buttons);
+    return size * count + gap * (count - 1.0f) + inset * 2.0f;
+}
+
+inline bool CardHeaderButtonsFit(const RectF& header, float scale,
+                                 int buttons) {
     if (header.empty()) {
         return false;
     }
@@ -45,15 +82,13 @@ inline bool CardHeaderButtonsFit(const RectF& header, float scale) {
     if (size <= 0.0f) {
         return false;
     }
-    const float inset = CardHeaderButtonInset(header.height(), scale);
-    const float gap = kCardHeaderButtonGapPx * scale;
-    const float needed =
-        size * 2.0f + gap + inset * 2.0f + kCardTitlePaddingPx * scale * 2.0f;
+    const float needed = CardHeaderButtonRowWidth(header, scale, buttons) +
+                         kCardTitlePaddingPx * scale * 2.0f;
     return header.width() >= needed;
 }
 
-inline RectF CardCloseButtonRect(const RectF& header, float scale) {
-    if (!CardHeaderButtonsFit(header, scale)) {
+inline RectF CardCloseButtonRect(const RectF& header, float scale, int buttons) {
+    if (!CardHeaderButtonsFit(header, scale, buttons)) {
         return {};
     }
     const float size = CardHeaderButtonSize(header.height(), scale);
@@ -62,8 +97,8 @@ inline RectF CardCloseButtonRect(const RectF& header, float scale) {
     return MakeRectF(header.right - inset - size, top, size, size);
 }
 
-inline RectF CardPinButtonRect(const RectF& header, float scale) {
-    const RectF close = CardCloseButtonRect(header, scale);
+inline RectF CardPinButtonRect(const RectF& header, float scale, int buttons) {
+    const RectF close = CardCloseButtonRect(header, scale, buttons);
     if (close.empty()) {
         return {};
     }
@@ -72,13 +107,34 @@ inline RectF CardPinButtonRect(const RectF& header, float scale) {
                      close.height());
 }
 
+// The group button sits left of the pin; an empty rect means the card has no
+// window group and therefore no group button.
+inline RectF CardGroupButtonRect(const RectF& header, float scale, int buttons) {
+    if (buttons < 3) {
+        return {};
+    }
+    const RectF pin = CardPinButtonRect(header, scale, buttons);
+    if (pin.empty()) {
+        return {};
+    }
+    const float gap = kCardHeaderButtonGapPx * scale;
+    return MakeRectF(pin.left - gap - pin.width(), pin.top, pin.width(),
+                     pin.height());
+}
+
 inline CardHeaderAction HitTestCardHeader(const RectF& header, Vec2 point,
-                                          float scale) {
-    if (ContainsPoint(CardCloseButtonRect(header, scale), point.x, point.y)) {
+                                          float scale, int buttons) {
+    if (ContainsPoint(CardCloseButtonRect(header, scale, buttons), point.x,
+                      point.y)) {
         return CardHeaderAction::Close;
     }
-    if (ContainsPoint(CardPinButtonRect(header, scale), point.x, point.y)) {
+    if (ContainsPoint(CardPinButtonRect(header, scale, buttons), point.x,
+                      point.y)) {
         return CardHeaderAction::Pin;
+    }
+    if (ContainsPoint(CardGroupButtonRect(header, scale, buttons), point.x,
+                      point.y)) {
+        return CardHeaderAction::Group;
     }
     return CardHeaderAction::None;
 }

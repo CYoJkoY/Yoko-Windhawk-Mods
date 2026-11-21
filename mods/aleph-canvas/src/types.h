@@ -97,6 +97,7 @@ enum class InitialLayout {
 enum class CardHeaderAction : uint8_t {
     None,
     Pin,
+    Group,
     Close,
 };
 

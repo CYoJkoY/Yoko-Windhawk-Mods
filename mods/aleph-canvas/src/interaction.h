@@ -25,8 +25,11 @@ inline CardHeaderAction HeaderActionAt(int index, Vec2 point) {
     if (index < 0 || static_cast<size_t>(index) >= context.cards.size()) {
         return CardHeaderAction::None;
     }
-    return HitTestCardHeader(CardHeaderRect(context.cards[static_cast<size_t>(index)]),
-                             point, ChromeScale());
+    const size_t cardIndex = static_cast<size_t>(index);
+    return HitTestCardHeader(CardHeaderRect(context.cards[cardIndex]), point,
+                             ChromeScale(),
+                             CardHeaderButtonCount(context.cards, cardIndex,
+                                                   context.settings.stacksEnabled));
 }
 
 inline void DismissCard(int index) {
@@ -50,6 +53,147 @@ inline void ToggleCardPin(int index) {
     card.pinned = !card.pinned;
     RememberLayoutPin(card.fingerprint, card.world, card.pinned, card.stack.grouped);
     MarkLayoutDirty(GetTickCount());
+    context.sceneDirty = true;
+}
+
+// A close request goes to the real window. The card only leaves the canvas
+// once the next scan reports the window gone, so a document that refuses to
+// close - a save prompt, for example - keeps its card instead of silently
+// disappearing and reappearing the next time the canvas is shown.
+inline void CloseCardWindow(int index) {
+    if (index < 0 || static_cast<size_t>(index) >= context.cards.size()) {
+        return;
+    }
+    const HWND window = context.cards[static_cast<size_t>(index)].hwnd;
+    if (window == nullptr || IsWindow(window) == FALSE) {
+        // Nothing is left to close, so dismissal is the only remaining action.
+        DismissCard(index);
+        return;
+    }
+    if (PostMessageW(window, WM_CLOSE, 0, 0) == FALSE) {
+        Wh_Log(L"Aleph: WM_CLOSE could not be posted: %lu", GetLastError());
+        return;
+    }
+    context.hoverHeaderAction = CardHeaderAction::None;
+    context.scanRequested = true;
+    context.sceneDirty = true;
+}
+
+// Group members share one executable: a grouped card is matched by the key its
+// stack already carries, an ungrouped card by its executable name, so toggling
+// either way touches exactly the windows the button refers to.
+inline std::vector<size_t> CollectGroupMemberIndices(
+    const std::wstring& groupKey) {
+    std::vector<size_t> members;
+    if (groupKey.empty()) {
+        return members;
+    }
+    for (size_t index = 0; index < context.cards.size(); ++index) {
+        const Card& card = context.cards[index];
+        const bool matches = IsGroupedStackCard(card)
+                                 ? card.stack.groupKey == groupKey
+                                 : ExecutableName(card.exePath) == groupKey;
+        if (matches) {
+            members.push_back(index);
+        }
+    }
+    std::stable_sort(members.begin(), members.end(),
+                     [](const size_t& left, const size_t& right) {
+                         return context.cards[left].stack.slot <
+                                context.cards[right].stack.slot;
+                     });
+    return members;
+}
+
+// The stack's own anchor is the place the group occupies; members without one
+// fall back to the first member's world rectangle.
+inline RectF StackAnchorForMembers(const std::vector<size_t>& members) {
+    for (const size_t index : members) {
+        if (index < context.cards.size() &&
+            !context.cards[index].stack.anchorWorld.empty()) {
+            return context.cards[index].stack.anchorWorld;
+        }
+    }
+    if (members.empty() || members.front() >= context.cards.size()) {
+        return RectF{};
+    }
+    return context.cards[members.front()].world;
+}
+
+// Grouping reuses the stack the canvas already knows: every member takes the
+// key and the shared anchor, then the regular reconcile fans them into slots.
+inline void GroupCards(const std::vector<size_t>& members,
+                       const std::wstring& groupKey) {
+    if (members.size() < 2 || groupKey.empty()) {
+        return;
+    }
+    const RectF anchor = StackAnchorForMembers(members);
+    for (const size_t index : members) {
+        if (index >= context.cards.size()) {
+            continue;
+        }
+        Card& card = context.cards[index];
+        ResetStackPlacement(card);
+        card.stack.grouped = true;
+        card.stack.groupKey = groupKey;
+        card.stack.anchorWorld = anchor;
+        // The grouped flag is saved too: a later rescan restores the stack
+        // from the layout instead of splitting the windows apart again.
+        RememberLayoutPin(card.fingerprint,
+                          anchor.empty() ? card.world : anchor, card.pinned,
+                          true);
+    }
+    MarkLayoutDirty(GetTickCount());
+}
+
+// Ungrouping fans the members out in a row from where the stack stood, so each
+// window becomes individually visible and draggable instead of jumping back to
+// its own desktop position. The ungrouped flag is saved with the layout so a
+// rescan does not restack the windows.
+inline void UngroupCards(const std::vector<size_t>& members) {
+    const RectF anchor = StackAnchorForMembers(members);
+    const float step =
+        anchor.width() + static_cast<float>(context.settings.gap);
+    for (size_t position = 0; position < members.size(); ++position) {
+        const size_t index = members[position];
+        if (index >= context.cards.size()) {
+            continue;
+        }
+        Card& card = context.cards[index];
+        if (!anchor.empty()) {
+            card.world =
+                MakeRectF(anchor.left + step * static_cast<float>(position),
+                          anchor.top, anchor.width(), anchor.height());
+        }
+        ResetStackPlacement(card);
+        card.stack.grouped = false;
+        RememberLayoutPin(card.fingerprint, card.world, card.pinned, false);
+    }
+    MarkLayoutDirty(GetTickCount());
+}
+
+inline void ToggleCardGroup(int index) {
+    if (!context.settings.stacksEnabled || index < 0 ||
+        static_cast<size_t>(index) >= context.cards.size()) {
+        return;
+    }
+    const Card& card = context.cards[static_cast<size_t>(index)];
+    const bool grouped = IsGroupedStackCard(card);
+    const std::wstring groupKey =
+        grouped ? card.stack.groupKey : ExecutableName(card.exePath);
+    const std::vector<size_t> members = CollectGroupMemberIndices(groupKey);
+    if (members.size() < 2) {
+        return;
+    }
+    if (grouped) {
+        UngroupCards(members);
+    } else {
+        GroupCards(members, groupKey);
+    }
+    // A split group must not keep the animation of a stack it no longer has.
+    context.stackTransitions.clear();
+    ReconcileCardStacks(context.cards, context.settings);
+    context.hoverHeaderAction = CardHeaderAction::None;
     context.sceneDirty = true;
 }
 
@@ -271,11 +415,15 @@ inline void HandleLeftButtonDown(POINT cursor) {
     if (card >= 0) {
         const CardHeaderAction action = HeaderActionAt(card, point);
         if (action == CardHeaderAction::Close) {
-            DismissCard(card);
+            CloseCardWindow(card);
             return;
         }
         if (action == CardHeaderAction::Pin) {
             ToggleCardPin(card);
+            return;
+        }
+        if (action == CardHeaderAction::Group) {
+            ToggleCardGroup(card);
             return;
         }
     }

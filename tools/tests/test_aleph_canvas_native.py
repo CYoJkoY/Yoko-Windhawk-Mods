@@ -165,8 +165,11 @@ class AlephCanvasNativeTests(unittest.TestCase):
     def test_scan_limit_keeps_existing_and_largest_candidates(self) -> None:
         self.run_case("scan_candidate_selection")
 
-    def test_header_is_28_dip_with_close_and_pin_buttons(self) -> None:
+    def test_header_is_32_dip_with_close_and_pin_buttons(self) -> None:
         self.run_case("header_chrome")
+
+    def test_header_shows_a_group_button_for_repeated_windows(self) -> None:
+        self.run_case("header_three_buttons")
 
     def test_pinned_cards_draw_and_hit_test_on_top(self) -> None:
         self.run_case("pinned_order")
@@ -296,6 +299,12 @@ class AlephCanvasNativeTests(unittest.TestCase):
 
     def test_layout_grouped_flag_roundtrips(self) -> None:
         self.run_case("layout_grouped_roundtrip")
+
+    def test_group_toggle_fans_out_and_persists(self) -> None:
+        self.run_case("group_toggle_persistence")
+
+    def test_close_button_targets_the_real_window(self) -> None:
+        self.run_case("close_request_fallback")
 
 if __name__ == "__main__":
     unittest.main()

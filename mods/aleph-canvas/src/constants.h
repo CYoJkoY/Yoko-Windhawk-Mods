@@ -29,12 +29,12 @@ constexpr float kCameraEpsilonPx = 0.2f;
 constexpr float kZoomEpsilon = 0.001f;
 constexpr float kCardOpacityEpsilon = 0.001f;
 
-constexpr float kCardHeaderPx = 28.0f;
+constexpr float kCardHeaderPx = 32.0f;
 constexpr float kCardHeaderMinPx = 10.0f;
-constexpr float kCardHeaderMaxPx = 30.0f;
-constexpr float kCardHeaderButtonPx = 18.0f;
+constexpr float kCardHeaderMaxPx = 36.0f;
+constexpr float kCardHeaderButtonPx = 22.0f;
 constexpr float kCardHeaderButtonInsetPx = 5.0f;
-constexpr float kCardHeaderButtonGapPx = 4.0f;
+constexpr float kCardHeaderButtonGapPx = 6.0f;
 constexpr float kCardCornerRadiusPx = 8.0f;
 constexpr float kCardTitlePaddingPx = 10.0f;
 constexpr float kCardIconMaxPx = 128.0f;

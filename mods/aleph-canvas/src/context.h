@@ -83,6 +83,7 @@ struct CanvasContext {
     IDWriteFactory* writeFactory = nullptr;
     IDWriteTextFormat* titleFormat = nullptr;
     IDWriteTextFormat* badgeFormat = nullptr;
+    IDWriteTextFormat* tooltipFormat = nullptr;
     IWICImagingFactory* wicFactory = nullptr;
     HDC hudDc = nullptr;
     HBITMAP hudBitmap = nullptr;
