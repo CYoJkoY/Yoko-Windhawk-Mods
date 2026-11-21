@@ -150,7 +150,9 @@ inline bool RegisterCanvasWindows(HINSTANCE instance) {
     return true;
 }
 
-inline bool RegisterCanvasHotkey() {
+// `logFailure` is false for the automatic backoff retries: a combination that
+// stays taken would otherwise log one failure every few seconds forever.
+inline bool RegisterCanvasHotkey(bool logFailure) {
     UINT modifiers = 0;
     UINT key = 0;
     if (!ParseHotkeyText(context.settings.toggleHotkey, modifiers, key)) {
@@ -168,11 +170,14 @@ inline bool RegisterCanvasHotkey() {
     const UINT nextId = context.hotkeyId == kToggleHotkeyId
                             ? kToggleHotkeyId + 1 : kToggleHotkeyId;
     if (!RegisterHotKey(nullptr, nextId, modifiers | MOD_NOREPEAT, key)) {
-        Wh_Log(L"Aleph: RegisterHotKey failed: %lu", GetLastError());
+        if (logFailure) {
+            Wh_Log(L"Aleph: RegisterHotKey failed: %lu", GetLastError());
+        }
         // The combination may still be held by another program that is closing,
         // so schedule a capped exponential backoff retry. Without live cards
         // the canvas stays hidden, but the loop still wakes to retry.
-        context.hotkeyRetryDelayMs = NextHotkeyRetryDelay(context.hotkeyRetryDelayMs);
+        context.hotkeyRetryDelayMs =
+            NextHotkeyRetryDelay(context.hotkeyRetryDelayMs);
         context.hotkeyRetryTick = GetTickCount();
         return false;
     }
@@ -206,7 +211,7 @@ inline void RetryCanvasHotkeyIfDue(DWORD now) {
     if (HotkeyRetryRemaining(now) != 0) {
         return;
     }
-    if (RegisterCanvasHotkey()) {
+    if (RegisterCanvasHotkey(false)) {
         Wh_Log(L"Aleph: toggle hotkey registered on retry");
     }
 }
@@ -295,7 +300,7 @@ inline void ApplyPendingSettings() {
     LoadSettings();
     context.stackTransitions.clear();
     ReconcileCardStacks(context.cards, context.settings);
-    RegisterCanvasHotkey();
+    RegisterCanvasHotkey(true);
     context.camera.targetZoom = ClampZoom(context.camera.targetZoom);
     context.camera.zoomAnchored = false;
     context.scanRequested = true;
@@ -383,7 +388,7 @@ inline DWORD WINAPI CanvasWorkerThread(LPVOID) {
         if (previousDpi != nullptr) SetThreadDpiAwarenessContext(previousDpi);
         return 1;
     }
-    if (!RegisterCanvasHotkey()) {
+    if (!RegisterCanvasHotkey(true)) {
         Wh_Log(L"Aleph: the toggle hotkey is unavailable");
     }
     IVirtualDesktopManager* desktopManager = nullptr;
