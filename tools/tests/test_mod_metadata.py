@@ -18,6 +18,8 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 DIST = REPO_ROOT / "dist"
 
 INCLUDE_RE = re.compile(r"^//\s*@include\s+(\S+)\s*$")
+SETTINGS_START = "// ==WindhawkModSettings=="
+SETTINGS_END = "// ==/WindhawkModSettings=="
 TOOL_MARKERS = (
     "WhTool_ModInit",
     "WhTool_ModUninit",
@@ -72,6 +74,33 @@ class ModMetadataTests(unittest.TestCase):
             with self.subTest(bundle=bundle.name):
                 if is_tool_mod(text):
                     self.assertIn(frozenset(parse_includes(text)), ALLOWED_INCLUDES)
+
+
+class AlephSettingsSchemaTests(unittest.TestCase):
+    """Keep the stack rotation setting readable instead of a bare number."""
+
+    def settings_block(self) -> str:
+        bundle = DIST / "aleph-canvas.wh.cpp"
+        if not bundle.is_file():
+            self.skipTest("dist/ is missing; run python tools/bundle.py first")
+        text = bundle.read_text(encoding="utf-8")
+        start = text.find(SETTINGS_START)
+        end = text.find(SETTINGS_END)
+        if start < 0 or end <= start:
+            self.fail("the bundle has no settings block")
+        return text[start:end]
+
+    def test_rotation_direction_is_a_named_option(self) -> None:
+        block = self.settings_block()
+        self.assertIn("- card_stack_rotation_direction: counter_clockwise", block)
+        self.assertNotIn("- card_stack_rotation_direction: -1", block)
+
+    def test_rotation_direction_options_cover_every_direction(self) -> None:
+        block = self.settings_block()
+        options = block[block.index("- card_stack_rotation_direction:") :]
+        for name in ("counter_clockwise", "clockwise", "none"):
+            with self.subTest(option=name):
+                self.assertIn(f"- {name}: ", options)
 
 
 if __name__ == "__main__":

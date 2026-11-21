@@ -89,6 +89,9 @@ instead of shrinking into a corner.
   feels like rotating one card instead of jumping between shapes. Members whose
   window aspect differs from the frame get a letterboxed preview, so a window is
   never stretched or cropped by the shared frame.
+- The `Stack rotation direction` setting chooses which way the fan turns away
+  from the front card: `Counter-clockwise` (the default), `Clockwise`, or `No
+  rotation` for a straight stack behind the front card.
 - Close posts `WM_CLOSE` to the card's real window, so the application closes
   as it would from its own title bar. The card leaves the canvas once the next
   scan reports the window gone; a window that refuses to close, such as one

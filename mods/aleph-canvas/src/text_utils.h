@@ -70,3 +70,18 @@ static std::wstring FormatInteger(int value) {
     swprintf_s(buffer, L"%d", value);
     return std::wstring(buffer);
 }
+
+// Maps the named rotation direction option to the multiplier used by the stack
+// geometry: 1 clockwise, 0 no rotation, -1 counter-clockwise. The legacy
+// numeric spellings stay accepted so a stored layout or an old settings file
+// keeps its direction; anything else falls back to counter-clockwise.
+static int RotationDirectionFromText(const std::wstring& value) {
+    const std::wstring text = ToLowerText(TrimText(value));
+    if (text == L"clockwise" || text == L"1") {
+        return 1;
+    }
+    if (text == L"none" || text == L"0") {
+        return 0;
+    }
+    return -1;
+}
