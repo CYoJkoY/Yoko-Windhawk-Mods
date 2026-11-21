@@ -180,7 +180,7 @@ inline void ResetStackPlacement(Card& card) {
     card.stack.opacity = 1.0f;
     card.stack.drawAboveStack = false;
     card.stack.visible = true;
-    card.stack.anchorWorld = RectF{};
+    card.stack.frameWorld = RectF{};
 }
 
 inline void ClearAllStackPlacements(std::vector<Card>& cards) {
@@ -222,18 +222,51 @@ inline size_t StackFrontPosition(const std::vector<Card>& cards,
     return static_cast<size_t>(previous - members.begin());
 }
 
+// A card that leaves a stack keeps its own window size and only takes the
+// place the stack stood, so releasing a member never leaves it wearing the
+// frame's proportions.
+inline void RestoreOwnSizeCentredInFrame(Card& card) {
+    if (!card.stack.grouped || card.stack.groupKey.empty() ||
+        card.stack.frameWorld.empty() || card.world.empty()) {
+        return;
+    }
+    const RectF& frame = card.stack.frameWorld;
+    card.world = MakeRectF(frame.centerX() - card.world.width() * 0.5f,
+                           frame.centerY() - card.world.height() * 0.5f,
+                           card.world.width(), card.world.height());
+}
+
+// The shared rectangle the whole stack occupies. A formed stack keeps the
+// frame it was given, so cycling the fan never resizes the card and every
+// member shares one size and one centre; a new stack takes the front window's
+// world rectangle. Keeping the frame instead of re-deriving it from the front
+// window is what makes the fan read as one object: the front window can be
+// resized, maximized or replaced without the card jumping in size.
+inline RectF StackFrameForOrder(const std::vector<Card>& cards,
+                                const std::vector<size_t>& order) {
+    for (const size_t index : order) {
+        if (index < cards.size() && !cards[index].stack.frameWorld.empty()) {
+            return cards[index].stack.frameWorld;
+        }
+    }
+    if (order.empty() || order.front() >= cards.size()) {
+        return RectF{};
+    }
+    return cards[order.front()].world;
+}
+
 inline void ApplyStackOrder(std::vector<Card>& cards,
                             const std::vector<size_t>& order,
                             const CanvasSettings& settings) {
+    const RectF frame = StackFrameForOrder(cards, order);
     for (size_t slot = 0; slot < order.size(); ++slot) {
         const size_t index = order[slot];
         if (index >= cards.size()) {
             continue;
         }
         const std::wstring groupKey = cards[index].stack.groupKey;
-        const RectF anchor = cards[index].stack.anchorWorld;
         cards[index].stack = StackPlacementForSlot(slot, groupKey, settings);
-        cards[index].stack.anchorWorld = anchor;
+        cards[index].stack.frameWorld = frame;
     }
 }
 
@@ -242,7 +275,7 @@ inline void AssignStack(std::vector<Card>& cards,
                         const CanvasSettings& settings) {
     if (members.size() == 1) {
         Card& card = cards[members.front().index];
-        card.world = StackWorldRect(card);
+        RestoreOwnSizeCentredInFrame(card);
         ResetStackPlacement(card);
         return;
     }
@@ -255,16 +288,6 @@ inline void AssignStack(std::vector<Card>& cards,
         cards[member.index].stack.groupKey = member.groupKey;
         cards[member.index].stack.grouped = true;
         order.push_back(member.index);
-    }
-    RectF anchor = cards[order.front()].world;
-    for (const size_t index : order) {
-        if (!cards[index].stack.anchorWorld.empty()) {
-            anchor = cards[index].stack.anchorWorld;
-            break;
-        }
-    }
-    for (const size_t index : order) {
-        cards[index].stack.anchorWorld = anchor;
     }
     ApplyStackOrder(cards, order, settings);
 }

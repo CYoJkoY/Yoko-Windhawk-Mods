@@ -94,13 +94,13 @@ inline std::vector<size_t> CollectGroupMemberIndices(
     return members;
 }
 
-// The stack's own anchor is the place the group occupies; members without one
+// The stack's own frame is the place the group occupies; members without one
 // fall back to the first member's world rectangle.
-inline RectF StackAnchorForMembers(const std::vector<size_t>& members) {
+inline RectF StackFrameForMembers(const std::vector<size_t>& members) {
     for (const size_t index : members) {
         if (index < context.cards.size() &&
-            !context.cards[index].stack.anchorWorld.empty()) {
-            return context.cards[index].stack.anchorWorld;
+            !context.cards[index].stack.frameWorld.empty()) {
+            return context.cards[index].stack.frameWorld;
         }
     }
     if (members.empty() || members.front() >= context.cards.size()) {
@@ -110,13 +110,13 @@ inline RectF StackAnchorForMembers(const std::vector<size_t>& members) {
 }
 
 // Grouping reuses the stack the canvas already knows: every member takes the
-// key and the shared anchor, then the regular reconcile fans them into slots.
+// key and the shared frame, then the regular reconcile fans them into slots.
 inline void GroupCards(const std::vector<size_t>& members,
                        const std::wstring& groupKey) {
     if (members.size() < 2 || groupKey.empty()) {
         return;
     }
-    const RectF anchor = StackAnchorForMembers(members);
+    const RectF frame = StackFrameForMembers(members);
     for (const size_t index : members) {
         if (index >= context.cards.size()) {
             continue;
@@ -125,7 +125,7 @@ inline void GroupCards(const std::vector<size_t>& members,
         ResetStackPlacement(card);
         card.stack.grouped = true;
         card.stack.groupKey = groupKey;
-        card.stack.anchorWorld = anchor;
+        card.stack.frameWorld = frame;
         // The grouped flag is saved too: a later rescan restores the stack
         // from the layout instead of splitting the windows apart again.
         RememberLayoutPin(card.fingerprint, StackWorldRect(card), card.pinned, true);
@@ -135,8 +135,10 @@ inline void GroupCards(const std::vector<size_t>& members,
 
 // Ungrouping fans the members out in a row from where the stack stood, so each
 // window becomes individually visible and draggable instead of jumping back to
-// its own desktop position. The ungrouped flag is saved with the layout so a
-// rescan does not restack the windows.
+// its own desktop position. Every released member takes back its own window
+// size, so a card never keeps the proportions of the frame it shared. The
+// ungrouped flag is saved with the layout so a rescan does not restack the
+// windows.
 inline void UngroupCards(const std::vector<size_t>& members) {
     std::optional<float> nextLeft;
     for (const size_t index : members) {
@@ -145,9 +147,10 @@ inline void UngroupCards(const std::vector<size_t>& members) {
         }
         Card& card = context.cards[index];
         if (IsGroupedStackCard(card)) {
-            const RectF world = StackWorldRect(card);
-            card.world = MakeRectF(nextLeft.value_or(world.left), world.top,
-                                   world.width(), world.height());
+            RestoreOwnSizeCentredInFrame(card);
+            const float width = card.world.width();
+            card.world.left = nextLeft.value_or(card.world.left);
+            card.world.right = card.world.left + width;
             nextLeft = card.world.right + static_cast<float>(context.settings.gap);
         }
         ResetStackPlacement(card);
@@ -165,13 +168,21 @@ inline void ToggleCardGroup(int index) {
     const Card& card = context.cards[static_cast<size_t>(index)];
     const bool grouped = IsGroupedStackCard(card);
     const std::wstring groupKey = card.applicationKey;
-    const std::vector<size_t> members = CollectGroupMemberIndices(groupKey);
+    std::vector<size_t> members = CollectGroupMemberIndices(groupKey);
     if (members.size() < 2) {
         return;
     }
     if (grouped) {
         UngroupCards(members);
     } else {
+        // The clicked window owns the shared frame: it is the card the user
+        // acted on and the one at the front, so regrouping must not shrink the
+        // stack to whichever member happens to sort first.
+        const auto clicked = std::find(members.begin(), members.end(),
+                                       static_cast<size_t>(index));
+        if (clicked != members.end()) {
+            std::rotate(members.begin(), clicked, clicked + 1);
+        }
         GroupCards(members, groupKey);
     }
     // A split group must not keep the animation of a stack it no longer has.
@@ -298,22 +309,22 @@ inline void UpdateCardDrag(POINT cursor) {
         Vec2{static_cast<float>(cursor.x - context.dragGrabOffset.x),
              static_cast<float>(cursor.y - context.dragGrabOffset.y)}, context.camera);
     Card& card = context.cards[static_cast<size_t>(context.draggedCard)];
-    RectF moved = MakeRectF(world.x, world.y, card.world.width(), card.world.height());
+    // The frame is what the user grabs, so the drag follows its size instead
+    // of a single member's window size.
+    const RectF current = StackWorldRect(card);
+    RectF moved = MakeRectF(world.x, world.y, current.width(), current.height());
     const SnapResult snap = ComputeSnap(moved, context.draggedCard);
     moved.left = snap.left;
     moved.top = snap.top;
-    moved.right = moved.left + card.world.width();
-    moved.bottom = moved.top + card.world.height();
+    moved.right = moved.left + current.width();
+    moved.bottom = moved.top + current.height();
     if (IsGroupedStackCard(card)) {
-        const RectF current = StackWorldRect(card);
-        const RectF previousAnchor = card.stack.anchorWorld;
-        const RectF anchor = MakeRectF(
-            previousAnchor.left + moved.left - current.left,
-            previousAnchor.top + moved.top - current.top,
-            previousAnchor.width(), previousAnchor.height());
+        // Dragging a stack moves its one frame, so every member keeps the
+        // shared size and centre while the whole stack follows the cursor.
+        const RectF frame = moved;
         for (Card& member : context.cards) {
             if (SameActiveStack(card, member)) {
-                member.stack.anchorWorld = anchor;
+                member.stack.frameWorld = frame;
             }
         }
     } else {

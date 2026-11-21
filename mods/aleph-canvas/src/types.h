@@ -149,11 +149,12 @@ struct CardStackPlacement {
     float scale = 1.0f;
     float opacity = 1.0f;
     bool drawAboveStack = false;
-    // Position of the whole stack, used as its centre only: the anchor is
-    // captured from the front card's world rectangle when a stack of two or
-    // more forms, and each member keeps its own size. Empty while the card
-    // stands alone, so a lone window never gets a stale size.
-    RectF anchorWorld{};
+    // The one rectangle the whole stack occupies. When a stack of two or more
+    // forms, the frame takes the front card's world rectangle and every member
+    // is drawn inside it, so the fan always shares a single size and centre
+    // instead of every window keeping its own proportions. Empty while the
+    // card stands alone, so a lone window never gets a stale frame.
+    RectF frameWorld{};
 };
 
 struct StackCardTransition {
@@ -201,18 +202,15 @@ struct Card {
     bool pinned = false;
 };
 
-// World rectangle a card occupies on the canvas. A grouped card takes the
-// size of its own window and the centre of the stack anchor, so resized or
-// maximized windows keep their real proportions and a stack member shown at
-// the front is never stretched. Ungrouped cards and stacks without an anchor
-// use their own world rectangle.
+// World rectangle a card occupies on the canvas. Every member of a formed
+// stack shares the stack frame, so the fan reads as one card no matter how
+// differently the member windows are sized; the front card owns the live
+// preview inside that frame. Ungrouped cards and stacks without a frame use
+// their own world rectangle.
 inline RectF StackWorldRect(const Card& card) {
     if (card.stack.grouped && !card.stack.groupKey.empty() &&
-        !card.stack.anchorWorld.empty()) {
-        const RectF& anchor = card.stack.anchorWorld;
-        return MakeRectF(anchor.centerX() - card.world.width() * 0.5f,
-                         anchor.centerY() - card.world.height() * 0.5f,
-                         card.world.width(), card.world.height());
+        !card.stack.frameWorld.empty()) {
+        return card.stack.frameWorld;
     }
     return card.world;
 }

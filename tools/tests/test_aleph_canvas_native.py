@@ -312,6 +312,9 @@ class AlephCanvasNativeTests(unittest.TestCase):
     def test_close_button_targets_the_real_window(self) -> None:
         self.run_case("close_request_fallback")
 
+    def test_stack_frame_survives_group_and_ungroup_cycles(self) -> None:
+        self.run_case("stack_frame_lifecycle")
+
 
 if __name__ == "__main__":
     unittest.main()

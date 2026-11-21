@@ -70,6 +70,13 @@ instead of shrinking into a corner.
   It joins those windows into one stack, and pressing it again splits the stack
   into a row starting where the stack stood. The grouped state is saved with
   the layout, so a rescan or a restart keeps the group together or apart.
+- A stack is one shared rectangle, not a pile of differently sized windows. The
+  frame is taken from the front card when the stack forms and then stays put, so
+  every member is fanned inside the same size and centre even when its own
+  window is far wider or taller; cycling the stack with the wheel therefore
+  feels like rotating one card instead of jumping between shapes. Members whose
+  window aspect differs from the frame get a letterboxed preview, so a window is
+  never stretched or cropped by the shared frame.
 - Close posts `WM_CLOSE` to the card's real window, so the application closes
   as it would from its own title bar. The card leaves the canvas once the next
   scan reports the window gone; a window that refuses to close, such as one
@@ -102,7 +109,11 @@ instead of shrinking into a corner.
    Open two windows of one application, split the automatic group with the
    group button, and confirm the windows fan out and are still apart after a
    restart.
-7. Check mixed-DPI displays, a window spanning monitors, 15 or more windows,
+7. Stack two windows of very different sizes, hold Alt and roll the wheel, and
+   confirm the stack rotates as one card of constant size instead of the larger
+   window covering the smaller one; confirm the smaller window's preview keeps
+   its own aspect inside the shared frame.
+8. Check mixed-DPI displays, a window spanning monitors, 15 or more windows,
    and repeated enable/disable cycles. Confirm Explorer desktop positions stay
    unchanged throughout.
 

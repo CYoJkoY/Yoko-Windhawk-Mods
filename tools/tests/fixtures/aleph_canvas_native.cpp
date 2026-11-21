@@ -918,6 +918,22 @@ static void StackRemoval() {
             "back removal changed the front");
 }
 
+static void StackFrameLifecycle() {
+    UseStackSettings();
+    AddStackCard(L"a#1", L"C:\\App\\Editor.exe");
+    AddStackCard(L"b#1", L"C:\\App\\Editor.exe");
+    ReconcileCardStacks(context.cards, context.settings);
+    Require(!context.cards[0].stack.frameWorld.empty(), "stack formation lost its frame");
+    context.cards[0].stack.grouped = false;
+    ReconcileCardStacks(context.cards, context.settings);
+    Require(context.cards[0].stack.frameWorld.empty(), "a loose member kept a frame");
+    context.cards[0].stack.grouped = true;
+    ReconcileCardStacks(context.cards, context.settings);
+    Require(!context.cards[0].stack.frameWorld.empty(),
+            "regrouping did not give every member a frame");
+    SameRect(StackWorldRect(context.cards[0]), StackWorldRect(context.cards[1]));
+}
+
 static void StackInvalid() {
     UseStackSettings();
     AddStackCard(L"a#1", L"C:\\App\\Editor.exe");
@@ -1294,6 +1310,11 @@ static void StackZOrderFront() {
 static void StackWindowSizes() {
     PrepareGeometry();
     UseStackSettings();
+    const RectF letterbox = AspectFitRect(MakeRectF(0.0f, 0.0f, 200.0f, 100.0f), 800.0f, 200.0f);
+    Near(letterbox.width(), 200.0f);
+    Near(letterbox.height(), 50.0f);
+    Near(letterbox.centerX(), 100.0f);
+    Near(letterbox.centerY(), 50.0f);
     ScannedWindow wide = SampleWindow(0x601);
     wide.fingerprint = L"wide#1";
     ScannedWindow narrow = SampleWindow(0x602);
@@ -1302,33 +1323,60 @@ static void StackWindowSizes() {
     narrow.zOrder = 1;
     MergeScan({wide, narrow});
     SameRect(StackWorldRect(context.cards[0]), context.cards[0].world);
-    const RectF anchor = context.cards[0].stack.anchorWorld;
+    Require(!context.cards[0].stack.frameWorld.empty(), "the formed stack lost its frame");
     Require(CycleCardStack(context.cards, context.settings, 0, 1), "cannot cycle to narrow card");
-    const RectF narrowWorld = StackWorldRect(context.cards[1]);
-    Near(narrowWorld.centerX(), anchor.centerX());
-    Near(narrowWorld.width(), 240.0f);
-    Near(narrowWorld.height(), 600.0f);
-    const SnapResult snap = ComputeSnap(narrowWorld, 1);
+    const RectF frame = StackWorldRect(context.cards[1]);
+    SameRect(frame, context.cards[0].world);
+    for (const Card& card : context.cards) {
+        Require(IsGroupedStackCard(card), "stack member lost its grouping");
+        SameRect(StackWorldRect(card), frame);
+    }
+    const SnapResult snap = ComputeSnap(frame, 1);
     Require(!snap.snapVertical && !snap.snapHorizontal, "drag snapped to its own stack");
 
+    // The background window may resize behind the stack front, but the stack
+    // frame stays where the user put it: one shared size is what makes
+    // Alt+wheel feel like one object instead of mismatched rectangles.
     narrow.framePx = RECT{0, 0, 900, 320};
     MergeScan({wide, narrow});
-    const RectF resized = StackWorldRect(context.cards[1]);
-    Near(resized.centerX(), anchor.centerX());
-    Near(resized.centerY(), anchor.centerY());
-    Near(resized.width(), 900.0f);
-    Near(resized.height(), 320.0f);
+    SameRect(StackWorldRect(context.cards[0]), frame);
+    SameRect(StackWorldRect(context.cards[1]), frame);
+    SameRect(context.cards[0].stack.frameWorld, frame);
+    SameRect(context.cards[1].stack.frameWorld, frame);
+    // Each member still remembers its own window size: the front keeps the
+    // size it had, and the resized background window picked up 900x320.
+    Near(context.cards[0].world.width(), 640.0f);
+    Near(context.cards[0].world.height(), 480.0f);
+    Near(context.cards[1].world.width(), 900.0f);
+    Near(context.cards[1].world.height(), 320.0f);
+    Require(CycleCardStack(context.cards, context.settings, 0, 1),
+            "cannot cycle after a front resize");
+    SameRect(StackWorldRect(context.cards[0]), frame);
+    SameRect(StackWorldRect(context.cards[1]), frame);
     ToggleCardGroup(1);
     Require(!RectsOverlap(context.cards[0].world, context.cards[1].world),
             "different-width cards overlapped after split");
     Near(context.cards[0].world.width(), 640.0f);
     Near(context.cards[1].world.width(), 900.0f);
+    // The fan keeps every member's own size and starts where the stack stood,
+    // so the released windows line up without covering each other.
+    Near(context.cards[0].world.left, frame.left);
+    Near(context.cards[1].world.left,
+         frame.left + context.cards[0].world.width() +
+             static_cast<float>(context.settings.gap));
     ToggleCardGroup(1);
-    const RectF beforeRemoval = StackWorldRect(context.cards[1]);
+    // Regrouping takes the clicked card's rectangle as the shared frame.
+    const RectF regrouped = context.cards[1].world;
+    for (const Card& card : context.cards) {
+        Require(IsGroupedStackCard(card), "regrouping did not rebuild the stack");
+        SameRect(StackWorldRect(card), regrouped);
+    }
     MergeScan({narrow});
-    Require(context.cards[0].stack.anchorWorld.empty() && context.cards[0].stack.grouped,
-            "lone card kept an anchor or lost its grouping preference");
-    SameRect(StackWorldRect(context.cards[0]), beforeRemoval);
+    Require(context.cards[0].stack.frameWorld.empty() && context.cards[0].stack.grouped,
+            "lone card kept a frame or lost its grouping preference");
+    SameRect(StackWorldRect(context.cards[0]), context.cards[0].world);
+    Near(context.cards[0].world.width(), 900.0f);
+    Near(context.cards[0].world.height(), 320.0f);
 }
 
 static void StackApplicationIds() {
@@ -1638,10 +1686,10 @@ static void GroupTogglePersistence() {
     Require(IsGroupedStackCard(context.cards[0]) &&
                 IsGroupedStackCard(context.cards[1]),
             "two windows of one executable did not group");
-    Require(!context.cards[0].stack.anchorWorld.empty(),
-            "the formed group lost its anchor");
+    Require(!context.cards[0].stack.frameWorld.empty(),
+            "the formed group lost its frame");
 
-    const RectF anchor = context.cards[0].stack.anchorWorld;
+    const RectF frame = context.cards[0].stack.frameWorld;
     ToggleCardGroup(0);
     Require(!IsGroupedStackCard(context.cards[0]) &&
                 !IsGroupedStackCard(context.cards[1]),
@@ -1651,9 +1699,9 @@ static void GroupTogglePersistence() {
             "an ungrouped card kept its group key");
     Require(!RectsOverlap(context.cards[0].world, context.cards[1].world),
             "ungrouped cards still overlap");
-    Near(context.cards[0].world.left, anchor.left);
+    Near(context.cards[0].world.left, frame.left);
     Near(context.cards[1].world.left,
-         anchor.left + anchor.width() + static_cast<float>(context.settings.gap));
+         frame.left + frame.width() + static_cast<float>(context.settings.gap));
     Require(SerializeLayout(context.layout).find("\"is_grouped\":0") !=
                 std::string::npos,
             "the ungrouped state was not saved");
@@ -1802,6 +1850,7 @@ static constexpr NativeCase kCases[] = {
     {"group_toggle_persistence", GroupTogglePersistence},
     {"ungroup_keeps_loose_window", UngroupKeepsLooseWindow},
     {"close_request_fallback", CloseRequestFallback},
+    {"stack_frame_lifecycle", StackFrameLifecycle},
 };
 
 static int RunCase(const char* name) {

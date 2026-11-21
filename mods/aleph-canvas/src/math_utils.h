@@ -66,6 +66,23 @@ inline RectF CardScreenBounds(const Card& card) {
     return rect;
 }
 
+// Largest rectangle with the given content aspect that fits inside bounds and
+// stays centred. A live preview is letterboxed with this instead of being
+// stretched onto a differently shaped stack frame, so a window never appears
+// distorted when it shares a frame with a front card of another size.
+inline RectF AspectFitRect(const RectF& bounds, float contentWidth,
+                           float contentHeight) {
+    if (bounds.empty() || contentWidth <= 0.0f || contentHeight <= 0.0f) {
+        return bounds;
+    }
+    const float scale = std::min(bounds.width() / contentWidth,
+                                 bounds.height() / contentHeight);
+    const float width = contentWidth * scale;
+    const float height = contentHeight * scale;
+    return MakeRectF(bounds.centerX() - width * 0.5f,
+                     bounds.centerY() - height * 0.5f, width, height);
+}
+
 inline Vec2 ScreenToWorld(Vec2 point, const Camera& camera) {
     return Vec2{(point.x - ScreenCenterX()) / camera.zoom + camera.centerX,
                 (point.y - ScreenCenterY()) / camera.zoom + camera.centerY};

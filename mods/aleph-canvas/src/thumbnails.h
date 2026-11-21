@@ -100,6 +100,25 @@ inline bool ReadThumbnailSource(const Card& card, RectF& source) {
     return !source.empty();
 }
 
+// The live preview covers the whole card body. A stack member shares the
+// stack frame, which may not have the same aspect as its own window, so the
+// preview is letterboxed inside the frame instead of being stretched onto it.
+// A standalone card keeps the plain body rectangle.
+inline RectF ThumbnailDestinationFor(const Card& card) {
+    const RectF frame = WorldToScreen(StackWorldRect(card), context.camera);
+    if (frame.empty() || !card.stack.grouped || card.stack.groupKey.empty()) {
+        return frame;
+    }
+    const float width =
+        static_cast<float>(card.framePx.right - card.framePx.left);
+    const float height =
+        static_cast<float>(card.framePx.bottom - card.framePx.top);
+    if (width <= 0.0f || height <= 0.0f) {
+        return frame;
+    }
+    return AspectFitRect(frame, width, height);
+}
+
 inline bool ClipThumbnailGeometry(ThumbnailGeometry& geometry, const RectF& clip) {
     const RectF clipped{std::max(clip.left, geometry.destination.left),
                         std::max(clip.top, geometry.destination.top),
@@ -182,7 +201,7 @@ inline bool PrepareThumbnail(Card& card, DWORD now,
     if (!CanPrepareThumbnail(card, now)) {
         return false;
     }
-    geometry.destination = WorldToScreen(StackWorldRect(card), context.camera);
+    geometry.destination = ThumbnailDestinationFor(card);
     if (ThumbnailViewportClip(geometry.destination).empty()) {
         HideThumbnail(card, now);
         return false;
