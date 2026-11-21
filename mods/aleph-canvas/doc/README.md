@@ -57,13 +57,23 @@ unrecognized stored value also falls back to English.
 
 ## Card controls
 
-Every card reserves a 28 DIP header above the window preview. The header shows
-the window title and two buttons on the right edge.
+Every card reserves a 32 DIP header above the window preview. The header shows
+the window title and up to three buttons on the right edge; a card that is too
+narrow for the row drops the group button first and then the whole row.
 
 - Pin raises the card above every unpinned card and is saved with the layout,
   so a pinned card returns pinned after a restart.
-- Close removes the card from the canvas until the canvas is hidden and shown
-  again. The real window keeps running and is unaffected.
+- Group appears once another window of the same executable is on the canvas.
+  It joins those windows into one stack, and pressing it again splits the stack
+  into a row starting where the stack stood. The grouped state is saved with
+  the layout, so a rescan or a restart keeps the group together or apart.
+- Close posts `WM_CLOSE` to the card's real window, so the application closes
+  as it would from its own title bar. The card leaves the canvas once the next
+  scan reports the window gone; a window that refuses to close, such as one
+  showing a save prompt, keeps its card.
+- Hovering a button draws a localized tooltip above it. The HUD is a layered
+  click-through window, so the tooltip is drawn by the HUD instead of by a
+  native Win32 tooltip control.
 - Dragging the header's title area still moves the card, and double-clicking
   the header still dives into the window; the buttons themselves only perform
   their own action.
@@ -83,8 +93,12 @@ the window title and two buttons on the right edge.
    minimized, and receives the focus. Check that a window owned by an elevated
    process still fails gracefully and only gets foreground activation.
 6. Pin two cards and confirm both stay above the rest, restart the tool process
-   and confirm they are still pinned. Close one card, confirm it stays gone,
-   then hide and show the canvas and confirm it returns.
+   and confirm they are still pinned. Hover each header button and confirm the
+   tooltip names it, then close one card and confirm the real window closes
+   rather than the card merely disappearing until the canvas is shown again.
+   Open two windows of one application, split the automatic group with the
+   group button, and confirm the windows fan out and are still apart after a
+   restart.
 7. Check mixed-DPI displays, a window spanning monitors, 15 or more windows,
    and repeated enable/disable cycles. Confirm Explorer desktop positions stay
    unchanged throughout.
