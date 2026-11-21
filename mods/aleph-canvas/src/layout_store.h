@@ -134,6 +134,11 @@ static std::string SerializeLayout(const LayoutSnapshot& layout) {
         if (!entry.grouped) {
             output += ",\"is_grouped\":0";
         }
+        if (!entry.stackId.empty()) {
+            output += ",\"stack\":\"";
+            output += ToUtf8(EscapeJsonText(entry.stackId));
+            output += "\"";
+        }
         output += "}";
     }
     output += "]}\n";
@@ -502,6 +507,7 @@ static bool SkipJsonValue(const std::string& text, size_t& index, int depth) {
 
 struct JsonEntryFields {
     std::wstring fingerprint;
+    std::wstring stackId;
     double x = 0.0;
     double y = 0.0;
     double width = 0.0;
@@ -509,6 +515,7 @@ struct JsonEntryFields {
     double pin = 0.0;
     double grouped = 1.0;
     bool hasFingerprint = false;
+    bool hasStack = false;
     bool hasX = false;
     bool hasY = false;
     bool hasWidth = false;
@@ -573,6 +580,21 @@ static bool ReadJsonEntryField(JsonEntryCursor& cursor,
         return ReadJsonEntryNumber(cursor, cursor.fields.hasGrouped,
                                    cursor.fields.grouped);
     }
+    if (key == "stack") {
+        if (cursor.fields.hasStack) {
+            return false;
+        }
+        std::string encoded;
+        if (!ReadJsonString(cursor.text, cursor.index, encoded)) {
+            return false;
+        }
+        cursor.fields.stackId = FromUtf8(encoded);
+        if (cursor.fields.stackId.empty()) {
+            return false;
+        }
+        cursor.fields.hasStack = true;
+        return true;
+    }
     return SkipJsonValue(cursor.text, cursor.index, 2);
 }
 
@@ -612,6 +634,7 @@ static bool BuildLayoutEntry(const JsonEntryFields& fields, LayoutEntry& entry) 
     entry.world = world;
     entry.pinned = fields.hasPin && fields.pin == 1.0;
     entry.grouped = !fields.hasGrouped || fields.grouped == 1.0;
+    entry.stackId = fields.hasStack ? fields.stackId : std::wstring();
     return true;
 }
 

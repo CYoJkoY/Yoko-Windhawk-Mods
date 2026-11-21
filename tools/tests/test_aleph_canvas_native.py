@@ -312,6 +312,24 @@ class AlephCanvasNativeTests(unittest.TestCase):
     def test_close_button_targets_the_real_window(self) -> None:
         self.run_case("close_request_fallback")
 
+    def test_stack_frame_survives_group_and_ungroup_cycles(self) -> None:
+        self.run_case("stack_frame_lifecycle")
+
+    def test_alt_drop_joins_two_windows_into_one_stack(self) -> None:
+        self.run_case("manual_stack_alt_drop")
+
+    def test_alt_drag_detaches_one_member_of_a_stack(self) -> None:
+        self.run_case("manual_stack_alt_detach")
+
+    def test_drop_needs_a_solid_overlap(self) -> None:
+        self.run_case("manual_stack_drop_target")
+
+    def test_saved_stack_rejoins_the_same_windows(self) -> None:
+        self.run_case("manual_stack_layout")
+
+    def test_group_button_splits_a_hand_made_stack(self) -> None:
+        self.run_case("manual_stack_ungroup")
+
 
 if __name__ == "__main__":
     unittest.main()

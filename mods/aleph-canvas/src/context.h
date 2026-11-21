@@ -58,6 +58,15 @@ struct CanvasContext {
     int draggedCard = -1;
     POINT dragGrabOffset = {};
     POINT dragCursor = {};
+    // True once an Alt-drag has pulled the grabbed card out of its stack. The
+    // same gesture may still hand that card to another stack, but never back
+    // to the one it just left.
+    bool dragDetached = false;
+    // The stack key the dragged card was pulled out of, so a drop ignores the
+    // fan the card came from instead of sliding it back in.
+    std::wstring detachFromKey;
+    // The card an Alt+drag would currently stack onto, painted as a drop cue.
+    int dropTargetCard = -1;
     int hoverCard = -1;
     int selectedCard = -1;
     CardHeaderAction hoverHeaderAction = CardHeaderAction::None;

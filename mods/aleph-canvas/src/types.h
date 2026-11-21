@@ -149,11 +149,12 @@ struct CardStackPlacement {
     float scale = 1.0f;
     float opacity = 1.0f;
     bool drawAboveStack = false;
-    // Position of the whole stack, used as its centre only: the anchor is
-    // captured from the front card's world rectangle when a stack of two or
-    // more forms, and each member keeps its own size. Empty while the card
-    // stands alone, so a lone window never gets a stale size.
-    RectF anchorWorld{};
+    // The one rectangle the whole stack occupies. When a stack of two or more
+    // forms, the frame takes the front card's world rectangle and every member
+    // is drawn inside it, so the fan always shares a single size and centre
+    // instead of every window keeping its own proportions. Empty while the
+    // card stands alone, so a lone window never gets a stale frame.
+    RectF frameWorld{};
 };
 
 struct StackCardTransition {
@@ -187,7 +188,12 @@ struct Card {
     std::wstring fingerprint;
     std::wstring exePath;
     std::wstring applicationKey;
-    bool hasApplicationPeers = false;
+    // Hand-made stack membership, written by Alt-dropping one card onto
+    // another and saved with the layout. A custom stack may span different
+    // applications, so it wins over the automatic per-executable key. Empty
+    // means the card follows the automatic grouping.
+    std::wstring stackId;
+    bool hasStackPeers = false;
     // Scan index from EnumWindows, topmost window first (0 = topmost).
     // Copied from ScannedWindow on every merge so stack order follows
     // the desktop Z-order instead of card insertion order.
@@ -201,18 +207,15 @@ struct Card {
     bool pinned = false;
 };
 
-// World rectangle a card occupies on the canvas. A grouped card takes the
-// size of its own window and the centre of the stack anchor, so resized or
-// maximized windows keep their real proportions and a stack member shown at
-// the front is never stretched. Ungrouped cards and stacks without an anchor
-// use their own world rectangle.
+// World rectangle a card occupies on the canvas. Every member of a formed
+// stack shares the stack frame, so the fan reads as one card no matter how
+// differently the member windows are sized; the front card owns the live
+// preview inside that frame. Ungrouped cards and stacks without a frame use
+// their own world rectangle.
 inline RectF StackWorldRect(const Card& card) {
     if (card.stack.grouped && !card.stack.groupKey.empty() &&
-        !card.stack.anchorWorld.empty()) {
-        const RectF& anchor = card.stack.anchorWorld;
-        return MakeRectF(anchor.centerX() - card.world.width() * 0.5f,
-                         anchor.centerY() - card.world.height() * 0.5f,
-                         card.world.width(), card.world.height());
+        !card.stack.frameWorld.empty()) {
+        return card.stack.frameWorld;
     }
     return card.world;
 }
@@ -225,6 +228,13 @@ inline bool IsStackBackground(const Card& card) {
 inline bool SameActiveStack(const Card& left, const Card& right) {
     return left.stack.grouped && right.stack.grouped &&
            !left.stack.groupKey.empty() && left.stack.groupKey == right.stack.groupKey;
+}
+
+// The key that decides which stack a card belongs to. A hand-made stack wins
+// over the automatic per-executable key so a custom group never leaks into the
+// application-wide one.
+inline std::wstring StackGroupKeyOf(const Card& card) {
+    return card.stackId.empty() ? card.applicationKey : card.stackId;
 }
 
 struct ScannedWindow {
@@ -289,6 +299,9 @@ struct LayoutEntry {
     RectF world = {};
     bool pinned = false;
     bool grouped = true;
+    // Manual stack the card belongs to, saved so a hand-made group survives a
+    // restart. Empty for cards that follow the automatic application group.
+    std::wstring stackId;
 };
 
 struct LayoutSnapshot {

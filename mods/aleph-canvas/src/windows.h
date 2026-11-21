@@ -456,3 +456,31 @@ static void RememberLayoutPin(const std::wstring& fingerprint,
     }
     entries.push_back(LayoutEntry{fingerprint, world, pinned, grouped});
 }
+
+// The manual stack a card belongs to is stored in the same entry, so a
+// hand-made group comes back after a restart instead of dissolving. The entry
+// must exist already, which RememberLayoutCard guarantees by writing the
+// geometry first.
+static void RememberLayoutStackId(const std::wstring& fingerprint,
+                                  const std::wstring& stackId) {
+    const auto existing = std::find_if(
+        context.layout.entries.begin(), context.layout.entries.end(),
+        [&fingerprint](const LayoutEntry& entry) {
+            return entry.fingerprint == fingerprint;
+        });
+    if (existing == context.layout.entries.end() ||
+        existing->stackId == stackId) {
+        return;
+    }
+    existing->stackId = stackId;
+    MarkLayoutDirty(GetTickCount());
+}
+
+// Saves everything a card contributes to the layout: where it sits, whether it
+// is pinned, whether it wants to stack, and which hand-made stack it joined.
+static void RememberLayoutCard(const Card& card) {
+    RememberLayoutPin(card.fingerprint, StackWorldRect(card), card.pinned,
+                      card.stack.grouped);
+    RememberLayoutStackId(card.fingerprint, card.stackId);
+    MarkLayoutDirty(GetTickCount());
+}

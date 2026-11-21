@@ -409,13 +409,34 @@ inline bool CardShowsBadge(const Card& card) {
 }
 
 inline void DrawCardBody(const Card& card, const RectF& body, float scale) {
-    if (body.empty() || (card.state == WindowVisualState::Live &&
-                         card.thumbnail.valid() && card.thumbnailVisible)) {
+    if (body.empty()) {
         return;
     }
+    const float radius = kCardCornerRadiusPx * scale;
     SetHudColor(context.settings.cardFillColor);
+    // A live preview covers the body, so only the letterbox bands around a
+    // window whose aspect differs from the stack frame keep the card fill.
+    // The bands are clipped to the rounded body so the fill never leaks past
+    // the card's corners.
+    if (card.state == WindowVisualState::Live && card.thumbnail.valid() &&
+        card.thumbnailVisible) {
+        const RectF destination = RectFromRect(card.thumbnailDestination);
+        if (!destination.empty()) {
+            const std::vector<RectF> bands = SubtractCardOcclusionHoles(
+                body, CardOcclusionHoles(body, body, {destination}));
+            for (const RectF& band : bands) {
+                context.hudTarget->PushAxisAlignedClip(
+                    D2D1::RectF(band.left, band.top, band.right, band.bottom),
+                    D2D1_ANTIALIAS_MODE_ALIASED);
+                context.hudTarget->FillRoundedRectangle(RoundedRect(body, radius),
+                                                       context.hudBrush);
+                context.hudTarget->PopAxisAlignedClip();
+            }
+            return;
+        }
+    }
     context.hudTarget->FillRoundedRectangle(
-        RoundedRect(body, kCardCornerRadiusPx * scale), context.hudBrush);
+        RoundedRect(body, radius), context.hudBrush);
     const RectF badge = CardShowsBadge(card) ? CardBadgeBounds(body, scale) : RectF{};
     const float padding = kCardTitlePaddingPx * scale;
     RectF iconArea = GrowRect(body, -padding);
@@ -444,7 +465,11 @@ inline void DrawCard(const Card& card, int index, float scale) {
         return;
     }
     const float radius = kCardCornerRadiusPx * scale;
-    const bool emphasized = index == context.hoverCard || index == context.selectedCard;
+    // A card that would take an Alt+drop is highlighted like the hovered card,
+    // so the merge target is visible before the button comes up.
+    const bool emphasized = index == context.hoverCard ||
+                            index == context.selectedCard ||
+                            index == context.dropTargetCard;
     const RectF body = WorldToScreen(StackWorldRect(card), context.camera);
     const RectF header = CardHeaderRect(card);
     const bool transformed = card.stack.rotationRadians != 0.0f ||

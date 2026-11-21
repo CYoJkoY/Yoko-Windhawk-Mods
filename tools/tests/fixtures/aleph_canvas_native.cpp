@@ -431,7 +431,7 @@ static void HeaderChrome() {
     Near(header.left, bounds.left);
     Near(header.right, bounds.right);
     Near(header.top, bounds.top);
-    Near(header.height(), 32.0f * ChromeScale());
+    Near(header.height(), 44.0f * ChromeScale());
 
     const RectF close = CardCloseButtonRect(header, ChromeScale(), 2);
     const RectF pin = CardPinButtonRect(header, ChromeScale(), 2);
@@ -468,10 +468,10 @@ static void HeaderChrome() {
     Require(CardPinButtonRect(narrowHeader, ChromeScale(), 2).empty(),
             "narrow header kept a pin button");
 
-    // The strip is DPI relative: 32 DIP is 32 px at 96 DPI.
+    // The strip is DPI relative: 44 DIP is 44 px at 96 DPI.
     context.chromeDpi = 96;
     const RectF scaled = CardHeaderRect(card);
-    Near(scaled.height(), 32.0f);
+    Near(scaled.height(), 44.0f);
     const RectF scaledClose = CardCloseButtonRect(scaled, ChromeScale(), 2);
     Near(scaledClose.width(), kCardHeaderButtonPx);
     Near(scaledClose.right, scaled.right - kCardHeaderButtonInsetPx);
@@ -918,6 +918,22 @@ static void StackRemoval() {
             "back removal changed the front");
 }
 
+static void StackFrameLifecycle() {
+    UseStackSettings();
+    AddStackCard(L"a#1", L"C:\\App\\Editor.exe");
+    AddStackCard(L"b#1", L"C:\\App\\Editor.exe");
+    ReconcileCardStacks(context.cards, context.settings);
+    Require(!context.cards[0].stack.frameWorld.empty(), "stack formation lost its frame");
+    context.cards[0].stack.grouped = false;
+    ReconcileCardStacks(context.cards, context.settings);
+    Require(context.cards[0].stack.frameWorld.empty(), "a loose member kept a frame");
+    context.cards[0].stack.grouped = true;
+    ReconcileCardStacks(context.cards, context.settings);
+    Require(!context.cards[0].stack.frameWorld.empty(),
+            "regrouping did not give every member a frame");
+    SameRect(StackWorldRect(context.cards[0]), StackWorldRect(context.cards[1]));
+}
+
 static void StackInvalid() {
     UseStackSettings();
     AddStackCard(L"a#1", L"C:\\App\\Editor.exe");
@@ -1294,6 +1310,11 @@ static void StackZOrderFront() {
 static void StackWindowSizes() {
     PrepareGeometry();
     UseStackSettings();
+    const RectF letterbox = AspectFitRect(MakeRectF(0.0f, 0.0f, 200.0f, 100.0f), 800.0f, 200.0f);
+    Near(letterbox.width(), 200.0f);
+    Near(letterbox.height(), 50.0f);
+    Near(letterbox.centerX(), 100.0f);
+    Near(letterbox.centerY(), 50.0f);
     ScannedWindow wide = SampleWindow(0x601);
     wide.fingerprint = L"wide#1";
     ScannedWindow narrow = SampleWindow(0x602);
@@ -1302,33 +1323,60 @@ static void StackWindowSizes() {
     narrow.zOrder = 1;
     MergeScan({wide, narrow});
     SameRect(StackWorldRect(context.cards[0]), context.cards[0].world);
-    const RectF anchor = context.cards[0].stack.anchorWorld;
+    Require(!context.cards[0].stack.frameWorld.empty(), "the formed stack lost its frame");
     Require(CycleCardStack(context.cards, context.settings, 0, 1), "cannot cycle to narrow card");
-    const RectF narrowWorld = StackWorldRect(context.cards[1]);
-    Near(narrowWorld.centerX(), anchor.centerX());
-    Near(narrowWorld.width(), 240.0f);
-    Near(narrowWorld.height(), 600.0f);
-    const SnapResult snap = ComputeSnap(narrowWorld, 1);
+    const RectF frame = StackWorldRect(context.cards[1]);
+    SameRect(frame, context.cards[0].world);
+    for (const Card& card : context.cards) {
+        Require(IsGroupedStackCard(card), "stack member lost its grouping");
+        SameRect(StackWorldRect(card), frame);
+    }
+    const SnapResult snap = ComputeSnap(frame, 1);
     Require(!snap.snapVertical && !snap.snapHorizontal, "drag snapped to its own stack");
 
+    // The background window may resize behind the stack front, but the stack
+    // frame stays where the user put it: one shared size is what makes
+    // Alt+wheel feel like one object instead of mismatched rectangles.
     narrow.framePx = RECT{0, 0, 900, 320};
     MergeScan({wide, narrow});
-    const RectF resized = StackWorldRect(context.cards[1]);
-    Near(resized.centerX(), anchor.centerX());
-    Near(resized.centerY(), anchor.centerY());
-    Near(resized.width(), 900.0f);
-    Near(resized.height(), 320.0f);
+    SameRect(StackWorldRect(context.cards[0]), frame);
+    SameRect(StackWorldRect(context.cards[1]), frame);
+    SameRect(context.cards[0].stack.frameWorld, frame);
+    SameRect(context.cards[1].stack.frameWorld, frame);
+    // Each member still remembers its own window size: the front keeps the
+    // size it had, and the resized background window picked up 900x320.
+    Near(context.cards[0].world.width(), 640.0f);
+    Near(context.cards[0].world.height(), 480.0f);
+    Near(context.cards[1].world.width(), 900.0f);
+    Near(context.cards[1].world.height(), 320.0f);
+    Require(CycleCardStack(context.cards, context.settings, 0, 1),
+            "cannot cycle after a front resize");
+    SameRect(StackWorldRect(context.cards[0]), frame);
+    SameRect(StackWorldRect(context.cards[1]), frame);
     ToggleCardGroup(1);
     Require(!RectsOverlap(context.cards[0].world, context.cards[1].world),
             "different-width cards overlapped after split");
     Near(context.cards[0].world.width(), 640.0f);
     Near(context.cards[1].world.width(), 900.0f);
+    // The fan keeps every member's own size and starts where the stack stood,
+    // so the released windows line up without covering each other.
+    Near(context.cards[0].world.left, frame.left);
+    Near(context.cards[1].world.left,
+         frame.left + context.cards[0].world.width() +
+             static_cast<float>(context.settings.gap));
     ToggleCardGroup(1);
-    const RectF beforeRemoval = StackWorldRect(context.cards[1]);
+    // Regrouping takes the clicked card's rectangle as the shared frame.
+    const RectF regrouped = context.cards[1].world;
+    for (const Card& card : context.cards) {
+        Require(IsGroupedStackCard(card), "regrouping did not rebuild the stack");
+        SameRect(StackWorldRect(card), regrouped);
+    }
     MergeScan({narrow});
-    Require(context.cards[0].stack.anchorWorld.empty() && context.cards[0].stack.grouped,
-            "lone card kept an anchor or lost its grouping preference");
-    SameRect(StackWorldRect(context.cards[0]), beforeRemoval);
+    Require(context.cards[0].stack.frameWorld.empty() && context.cards[0].stack.grouped,
+            "lone card kept a frame or lost its grouping preference");
+    SameRect(StackWorldRect(context.cards[0]), context.cards[0].world);
+    Near(context.cards[0].world.width(), 900.0f);
+    Near(context.cards[0].world.height(), 320.0f);
 }
 
 static void StackApplicationIds() {
@@ -1347,7 +1395,7 @@ static void StackApplicationIds() {
     MergeScan({first, second, third});
     Require(SameActiveStack(context.cards[0], context.cards[2]),
             "same application IDs did not stack");
-    Require(!IsGroupedStackCard(context.cards[1]) && !context.cards[1].hasApplicationPeers,
+    Require(!IsGroupedStackCard(context.cards[1]) && !context.cards[1].hasStackPeers,
             "different application IDs stacked because they share an executable");
     third.applicationKey = second.applicationKey;
     Require(MergeScan({first, second, third}), "app identity change did not invalidate stacks");
@@ -1607,21 +1655,21 @@ static void HeaderThreeButtons() {
                               scale, 3) == CardHeaderAction::Group,
             "group button did not hit");
 
-    // A 140 px card fits close and pin but not the third button, so the row
+    // A 200 px card fits close and pin but not the third button, so the row
     // drops the group button instead of colliding with the title.
     Card narrow;
-    narrow.world = MakeRectF(0.0f, 0.0f, 140.0f, 300.0f);
+    narrow.world = MakeRectF(0.0f, 0.0f, 200.0f, 300.0f);
     const RectF narrowHeader = CardHeaderRect(narrow);
     const int narrowButtons =
         CardHeaderButtonCountForWidth(narrowHeader, scale, 3);
     Require(narrowButtons == 2,
-            "a 140 px card did not drop the group button");
+            "a 200 px card did not drop the group button");
     Require(!CardCloseButtonRect(narrowHeader, scale, narrowButtons).empty(),
-        "a 140 px card lost the buttons it can still fit");
-    narrow.world = MakeRectF(0.0f, 0.0f, 70.0f, 300.0f);
+        "a 200 px card lost the buttons it can still fit");
+    narrow.world = MakeRectF(0.0f, 0.0f, 110.0f, 300.0f);
     const RectF tinyHeader = CardHeaderRect(narrow);
     Require(CardCloseButtonRect(tinyHeader, scale, 2).empty(),
-            "a 70 px card kept header buttons");
+            "a 110 px card kept header buttons");
 }
 
 // Ungrouping fans the members out from the stack anchor and saves the
@@ -1638,10 +1686,10 @@ static void GroupTogglePersistence() {
     Require(IsGroupedStackCard(context.cards[0]) &&
                 IsGroupedStackCard(context.cards[1]),
             "two windows of one executable did not group");
-    Require(!context.cards[0].stack.anchorWorld.empty(),
-            "the formed group lost its anchor");
+    Require(!context.cards[0].stack.frameWorld.empty(),
+            "the formed group lost its frame");
 
-    const RectF anchor = context.cards[0].stack.anchorWorld;
+    const RectF frame = context.cards[0].stack.frameWorld;
     ToggleCardGroup(0);
     Require(!IsGroupedStackCard(context.cards[0]) &&
                 !IsGroupedStackCard(context.cards[1]),
@@ -1651,9 +1699,9 @@ static void GroupTogglePersistence() {
             "an ungrouped card kept its group key");
     Require(!RectsOverlap(context.cards[0].world, context.cards[1].world),
             "ungrouped cards still overlap");
-    Near(context.cards[0].world.left, anchor.left);
+    Near(context.cards[0].world.left, frame.left);
     Near(context.cards[1].world.left,
-         anchor.left + anchor.width() + static_cast<float>(context.settings.gap));
+         frame.left + frame.width() + static_cast<float>(context.settings.gap));
     Require(SerializeLayout(context.layout).find("\"is_grouped\":0") !=
                 std::string::npos,
             "the ungrouped state was not saved");
@@ -1741,6 +1789,287 @@ static void CloseRequestFallback() {
     DestroyWindow(probe);
 }
 
+// Worlds and screen points line up one to one at the zoom every case prepares,
+// so a drag can be written in world coordinates.
+static POINT ScreenPointOf(Vec2 world) {
+    const RectF screen =
+        WorldToScreen(MakeRectF(world.x, world.y, 0.0f, 0.0f), context.camera);
+    return POINT{static_cast<LONG>(std::lround(screen.left)),
+                 static_cast<LONG>(std::lround(screen.top))};
+}
+
+// One whole pointer drag with the Alt decision passed in, so a case never
+// depends on whether the machine running the tests holds Alt down. Snapping is
+// off: the drop has to land exactly where the case says it does. The pointer
+// reports the grab point first and the drop point second, the way a real drag
+// moves, so an Alt press that pulls a card out of a stack happens before the
+// card travels.
+static void DragCardTo(int index, Vec2 grab, Vec2 drop, bool combine) {
+    context.settings.snapDistance = 0;
+    context.draggedCard = index;
+    context.dragDetached = false;
+    context.detachFromKey.clear();
+    context.dropTargetCard = -1;
+    context.dragCursor = ScreenPointOf(grab);
+    SetDragGrabOffset(index, context.dragCursor);
+    UpdateCardDrag(ScreenPointOf(grab), combine);
+    UpdateCardDrag(ScreenPointOf(drop), combine);
+    EndPointerDrag(combine);
+}
+
+// Alt+dropping one window onto another hand-makes a stack that may span
+// different applications, and the layout remembers it so the same windows come
+// back together.
+static void ManualStackAltDrop() {
+    UseStackSettings();
+    context.cards.clear();
+    context.layout = LayoutSnapshot{};
+    context.stackTransitions.clear();
+    AddStackCard(L"a#1", L"C:\\App\\Editor.exe");
+    AddStackCard(L"b#1", L"C:\\App\\Player.exe");
+    context.cards[0].world = MakeRectF(-400.0f, 0.0f, 320.0f, 240.0f);
+    ReconcileCardStacks(context.cards, context.settings);
+    Require(!IsGroupedStackCard(context.cards[0]) &&
+                !IsGroupedStackCard(context.cards[1]),
+            "different applications stacked before the drop");
+    Require(CardHeaderButtonCount(context.cards, 0, true) == 2,
+            "a lone window offered the group button");
+
+    // A plain drop lands the card right on top of the other one and still
+    // groups nothing: the Z-order alone decides what covers what.
+    DragCardTo(0, Vec2{-240.0f, 120.0f}, Vec2{160.0f, 120.0f}, false);
+    SameRect(context.cards[0].world, MakeRectF(0.0f, 0.0f, 320.0f, 240.0f));
+    Require(!IsGroupedStackCard(context.cards[0]) &&
+                !IsGroupedStackCard(context.cards[1]),
+            "a plain drop stacked the cards");
+    Require(context.cards[0].stackId.empty(), "a plain drop named a stack");
+
+    // The same drop with Alt held joins the two windows instead.
+    DragCardTo(0, Vec2{160.0f, 120.0f}, Vec2{160.0f, 120.0f}, true);
+    Require(IsGroupedStackCard(context.cards[0]) &&
+                IsGroupedStackCard(context.cards[1]),
+            "the Alt+drop did not stack the cards");
+    Require(context.cards[0].stackId == L"stack:a#1|b#1",
+            "the hand-made id did not name both windows");
+    Require(context.cards[1].stackId == context.cards[0].stackId,
+            "the members did not share one hand-made id");
+    Require(context.cards[0].stack.groupKey == context.cards[0].stackId,
+            "the stack was keyed by the application, not the hand-made id");
+    SameRect(StackWorldRect(context.cards[0]), StackWorldRect(context.cards[1]));
+    Require(context.cards[0].stack.slot == 0 && context.cards[1].stack.slot == 1,
+            "the dropped card did not become the front of the fan");
+    Require(CardHeaderButtonCount(context.cards, 1, true) == 3,
+            "a hand-made stack lost its group button");
+    Require(SerializeLayout(context.layout).find(
+                "\"stack\":\"stack:a#1|b#1\"") != std::string::npos,
+            "the hand-made stack was not saved with the layout");
+
+    // Dragging the front card without Alt moves the whole fan: one frame, one
+    // size, and every member keeps its own window proportions inside it.
+    const RectF frame = StackWorldRect(context.cards[0]);
+    DragCardTo(0, Vec2{160.0f, 120.0f}, Vec2{480.0f, 120.0f}, false);
+    Require(StackWorldRect(context.cards[0]).left > frame.left + 1.0f,
+            "dragging the front card did not move the fan");
+    SameRect(StackWorldRect(context.cards[1]), StackWorldRect(context.cards[0]));
+    SameRect(context.cards[0].world, MakeRectF(0.0f, 0.0f, 320.0f, 240.0f));
+    const RectF movedFrame = StackWorldRect(context.cards[0]);
+
+    // A third window of yet another application joins the same fan instead of
+    // starting a second one, the saved id it joins is kept, and the fan keeps
+    // the frame it had moved to instead of snapping to a member's stale rect.
+    AddStackCard(L"c#1", L"C:\\App\\Tools.exe");
+    ReconcileCardStacks(context.cards, context.settings);
+    DragCardTo(2, Vec2{160.0f, 120.0f}, Vec2{480.0f, 120.0f}, true);
+    Require(IsGroupedStackCard(context.cards[2]),
+            "a second Alt+drop did not join the fan");
+    Require(context.cards[2].stackId == L"stack:a#1|b#1",
+            "joining a stack renamed it instead of extending it");
+    Require(context.cards[2].stack.slot == 0,
+            "the joined card did not take the front");
+    SameRect(StackWorldRect(context.cards[2]), movedFrame);
+    SameRect(StackWorldRect(context.cards[2]), StackWorldRect(context.cards[1]));
+}
+
+// Alt+dragging the front card out of a fan releases just that window: it takes
+// back its own size, its centre lands where the user dropped it, and the rest of
+// the fan keeps the place it stood.
+static void ManualStackAltDetach() {
+    UseStackSettings();
+    context.cards.clear();
+    context.layout = LayoutSnapshot{};
+    context.stackTransitions.clear();
+    AddStackCard(L"a#1", L"C:\\App\\Editor.exe");
+    AddStackCard(L"b#1", L"C:\\App\\Player.exe");
+    AddStackCard(L"c#1", L"C:\\App\\Tools.exe");
+    context.cards[0].world = MakeRectF(0.0f, 0.0f, 320.0f, 240.0f);
+    context.cards[1].world = MakeRectF(600.0f, 0.0f, 640.0f, 480.0f);
+    context.cards[2].world = MakeRectF(1400.0f, 0.0f, 480.0f, 320.0f);
+    ReconcileCardStacks(context.cards, context.settings);
+    // Joining is driven through the drop handler here, so the case owns which
+    // card becomes the target instead of depending on overlap order.
+    StackCardOntoCard(1, 0);
+    StackCardOntoCard(2, 0);
+    Require(IsGroupedStackCard(context.cards[0]) &&
+                IsGroupedStackCard(context.cards[1]) &&
+                IsGroupedStackCard(context.cards[2]),
+            "the Alt+drops did not build one fan of three");
+    Require(context.cards[2].stack.slot == 0,
+            "the last dropped card is not the front");
+    const RectF frame = StackWorldRect(context.cards[2]);
+    Require(!frame.empty(), "the fan formed without a frame");
+    Near(frame.width(), 320.0f);
+    Near(frame.height(), 240.0f);
+    const std::wstring stackId = context.cards[0].stackId;
+    Require(!stackId.empty(), "the fan formed without a hand-made id");
+
+    // The front card is grabbed at the shared centre and dropped far away: its
+    // own centre follows the pointer instead of the frame it shared.
+    DragCardTo(2, Vec2{160.0f, 120.0f}, Vec2{900.0f, 300.0f}, true);
+    Require(!IsGroupedStackCard(context.cards[2]),
+            "the detached card stayed in the fan");
+    Require(context.cards[2].stackId.empty(),
+            "the detached card kept its hand-made id");
+    Require(!context.cards[2].stack.grouped,
+            "the detached card was not marked ungrouped");
+    Require(!context.dragDetached && context.detachFromKey.empty(),
+            "the finished gesture left detach state behind");
+    Near(context.cards[2].world.width(), 480.0f);
+    Near(context.cards[2].world.height(), 320.0f);
+    Near(context.cards[2].world.centerX(), 900.0f);
+    Near(context.cards[2].world.centerY(), 300.0f);
+    const LayoutEntry* detachedEntry = FindLayoutEntry(L"c#1");
+    Require(detachedEntry != nullptr && detachedEntry->stackId.empty(),
+            "the detached card kept a saved stack id");
+    Require(!detachedEntry->grouped, "the detached card saved its grouping");
+
+    // The survivors keep their own sizes and their shared identity, and the
+    // released window stays out of the fan when the scan reconciles again.
+    Require(context.cards[0].stackId == stackId, "a survivor lost its hand-made id");
+    Require(context.cards[1].stackId == stackId, "a survivor lost its hand-made id");
+    Require(IsGroupedStackCard(context.cards[0]) &&
+                IsGroupedStackCard(context.cards[1]),
+            "the remaining windows stopped fanning");
+    Require(context.cards[0].stack.slot == 0 && context.cards[1].stack.slot == 1,
+            "the survivors changed places after the release");
+    SameRect(StackWorldRect(context.cards[0]), StackWorldRect(context.cards[1]));
+    Near(context.cards[0].world.width(), 320.0f);
+    Near(context.cards[1].world.width(), 640.0f);
+    ReconcileCardStacks(context.cards, context.settings);
+    Require(!IsGroupedStackCard(context.cards[2]),
+            "reconciling pulled the detached card back in");
+}
+
+// A drop only stacks when the cards solidly overlap, so brushing past a card
+// never glues two windows together.
+static void ManualStackDropTarget() {
+    UseStackSettings();
+    context.cards.clear();
+    AddStackCard(L"a#1", L"C:\\App\\Editor.exe");
+    AddStackCard(L"b#1", L"C:\\App\\Player.exe");
+    context.cards[0].world = MakeRectF(0.0f, 0.0f, 100.0f, 100.0f);
+    context.cards[1].world = MakeRectF(1000.0f, 1000.0f, 100.0f, 100.0f);
+    ReconcileCardStacks(context.cards, context.settings);
+    Require(DropTargetCard(0) < 0, "a distant card became a drop target");
+    context.cards[1].world = MakeRectF(70.0f, 0.0f, 100.0f, 100.0f);
+    Require(DropTargetCard(0) < 0, "a light overlap started a stack");
+    context.cards[1].world = MakeRectF(50.0f, 0.0f, 100.0f, 100.0f);
+    Require(DropTargetCard(0) == 1, "a solid overlap was ignored");
+    context.cards[1].state = WindowVisualState::OtherDesktop;
+    Require(DropTargetCard(0) < 0, "an off-desktop card took a drop");
+    context.cards[1].state = WindowVisualState::Live;
+
+    // A live Alt+drag raises the same card as the drop cue, so the canvas can
+    // highlight the join before the user lets go of the button.
+    context.draggedCard = 0;
+    context.dragDetached = false;
+    context.detachFromKey.clear();
+    context.dropTargetCard = -1;
+    UpdateCardDrag(ScreenPointOf(Vec2{0.0f, 0.0f}), true);
+    Require(context.dropTargetCard == 1, "the drag did not mark the drop target");
+    EndPointerDrag(false);
+    Require(context.dropTargetCard < 0, "the drop cue outlived the drag");
+
+    StackCardOntoCard(0, 1);
+    Require(DropTargetCard(0) < 0 && DropTargetCard(1) < 0,
+            "a stack member targeted its own sibling");
+}
+
+// A hand-made stack lives in the layout file, so closing and reopening the same
+// windows brings the fan back instead of splitting it apart.
+static void ManualStackLayout() {
+    UseStackSettings();
+    context.cards.clear();
+    context.layout = LayoutSnapshot{};
+    const LayoutSnapshot parsed = ParseLayout(
+        R"({"version":1,"entries":[{"key":"a","x":0,"y":0,"w":10,"h":10,"stack":"stack:a|b"}]})");
+    Require(parsed.entries.size() == 1, "an entry with a stack id was rejected");
+    Require(parsed.entries[0].stackId == L"stack:a|b", "the stack id was not parsed");
+    const LayoutSnapshot roundtrip = ParseLayout(SerializeLayout(parsed));
+    Require(roundtrip.entries.size() == 1 &&
+                roundtrip.entries[0].stackId == L"stack:a|b",
+            "the stack id did not survive a roundtrip");
+    Require(ParseLayout(R"({"version":1,"entries":[{"key":"a","x":0,"y":0,"w":10,"h":10,"stack":"x","stack":"y"}]})").entries.empty(),
+            "duplicate stack ids were accepted");
+    Require(ParseLayout(R"({"version":1,"entries":[{"key":"a","x":0,"y":0,"w":10,"h":10,"stack":""}]})").entries.empty(),
+            "an empty stack id was accepted");
+    Require(ParseLayout(R"({"version":1,"entries":[{"key":"a","x":0,"y":0,"w":10,"h":10,"stack":7}]})").entries.empty(),
+            "a numeric stack id was accepted");
+    const LayoutSnapshot legacy = ParseLayout(
+        R"({"version":1,"entries":[{"key":"a","x":0,"y":0,"w":10,"h":10}]})");
+    Require(legacy.entries.size() == 1 && legacy.entries[0].stackId.empty(),
+            "a legacy entry gained a stack id");
+
+    std::vector<ScannedWindow> scan{SampleWindow(0x700), SampleWindow(0x800)};
+    scan[0].fingerprint = L"one#1";
+    scan[1].fingerprint = L"two#1";
+    scan[1].exePath = L"C:\\App\\Player.exe";
+    scan[1].applicationKey = L"player.exe";
+    MergeScan(scan);
+    Require(context.cards.size() == 2, "the scan did not create two cards");
+    RememberLayoutStackId(L"one#1", L"stack:one#1|two#1");
+    RememberLayoutStackId(L"two#1", L"stack:one#1|two#1");
+    context.cards.clear();
+    MergeScan(scan);
+    Require(context.cards.size() == 2, "the reopened windows did not come back");
+    Require(IsGroupedStackCard(context.cards[0]) &&
+                IsGroupedStackCard(context.cards[1]),
+            "the saved fan did not come back");
+    Require(context.cards[0].stackId == L"stack:one#1|two#1",
+            "the reopened card lost its stack id");
+    SameRect(StackWorldRect(context.cards[0]), StackWorldRect(context.cards[1]));
+}
+
+// The group button splits a hand-made stack too: both windows take back their
+// own size, land side by side, and the saved layout forgets the stack.
+static void ManualStackUngroup() {
+    UseStackSettings();
+    context.cards.clear();
+    context.layout = LayoutSnapshot{};
+    context.stackTransitions.clear();
+    AddStackCard(L"a#1", L"C:\\App\\Editor.exe");
+    AddStackCard(L"b#1", L"C:\\App\\Player.exe");
+    ReconcileCardStacks(context.cards, context.settings);
+    DragCardTo(0, Vec2{160.0f, 120.0f}, Vec2{160.0f, 120.0f}, true);
+    Require(IsGroupedStackCard(context.cards[0]) &&
+                IsGroupedStackCard(context.cards[1]),
+            "the Alt+drop did not stack the cards");
+    Require(CardHeaderButtonCount(context.cards, 0, true) == 3,
+            "the hand-made stack did not offer a split button");
+
+    ToggleCardGroup(0);
+    Require(!IsGroupedStackCard(context.cards[0]) &&
+                !IsGroupedStackCard(context.cards[1]),
+            "the group button left the windows stacked");
+    Require(context.cards[0].stackId.empty() && context.cards[1].stackId.empty(),
+            "an ungrouped card kept its hand-made id");
+    Require(!context.cards[0].stack.grouped && !context.cards[1].stack.grouped,
+            "an ungrouped card kept the grouped flag");
+    Require(!RectsOverlap(context.cards[0].world, context.cards[1].world),
+            "the released windows still overlap");
+    Require(SerializeLayout(context.layout).find("\"stack\":\"") == std::string::npos,
+            "the layout kept a hand-made stack the user split");
+}
+
 struct NativeCase {
     const char* name;
     void (*run)();
@@ -1802,6 +2131,12 @@ static constexpr NativeCase kCases[] = {
     {"group_toggle_persistence", GroupTogglePersistence},
     {"ungroup_keeps_loose_window", UngroupKeepsLooseWindow},
     {"close_request_fallback", CloseRequestFallback},
+    {"stack_frame_lifecycle", StackFrameLifecycle},
+    {"manual_stack_alt_drop", ManualStackAltDrop},
+    {"manual_stack_alt_detach", ManualStackAltDetach},
+    {"manual_stack_drop_target", ManualStackDropTarget},
+    {"manual_stack_layout", ManualStackLayout},
+    {"manual_stack_ungroup", ManualStackUngroup},
 };
 
 static int RunCase(const char* name) {
