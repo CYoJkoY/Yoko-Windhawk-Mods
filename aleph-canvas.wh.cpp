@@ -4,7 +4,7 @@
 // @name:zh-CN      Aleph - 无限窗口画布
 // @description     Arrange open windows across a pannable canvas with live DWM previews.
 // @description:zh-CN 在可平移画布上管理已打开的窗口，并显示 DWM 实时预览。
-// @version         1.6.0
+// @version         1.7.0
 // @author          CYoJkoY
 // @github          https://github.com/CYoJkoY
 // @license         MIT
@@ -32,6 +32,10 @@ Drag cards to arrange them without moving the real desktop windows.
   application only), and close. Hovering a button shows its localized label.
 - Group joins the windows of one application into a stack; pressing it again
   splits the stack into a row. The grouped state is saved with the layout.
+- Hold Alt and drag a card onto another one to make a stack of your own, even
+  across different applications; a drop only counts when the cards overlap
+  solidly. Hold Alt and drag a member out to release just that window. A plain
+  drop never groups anything. Custom stacks are saved with the layout.
 - Close sends `WM_CLOSE` to the real window, so the application closes; the
   card leaves the canvas once the next scan reports the window gone.
 - Middle mouse drag: pan the canvas.
@@ -540,12 +544,12 @@ constexpr float kCameraEpsilonPx = 0.2f;
 constexpr float kZoomEpsilon = 0.001f;
 constexpr float kCardOpacityEpsilon = 0.001f;
 
-constexpr float kCardHeaderPx = 32.0f;
-constexpr float kCardHeaderMinPx = 10.0f;
-constexpr float kCardHeaderMaxPx = 36.0f;
-constexpr float kCardHeaderButtonPx = 22.0f;
-constexpr float kCardHeaderButtonInsetPx = 5.0f;
-constexpr float kCardHeaderButtonGapPx = 6.0f;
+constexpr float kCardHeaderPx = 44.0f;
+constexpr float kCardHeaderMinPx = 14.0f;
+constexpr float kCardHeaderMaxPx = 54.0f;
+constexpr float kCardHeaderButtonPx = 30.0f;
+constexpr float kCardHeaderButtonInsetPx = 6.0f;
+constexpr float kCardHeaderButtonGapPx = 8.0f;
 constexpr float kCardCornerRadiusPx = 8.0f;
 constexpr float kCardTitlePaddingPx = 10.0f;
 constexpr float kCardIconMaxPx = 128.0f;
@@ -932,11 +936,12 @@ struct CardStackPlacement {
     float scale = 1.0f;
     float opacity = 1.0f;
     bool drawAboveStack = false;
-    // Position of the whole stack, used as its centre only: the anchor is
-    // captured from the front card's world rectangle when a stack of two or
-    // more forms, and each member keeps its own size. Empty while the card
-    // stands alone, so a lone window never gets a stale size.
-    RectF anchorWorld{};
+    // The one rectangle the whole stack occupies. When a stack of two or more
+    // forms, the frame takes the front card's world rectangle and every member
+    // is drawn inside it, so the fan always shares a single size and centre
+    // instead of every window keeping its own proportions. Empty while the
+    // card stands alone, so a lone window never gets a stale frame.
+    RectF frameWorld{};
 };
 
 struct StackCardTransition {
@@ -970,7 +975,12 @@ struct Card {
     std::wstring fingerprint;
     std::wstring exePath;
     std::wstring applicationKey;
-    bool hasApplicationPeers = false;
+    // Hand-made stack membership, written by Alt-dropping one card onto
+    // another and saved with the layout. A custom stack may span different
+    // applications, so it wins over the automatic per-executable key. Empty
+    // means the card follows the automatic grouping.
+    std::wstring stackId;
+    bool hasStackPeers = false;
     // Scan index from EnumWindows, topmost window first (0 = topmost).
     // Copied from ScannedWindow on every merge so stack order follows
     // the desktop Z-order instead of card insertion order.
@@ -984,18 +994,15 @@ struct Card {
     bool pinned = false;
 };
 
-// World rectangle a card occupies on the canvas. A grouped card takes the
-// size of its own window and the centre of the stack anchor, so resized or
-// maximized windows keep their real proportions and a stack member shown at
-// the front is never stretched. Ungrouped cards and stacks without an anchor
-// use their own world rectangle.
+// World rectangle a card occupies on the canvas. Every member of a formed
+// stack shares the stack frame, so the fan reads as one card no matter how
+// differently the member windows are sized; the front card owns the live
+// preview inside that frame. Ungrouped cards and stacks without a frame use
+// their own world rectangle.
 inline RectF StackWorldRect(const Card& card) {
     if (card.stack.grouped && !card.stack.groupKey.empty() &&
-        !card.stack.anchorWorld.empty()) {
-        const RectF& anchor = card.stack.anchorWorld;
-        return MakeRectF(anchor.centerX() - card.world.width() * 0.5f,
-                         anchor.centerY() - card.world.height() * 0.5f,
-                         card.world.width(), card.world.height());
+        !card.stack.frameWorld.empty()) {
+        return card.stack.frameWorld;
     }
     return card.world;
 }
@@ -1008,6 +1015,13 @@ inline bool IsStackBackground(const Card& card) {
 inline bool SameActiveStack(const Card& left, const Card& right) {
     return left.stack.grouped && right.stack.grouped &&
            !left.stack.groupKey.empty() && left.stack.groupKey == right.stack.groupKey;
+}
+
+// The key that decides which stack a card belongs to. A hand-made stack wins
+// over the automatic per-executable key so a custom group never leaks into the
+// application-wide one.
+inline std::wstring StackGroupKeyOf(const Card& card) {
+    return card.stackId.empty() ? card.applicationKey : card.stackId;
 }
 
 struct ScannedWindow {
@@ -1072,6 +1086,9 @@ struct LayoutEntry {
     RectF world = {};
     bool pinned = false;
     bool grouped = true;
+    // Manual stack the card belongs to, saved so a hand-made group survives a
+    // restart. Empty for cards that follow the automatic application group.
+    std::wstring stackId;
 };
 
 struct LayoutSnapshot {
@@ -1133,6 +1150,15 @@ struct CanvasContext {
     int draggedCard = -1;
     POINT dragGrabOffset = {};
     POINT dragCursor = {};
+    // True once an Alt-drag has pulled the grabbed card out of its stack. The
+    // same gesture may still hand that card to another stack, but never back
+    // to the one it just left.
+    bool dragDetached = false;
+    // The stack key the dragged card was pulled out of, so a drop ignores the
+    // fan the card came from instead of sliding it back in.
+    std::wstring detachFromKey;
+    // The card an Alt+drag would currently stack onto, painted as a drop cue.
+    int dropTargetCard = -1;
     int hoverCard = -1;
     int selectedCard = -1;
     CardHeaderAction hoverHeaderAction = CardHeaderAction::None;
@@ -1235,6 +1261,23 @@ inline RectF CardScreenBounds(const Card& card) {
     RectF rect = WorldToScreen(StackWorldRect(card), context.camera);
     rect.top -= CardHeaderHeight();
     return rect;
+}
+
+// Largest rectangle with the given content aspect that fits inside bounds and
+// stays centred. A live preview is letterboxed with this instead of being
+// stretched onto a differently shaped stack frame, so a window never appears
+// distorted when it shares a frame with a front card of another size.
+inline RectF AspectFitRect(const RectF& bounds, float contentWidth,
+                           float contentHeight) {
+    if (bounds.empty() || contentWidth <= 0.0f || contentHeight <= 0.0f) {
+        return bounds;
+    }
+    const float scale = std::min(bounds.width() / contentWidth,
+                                 bounds.height() / contentHeight);
+    const float width = contentWidth * scale;
+    const float height = contentHeight * scale;
+    return MakeRectF(bounds.centerX() - width * 0.5f,
+                     bounds.centerY() - height * 0.5f, width, height);
 }
 
 inline Vec2 ScreenToWorld(Vec2 point, const Camera& camera) {
@@ -1819,6 +1862,11 @@ static std::string SerializeLayout(const LayoutSnapshot& layout) {
         if (!entry.grouped) {
             output += ",\"is_grouped\":0";
         }
+        if (!entry.stackId.empty()) {
+            output += ",\"stack\":\"";
+            output += ToUtf8(EscapeJsonText(entry.stackId));
+            output += "\"";
+        }
         output += "}";
     }
     output += "]}\n";
@@ -2187,6 +2235,7 @@ static bool SkipJsonValue(const std::string& text, size_t& index, int depth) {
 
 struct JsonEntryFields {
     std::wstring fingerprint;
+    std::wstring stackId;
     double x = 0.0;
     double y = 0.0;
     double width = 0.0;
@@ -2194,6 +2243,7 @@ struct JsonEntryFields {
     double pin = 0.0;
     double grouped = 1.0;
     bool hasFingerprint = false;
+    bool hasStack = false;
     bool hasX = false;
     bool hasY = false;
     bool hasWidth = false;
@@ -2258,6 +2308,21 @@ static bool ReadJsonEntryField(JsonEntryCursor& cursor,
         return ReadJsonEntryNumber(cursor, cursor.fields.hasGrouped,
                                    cursor.fields.grouped);
     }
+    if (key == "stack") {
+        if (cursor.fields.hasStack) {
+            return false;
+        }
+        std::string encoded;
+        if (!ReadJsonString(cursor.text, cursor.index, encoded)) {
+            return false;
+        }
+        cursor.fields.stackId = FromUtf8(encoded);
+        if (cursor.fields.stackId.empty()) {
+            return false;
+        }
+        cursor.fields.hasStack = true;
+        return true;
+    }
     return SkipJsonValue(cursor.text, cursor.index, 2);
 }
 
@@ -2297,6 +2362,7 @@ static bool BuildLayoutEntry(const JsonEntryFields& fields, LayoutEntry& entry) 
     entry.world = world;
     entry.pinned = fields.hasPin && fields.pin == 1.0;
     entry.grouped = !fields.hasGrouped || fields.grouped == 1.0;
+    entry.stackId = fields.hasStack ? fields.stackId : std::wstring();
     return true;
 }
 
@@ -2979,6 +3045,34 @@ static void RememberLayoutPin(const std::wstring& fingerprint,
     entries.push_back(LayoutEntry{fingerprint, world, pinned, grouped});
 }
 
+// The manual stack a card belongs to is stored in the same entry, so a
+// hand-made group comes back after a restart instead of dissolving. The entry
+// must exist already, which RememberLayoutCard guarantees by writing the
+// geometry first.
+static void RememberLayoutStackId(const std::wstring& fingerprint,
+                                  const std::wstring& stackId) {
+    const auto existing = std::find_if(
+        context.layout.entries.begin(), context.layout.entries.end(),
+        [&fingerprint](const LayoutEntry& entry) {
+            return entry.fingerprint == fingerprint;
+        });
+    if (existing == context.layout.entries.end() ||
+        existing->stackId == stackId) {
+        return;
+    }
+    existing->stackId = stackId;
+    MarkLayoutDirty(GetTickCount());
+}
+
+// Saves everything a card contributes to the layout: where it sits, whether it
+// is pinned, whether it wants to stack, and which hand-made stack it joined.
+static void RememberLayoutCard(const Card& card) {
+    RememberLayoutPin(card.fingerprint, StackWorldRect(card), card.pinned,
+                      card.stack.grouped);
+    RememberLayoutStackId(card.fingerprint, card.stackId);
+    MarkLayoutDirty(GetTickCount());
+}
+
 // Card creation, packing and snapping.
 //
 // Arranging cards never moves a real window. A card keeps its own position in
@@ -3166,7 +3260,7 @@ inline void ResetStackPlacement(Card& card) {
     card.stack.opacity = 1.0f;
     card.stack.drawAboveStack = false;
     card.stack.visible = true;
-    card.stack.anchorWorld = RectF{};
+    card.stack.frameWorld = RectF{};
 }
 
 inline void ClearAllStackPlacements(std::vector<Card>& cards) {
@@ -3177,7 +3271,7 @@ inline void ClearAllStackPlacements(std::vector<Card>& cards) {
 
 inline void ClearIneligibleStackPlacements(std::vector<Card>& cards) {
     for (Card& card : cards) {
-        if (!card.stack.grouped || card.applicationKey.empty()) {
+        if (!card.stack.grouped || StackGroupKeyOf(card).empty()) {
             ResetStackPlacement(card);
         }
     }
@@ -3188,8 +3282,9 @@ inline std::vector<StackMember> CollectStackMembers(const std::vector<Card>& car
     members.reserve(cards.size());
     for (size_t index = 0; index < cards.size(); ++index) {
         const Card& card = cards[index];
-        if (card.stack.grouped && !card.applicationKey.empty()) {
-            members.push_back({index, card.applicationKey});
+        const std::wstring stackKey = StackGroupKeyOf(card);
+        if (card.stack.grouped && !stackKey.empty()) {
+            members.push_back({index, stackKey});
         }
     }
     return members;
@@ -3208,18 +3303,51 @@ inline size_t StackFrontPosition(const std::vector<Card>& cards,
     return static_cast<size_t>(previous - members.begin());
 }
 
+// A card that leaves a stack keeps its own window size and only takes the
+// place the stack stood, so releasing a member never leaves it wearing the
+// frame's proportions.
+inline void RestoreOwnSizeCentredInFrame(Card& card) {
+    if (!card.stack.grouped || card.stack.groupKey.empty() ||
+        card.stack.frameWorld.empty() || card.world.empty()) {
+        return;
+    }
+    const RectF& frame = card.stack.frameWorld;
+    card.world = MakeRectF(frame.centerX() - card.world.width() * 0.5f,
+                           frame.centerY() - card.world.height() * 0.5f,
+                           card.world.width(), card.world.height());
+}
+
+// The shared rectangle the whole stack occupies. A formed stack keeps the
+// frame it was given, so cycling the fan never resizes the card and every
+// member shares one size and one centre; a new stack takes the front window's
+// world rectangle. Keeping the frame instead of re-deriving it from the front
+// window is what makes the fan read as one object: the front window can be
+// resized, maximized or replaced without the card jumping in size.
+inline RectF StackFrameForOrder(const std::vector<Card>& cards,
+                                const std::vector<size_t>& order) {
+    for (const size_t index : order) {
+        if (index < cards.size() && !cards[index].stack.frameWorld.empty()) {
+            return cards[index].stack.frameWorld;
+        }
+    }
+    if (order.empty() || order.front() >= cards.size()) {
+        return RectF{};
+    }
+    return cards[order.front()].world;
+}
+
 inline void ApplyStackOrder(std::vector<Card>& cards,
                             const std::vector<size_t>& order,
                             const CanvasSettings& settings) {
+    const RectF frame = StackFrameForOrder(cards, order);
     for (size_t slot = 0; slot < order.size(); ++slot) {
         const size_t index = order[slot];
         if (index >= cards.size()) {
             continue;
         }
         const std::wstring groupKey = cards[index].stack.groupKey;
-        const RectF anchor = cards[index].stack.anchorWorld;
         cards[index].stack = StackPlacementForSlot(slot, groupKey, settings);
-        cards[index].stack.anchorWorld = anchor;
+        cards[index].stack.frameWorld = frame;
     }
 }
 
@@ -3228,7 +3356,7 @@ inline void AssignStack(std::vector<Card>& cards,
                         const CanvasSettings& settings) {
     if (members.size() == 1) {
         Card& card = cards[members.front().index];
-        card.world = StackWorldRect(card);
+        RestoreOwnSizeCentredInFrame(card);
         ResetStackPlacement(card);
         return;
     }
@@ -3241,16 +3369,6 @@ inline void AssignStack(std::vector<Card>& cards,
         cards[member.index].stack.groupKey = member.groupKey;
         cards[member.index].stack.grouped = true;
         order.push_back(member.index);
-    }
-    RectF anchor = cards[order.front()].world;
-    for (const size_t index : order) {
-        if (!cards[index].stack.anchorWorld.empty()) {
-            anchor = cards[index].stack.anchorWorld;
-            break;
-        }
-    }
-    for (const size_t index : order) {
-        cards[index].stack.anchorWorld = anchor;
     }
     ApplyStackOrder(cards, order, settings);
 }
@@ -3287,15 +3405,18 @@ inline void ReconcileCardStacks(std::vector<Card>& cards, const CanvasSettings& 
         ClearAllStackPlacements(cards);
         return;
     }
-    std::unordered_map<std::wstring, size_t> applicationCounts;
+    // Peer counts follow the same key that forms the stacks, so a hand-made
+    // group also offers the header button that splits it again.
+    std::unordered_map<std::wstring, size_t> stackPeerCounts;
     for (const Card& card : cards) {
-        if (!card.applicationKey.empty()) {
-            ++applicationCounts[card.applicationKey];
+        const std::wstring stackKey = StackGroupKeyOf(card);
+        if (!stackKey.empty()) {
+            ++stackPeerCounts[stackKey];
         }
     }
     for (Card& card : cards) {
-        const auto count = applicationCounts.find(card.applicationKey);
-        card.hasApplicationPeers = count != applicationCounts.end() && count->second > 1;
+        const auto count = stackPeerCounts.find(StackGroupKeyOf(card));
+        card.hasStackPeers = count != stackPeerCounts.end() && count->second > 1;
     }
     ClearIneligibleStackPlacements(cards);
     const auto members = CollectStackMembers(cards);
@@ -3728,6 +3849,11 @@ inline void RemoveCardAt(size_t index) {
     } else if (context.draggedCard > static_cast<int>(index)) {
         --context.draggedCard;
     }
+    if (context.dropTargetCard == static_cast<int>(index)) {
+        context.dropTargetCard = -1;
+    } else if (context.dropTargetCard > static_cast<int>(index)) {
+        --context.dropTargetCard;
+    }
 }
 
 inline void ClearCards() {
@@ -3770,6 +3896,7 @@ inline bool UpdateCardFromScan(size_t index, const ScannedWindow& window) {
         saved != nullptr) {
         card.pinned = saved->pinned;
         card.stack.grouped = saved->grouped;
+        card.stackId = saved->stackId;
     }
     return changed;
 }
@@ -3815,6 +3942,7 @@ inline bool MergeScan(const std::vector<ScannedWindow>& scanned) {
             if (saved != nullptr) {
                 context.cards.back().pinned = saved->pinned;
                 context.cards.back().stack.grouped = saved->grouped;
+                context.cards.back().stackId = saved->stackId;
             }
             RememberLayoutEntry(window.fingerprint, world);
             changed = true;
@@ -4451,9 +4579,9 @@ inline Camera DiveCameraForCard(const Card& card) {
 // Card header chrome.
 //
 // Every live card reserves a fixed DIP strip above its body. The strip carries
-// the title and its buttons: group joins or splits the windows of one
-// executable, pin keeps a card above every unpinned card, close closes the
-// card's real window.
+// the title and its buttons: group joins or splits the windows of one stack
+// key - an application group or a hand-made stack - pin keeps a card above
+// every unpinned card, close closes the card's real window.
 //
 // This header stays free of Direct2D and Win32 drawing calls so the native
 // regressions can exercise the geometry on its own.
@@ -4482,7 +4610,7 @@ inline float CardHeaderButtonSize(float headerHeight, float scale) {
     return std::min(kCardHeaderButtonPx * scale, headerHeight - inset * 2.0f);
 }
 
-// A window group only exists once another window of the same executable can
+// A window group only exists once another window of the same stack key can
 // join it, so the group button appears only for those cards and only while
 // stacking is enabled. Tying the button count to the cards keeps every card's
 // row width predictable for both drawing and hit testing.
@@ -4491,7 +4619,7 @@ inline int CardHeaderButtonCount(const std::vector<Card>& cards, size_t index,
     if (!stacksEnabled || index >= cards.size()) {
         return 2;
     }
-    return cards[index].hasApplicationPeers ? 3 : 2;
+    return cards[index].hasStackPeers ? 3 : 2;
 }
 
 inline float CardHeaderButtonRowWidth(const RectF& header, float scale,
@@ -4787,6 +4915,25 @@ inline bool ReadThumbnailSource(const Card& card, RectF& source) {
     return !source.empty();
 }
 
+// The live preview covers the whole card body. A stack member shares the
+// stack frame, which may not have the same aspect as its own window, so the
+// preview is letterboxed inside the frame instead of being stretched onto it.
+// A standalone card keeps the plain body rectangle.
+inline RectF ThumbnailDestinationFor(const Card& card) {
+    const RectF frame = WorldToScreen(StackWorldRect(card), context.camera);
+    if (frame.empty() || !card.stack.grouped || card.stack.groupKey.empty()) {
+        return frame;
+    }
+    const float width =
+        static_cast<float>(card.framePx.right - card.framePx.left);
+    const float height =
+        static_cast<float>(card.framePx.bottom - card.framePx.top);
+    if (width <= 0.0f || height <= 0.0f) {
+        return frame;
+    }
+    return AspectFitRect(frame, width, height);
+}
+
 inline bool ClipThumbnailGeometry(ThumbnailGeometry& geometry, const RectF& clip) {
     const RectF clipped{std::max(clip.left, geometry.destination.left),
                         std::max(clip.top, geometry.destination.top),
@@ -4869,7 +5016,7 @@ inline bool PrepareThumbnail(Card& card, DWORD now,
     if (!CanPrepareThumbnail(card, now)) {
         return false;
     }
-    geometry.destination = WorldToScreen(StackWorldRect(card), context.camera);
+    geometry.destination = ThumbnailDestinationFor(card);
     if (ThumbnailViewportClip(geometry.destination).empty()) {
         HideThumbnail(card, now);
         return false;
@@ -5374,13 +5521,34 @@ inline bool CardShowsBadge(const Card& card) {
 }
 
 inline void DrawCardBody(const Card& card, const RectF& body, float scale) {
-    if (body.empty() || (card.state == WindowVisualState::Live &&
-                         card.thumbnail.valid() && card.thumbnailVisible)) {
+    if (body.empty()) {
         return;
     }
+    const float radius = kCardCornerRadiusPx * scale;
     SetHudColor(context.settings.cardFillColor);
+    // A live preview covers the body, so only the letterbox bands around a
+    // window whose aspect differs from the stack frame keep the card fill.
+    // The bands are clipped to the rounded body so the fill never leaks past
+    // the card's corners.
+    if (card.state == WindowVisualState::Live && card.thumbnail.valid() &&
+        card.thumbnailVisible) {
+        const RectF destination = RectFromRect(card.thumbnailDestination);
+        if (!destination.empty()) {
+            const std::vector<RectF> bands = SubtractCardOcclusionHoles(
+                body, CardOcclusionHoles(body, body, {destination}));
+            for (const RectF& band : bands) {
+                context.hudTarget->PushAxisAlignedClip(
+                    D2D1::RectF(band.left, band.top, band.right, band.bottom),
+                    D2D1_ANTIALIAS_MODE_ALIASED);
+                context.hudTarget->FillRoundedRectangle(RoundedRect(body, radius),
+                                                       context.hudBrush);
+                context.hudTarget->PopAxisAlignedClip();
+            }
+            return;
+        }
+    }
     context.hudTarget->FillRoundedRectangle(
-        RoundedRect(body, kCardCornerRadiusPx * scale), context.hudBrush);
+        RoundedRect(body, radius), context.hudBrush);
     const RectF badge = CardShowsBadge(card) ? CardBadgeBounds(body, scale) : RectF{};
     const float padding = kCardTitlePaddingPx * scale;
     RectF iconArea = GrowRect(body, -padding);
@@ -5409,7 +5577,11 @@ inline void DrawCard(const Card& card, int index, float scale) {
         return;
     }
     const float radius = kCardCornerRadiusPx * scale;
-    const bool emphasized = index == context.hoverCard || index == context.selectedCard;
+    // A card that would take an Alt+drop is highlighted like the hovered card,
+    // so the merge target is visible before the button comes up.
+    const bool emphasized = index == context.hoverCard ||
+                            index == context.selectedCard ||
+                            index == context.dropTargetCard;
     const RectF body = WorldToScreen(StackWorldRect(card), context.camera);
     const RectF header = CardHeaderRect(card);
     const bool transformed = card.stack.rotationRadians != 0.0f ||
@@ -5815,6 +5987,13 @@ inline int HitTestCard(Vec2 point) {
     return HitTestCardInOrder(context.cards, point);
 }
 
+// Alt is the modifier that turns a plain drag into a stack gesture: it both
+// pulls a card out of its fan and joins it to the card it is dropped on. Every
+// handler reads it through here so the two halves always agree.
+inline bool AltHeld() {
+    return (GetKeyState(VK_MENU) & 0x8000) != 0;
+}
+
 inline CardHeaderAction HeaderActionAt(int index, Vec2 point) {
     if (index < 0 || static_cast<size_t>(index) >= context.cards.size()) {
         return CardHeaderAction::None;
@@ -5874,7 +6053,7 @@ inline std::vector<size_t> CollectGroupMemberIndices(
     }
     for (size_t index = 0; index < context.cards.size(); ++index) {
         const Card& card = context.cards[index];
-        if (card.applicationKey == groupKey) {
+        if (StackGroupKeyOf(card) == groupKey) {
             members.push_back(index);
         }
     }
@@ -5886,13 +6065,36 @@ inline std::vector<size_t> CollectGroupMemberIndices(
     return members;
 }
 
-// The stack's own anchor is the place the group occupies; members without one
+// The members that actually fan out of one stack, front first. A window of the
+// same application that the user kept apart shares the key but is not part of
+// the fan, so joining or splitting a stack never drags it in.
+inline std::vector<size_t> CollectFannedMemberIndices(
+    const std::wstring& groupKey) {
+    std::vector<size_t> members;
+    if (groupKey.empty()) {
+        return members;
+    }
+    for (size_t index = 0; index < context.cards.size(); ++index) {
+        const Card& card = context.cards[index];
+        if (IsGroupedStackCard(card) && card.stack.groupKey == groupKey) {
+            members.push_back(index);
+        }
+    }
+    std::stable_sort(members.begin(), members.end(),
+                     [](const size_t& left, const size_t& right) {
+                         return context.cards[left].stack.slot <
+                                context.cards[right].stack.slot;
+                     });
+    return members;
+}
+
+// The stack's own frame is the place the group occupies; members without one
 // fall back to the first member's world rectangle.
-inline RectF StackAnchorForMembers(const std::vector<size_t>& members) {
+inline RectF StackFrameForMembers(const std::vector<size_t>& members) {
     for (const size_t index : members) {
         if (index < context.cards.size() &&
-            !context.cards[index].stack.anchorWorld.empty()) {
-            return context.cards[index].stack.anchorWorld;
+            !context.cards[index].stack.frameWorld.empty()) {
+            return context.cards[index].stack.frameWorld;
         }
     }
     if (members.empty() || members.front() >= context.cards.size()) {
@@ -5902,13 +6104,13 @@ inline RectF StackAnchorForMembers(const std::vector<size_t>& members) {
 }
 
 // Grouping reuses the stack the canvas already knows: every member takes the
-// key and the shared anchor, then the regular reconcile fans them into slots.
+// key and the shared frame, then the regular reconcile fans them into slots.
 inline void GroupCards(const std::vector<size_t>& members,
                        const std::wstring& groupKey) {
     if (members.size() < 2 || groupKey.empty()) {
         return;
     }
-    const RectF anchor = StackAnchorForMembers(members);
+    const RectF frame = StackFrameForMembers(members);
     for (const size_t index : members) {
         if (index >= context.cards.size()) {
             continue;
@@ -5917,7 +6119,7 @@ inline void GroupCards(const std::vector<size_t>& members,
         ResetStackPlacement(card);
         card.stack.grouped = true;
         card.stack.groupKey = groupKey;
-        card.stack.anchorWorld = anchor;
+        card.stack.frameWorld = frame;
         // The grouped flag is saved too: a later rescan restores the stack
         // from the layout instead of splitting the windows apart again.
         RememberLayoutPin(card.fingerprint, StackWorldRect(card), card.pinned, true);
@@ -5927,8 +6129,10 @@ inline void GroupCards(const std::vector<size_t>& members,
 
 // Ungrouping fans the members out in a row from where the stack stood, so each
 // window becomes individually visible and draggable instead of jumping back to
-// its own desktop position. The ungrouped flag is saved with the layout so a
-// rescan does not restack the windows.
+// its own desktop position. Every released member takes back its own window
+// size, so a card never keeps the proportions of the frame it shared. The
+// ungrouped flag is saved with the layout so a rescan does not restack the
+// windows.
 inline void UngroupCards(const std::vector<size_t>& members) {
     std::optional<float> nextLeft;
     for (const size_t index : members) {
@@ -5937,14 +6141,18 @@ inline void UngroupCards(const std::vector<size_t>& members) {
         }
         Card& card = context.cards[index];
         if (IsGroupedStackCard(card)) {
-            const RectF world = StackWorldRect(card);
-            card.world = MakeRectF(nextLeft.value_or(world.left), world.top,
-                                   world.width(), world.height());
+            RestoreOwnSizeCentredInFrame(card);
+            const float width = card.world.width();
+            card.world.left = nextLeft.value_or(card.world.left);
+            card.world.right = card.world.left + width;
             nextLeft = card.world.right + static_cast<float>(context.settings.gap);
         }
         ResetStackPlacement(card);
         card.stack.grouped = false;
-        RememberLayoutPin(card.fingerprint, card.world, card.pinned, false);
+        card.stackId.clear();
+        // One write keeps the released geometry, the ungrouped flag and the
+        // cleared hand-made id in step instead of saving them twice.
+        RememberLayoutCard(card);
     }
     MarkLayoutDirty(GetTickCount());
 }
@@ -5956,21 +6164,204 @@ inline void ToggleCardGroup(int index) {
     }
     const Card& card = context.cards[static_cast<size_t>(index)];
     const bool grouped = IsGroupedStackCard(card);
-    const std::wstring groupKey = card.applicationKey;
-    const std::vector<size_t> members = CollectGroupMemberIndices(groupKey);
-    if (members.size() < 2) {
-        return;
-    }
+    const std::wstring groupKey = StackGroupKeyOf(card);
     if (grouped) {
-        UngroupCards(members);
+        // Only the windows that really fan out are released: a same-app window
+        // the user kept apart already stands on its own.
+        const std::vector<size_t> fanned =
+            CollectFannedMemberIndices(groupKey);
+        if (fanned.size() < 2) {
+            return;
+        }
+        UngroupCards(fanned);
     } else {
-        GroupCards(members, groupKey);
+        std::vector<size_t> candidates = CollectGroupMemberIndices(groupKey);
+        if (candidates.size() < 2) {
+            return;
+        }
+        // The clicked window owns the shared frame: it is the card the user
+        // acted on and the one at the front, so regrouping must not shrink the
+        // stack to whichever member happens to sort first.
+        const auto clicked = std::find(candidates.begin(), candidates.end(),
+                                       static_cast<size_t>(index));
+        if (clicked != candidates.end()) {
+            std::rotate(candidates.begin(), clicked, clicked + 1);
+        }
+        GroupCards(candidates, groupKey);
     }
     // A split group must not keep the animation of a stack it no longer has.
     context.stackTransitions.clear();
     ReconcileCardStacks(context.cards, context.settings);
     context.hoverHeaderAction = CardHeaderAction::None;
     context.sceneDirty = true;
+}
+
+// A hand-made stack is keyed by the fingerprints of its members: they survive
+// in the layout file, so the id of a group never changes between restarts and
+// the same windows come back together. The fingerprints are sorted so stacking
+// B onto A yields the same id as stacking A onto B: the id names the set of
+// windows, not the order they were dropped in.
+inline std::wstring NewStackIdFor(const std::vector<size_t>& members) {
+    std::vector<std::wstring> fingerprints;
+    fingerprints.reserve(members.size());
+    for (const size_t index : members) {
+        if (index < context.cards.size()) {
+            fingerprints.push_back(context.cards[index].fingerprint);
+        }
+    }
+    if (fingerprints.empty()) {
+        return std::wstring();
+    }
+    std::sort(fingerprints.begin(), fingerprints.end());
+    std::wstring stackId = L"stack:";
+    for (size_t slot = 0; slot < fingerprints.size(); ++slot) {
+        if (slot > 0) {
+            stackId.push_back(L'|');
+        }
+        stackId += fingerprints[slot];
+    }
+    return stackId;
+}
+
+// Alt+dropping one card onto another joins them into a stack of their own,
+// which may span different applications. Dropping onto a member of an existing
+// fan brings that fan's windows along instead of starting a second one, and the
+// dropped card becomes the new front so it reads as the card just placed.
+inline void StackCardOntoCard(size_t draggedIndex, size_t targetIndex) {
+    if (draggedIndex >= context.cards.size() ||
+        targetIndex >= context.cards.size() || draggedIndex == targetIndex) {
+        return;
+    }
+    if (SameActiveStack(context.cards[draggedIndex],
+                        context.cards[targetIndex])) {
+        return;
+    }
+    // A window the user kept apart shares the key but not the fan, so only the
+    // fanned members are carried along.
+    std::vector<size_t> members = CollectFannedMemberIndices(
+        context.cards[targetIndex].stack.groupKey);
+    if (members.size() < 2) {
+        members.assign(1, targetIndex);
+    }
+    if (std::find(members.begin(), members.end(), draggedIndex) ==
+        members.end()) {
+        members.push_back(draggedIndex);
+    }
+    // Reuse the id of a stack that already is hand-made, so joining it keeps
+    // the group (and its saved layout) intact.
+    const std::wstring targetStackId = context.cards[targetIndex].stackId;
+    const std::wstring stackId =
+        targetStackId.empty() ? NewStackIdFor(members) : targetStackId;
+    if (stackId.empty()) {
+        return;
+    }
+    // Read the frame before the reset below: dropping onto a member of a formed
+    // fan must keep that fan's shared frame, or the whole stack would snap to
+    // the one member's own (now stale) window rectangle. A lone target lends its
+    // own rectangle so the stack grows out of the card that was aimed at.
+    const RectF frame = StackWorldRect(context.cards[targetIndex]);
+    for (const size_t index : members) {
+        Card& card = context.cards[index];
+        ResetStackPlacement(card);
+        card.stackId = stackId;
+        card.stack.grouped = true;
+        card.stack.groupKey = stackId;
+    }
+    std::vector<size_t> order;
+    order.reserve(members.size());
+    order.push_back(draggedIndex);
+    for (const size_t index : members) {
+        if (index != draggedIndex) {
+            order.push_back(index);
+        }
+    }
+    for (Card& card : context.cards) {
+        if (card.stack.groupKey == stackId) {
+            card.stack.frameWorld = frame;
+        }
+    }
+    context.stackTransitions.clear();
+    ReconcileCardStacks(context.cards, context.settings);
+    ApplyStackOrder(context.cards, order, context.settings);
+    for (const size_t index : members) {
+        RememberLayoutCard(context.cards[index]);
+    }
+    context.selectedCard = static_cast<int>(draggedIndex);
+    context.dropTargetCard = -1;
+    context.sceneDirty = true;
+}
+
+// Alt+dragging a member out of a stack releases just that window: it takes
+// back its own size, keeps the place the stack stood, and is marked ungrouped
+// so the automatic per-application stack does not pull it straight back in.
+inline void DetachCardFromStack(size_t index) {
+    if (index >= context.cards.size() ||
+        !IsGroupedStackCard(context.cards[index])) {
+        return;
+    }
+    const std::wstring leftKey = context.cards[index].stack.groupKey;
+    RestoreOwnSizeCentredInFrame(context.cards[index]);
+    Card& card = context.cards[index];
+    card.stackId.clear();
+    ResetStackPlacement(card);
+    card.stack.grouped = false;
+    context.stackTransitions.clear();
+    ReconcileCardStacks(context.cards, context.settings);
+    RememberLayoutCard(card);
+    // The rest of the fan kept its place, so their saved geometry has to follow
+    // the slots the release handed out.
+    for (Card& member : context.cards) {
+        if (member.stack.grouped && !member.stack.groupKey.empty() &&
+            member.stack.groupKey == leftKey) {
+            RememberLayoutCard(member);
+        }
+    }
+    context.detachFromKey = leftKey;
+    context.dragDetached = true;
+    context.sceneDirty = true;
+}
+
+// The card a drop lands on. Only a solid overlap counts, so brushing a card
+// never merges two windows by accident; the largest overlap wins when the
+// dragged card covers several.
+inline int DropTargetCard(size_t draggedIndex) {
+    constexpr float kMergeOverlapFraction = 0.35f;
+    if (draggedIndex >= context.cards.size()) {
+        return -1;
+    }
+    const RectF source = StackWorldRect(context.cards[draggedIndex]);
+    int best = -1;
+    float bestArea = 0.0f;
+    float bestSmallerArea = 0.0f;
+    for (size_t index = 0; index < context.cards.size(); ++index) {
+        const Card& card = context.cards[index];
+        if (index == draggedIndex || card.state != WindowVisualState::Live ||
+            SameActiveStack(context.cards[draggedIndex], card) ||
+            (!context.detachFromKey.empty() &&
+             card.stack.groupKey == context.detachFromKey)) {
+            continue;
+        }
+        const RectF bounds = StackWorldRect(card);
+        const float left = std::max(source.left, bounds.left);
+        const float top = std::max(source.top, bounds.top);
+        const float right = std::min(source.right, bounds.right);
+        const float bottom = std::min(source.bottom, bounds.bottom);
+        if (right <= left || bottom <= top) {
+            continue;
+        }
+        const float area = (right - left) * (bottom - top);
+        if (area <= bestArea) {
+            continue;
+        }
+        bestArea = area;
+        bestSmallerArea = std::min(source.width() * source.height(),
+                                   bounds.width() * bounds.height());
+        best = static_cast<int>(index);
+    }
+    if (best < 0 || bestArea < bestSmallerArea * kMergeOverlapFraction) {
+        return -1;
+    }
+    return best;
 }
 
 inline bool PointInMinimap(Vec2 point) {
@@ -6068,44 +6459,68 @@ inline void UpdatePan(POINT cursor) {
         (static_cast<float>(cursor.y) - ScreenCenterY()) / zoom;
 }
 
+// The grab offset keeps the card under the point the user pressed, so a card
+// swapped for one of another size mid-drag never jumps.
+inline void SetDragGrabOffset(int index, POINT cursor) {
+    if (index < 0 || static_cast<size_t>(index) >= context.cards.size()) {
+        return;
+    }
+    const RectF screen = WorldToScreen(
+        StackWorldRect(context.cards[static_cast<size_t>(index)]),
+        context.camera);
+    context.dragGrabOffset.x =
+        static_cast<LONG>(static_cast<float>(cursor.x) - screen.left);
+    context.dragGrabOffset.y =
+        static_cast<LONG>(static_cast<float>(cursor.y) - screen.top);
+}
+
 inline void BeginCardDrag(int index, POINT cursor) {
     context.hoverHeaderAction = CardHeaderAction::None;
     context.camera.snapToTarget();
     context.camera.zoomAnchored = false;
     context.draggedCard = index;
+    context.dragDetached = false;
+    context.detachFromKey.clear();
+    context.dropTargetCard = -1;
     context.dragCursor = cursor;
-    const RectF screen = WorldToScreen(StackWorldRect(context.cards[static_cast<size_t>(index)]),
-                                       context.camera);
-    context.dragGrabOffset.x = static_cast<LONG>(static_cast<float>(cursor.x) - screen.left);
-    context.dragGrabOffset.y = static_cast<LONG>(static_cast<float>(cursor.y) - screen.top);
+    SetDragGrabOffset(index, cursor);
     SetCapture(context.hostWindow);
 }
 
-inline void UpdateCardDrag(POINT cursor) {
+inline void UpdateCardDrag(POINT cursor, bool combine) {
     if (context.draggedCard < 0 ||
         static_cast<size_t>(context.draggedCard) >= context.cards.size()) {
         return;
+    }
+    context.dragCursor = cursor;
+    // Alt+dragging a member pulls it out of the fan first, so the rest of the
+    // gesture moves one window at its own size instead of the whole stack.
+    if (!context.dragDetached &&
+        combine &&
+        IsGroupedStackCard(context.cards[static_cast<size_t>(context.draggedCard)])) {
+        DetachCardFromStack(static_cast<size_t>(context.draggedCard));
+        SetDragGrabOffset(context.draggedCard, cursor);
     }
     const Vec2 world = ScreenToWorld(
         Vec2{static_cast<float>(cursor.x - context.dragGrabOffset.x),
              static_cast<float>(cursor.y - context.dragGrabOffset.y)}, context.camera);
     Card& card = context.cards[static_cast<size_t>(context.draggedCard)];
-    RectF moved = MakeRectF(world.x, world.y, card.world.width(), card.world.height());
+    // The frame is what the user grabs, so the drag follows its size instead
+    // of a single member's window size.
+    const RectF current = StackWorldRect(card);
+    RectF moved = MakeRectF(world.x, world.y, current.width(), current.height());
     const SnapResult snap = ComputeSnap(moved, context.draggedCard);
     moved.left = snap.left;
     moved.top = snap.top;
-    moved.right = moved.left + card.world.width();
-    moved.bottom = moved.top + card.world.height();
+    moved.right = moved.left + current.width();
+    moved.bottom = moved.top + current.height();
     if (IsGroupedStackCard(card)) {
-        const RectF current = StackWorldRect(card);
-        const RectF previousAnchor = card.stack.anchorWorld;
-        const RectF anchor = MakeRectF(
-            previousAnchor.left + moved.left - current.left,
-            previousAnchor.top + moved.top - current.top,
-            previousAnchor.width(), previousAnchor.height());
+        // Dragging a stack moves its one frame, so every member keeps the
+        // shared size and centre while the whole stack follows the cursor.
+        const RectF frame = moved;
         for (Card& member : context.cards) {
             if (SameActiveStack(card, member)) {
-                member.stack.anchorWorld = anchor;
+                member.stack.frameWorld = frame;
             }
         }
     } else {
@@ -6113,6 +6528,10 @@ inline void UpdateCardDrag(POINT cursor) {
         RememberLayoutEntry(card.fingerprint, card.world);
         MarkLayoutDirty(GetTickCount());
     }
+    // Alt+dragging also shows which card the window would join, so the merge
+    // is a deliberate aim instead of a surprise on release.
+    context.dropTargetCard =
+        combine ? DropTargetCard(static_cast<size_t>(context.draggedCard)) : -1;
     context.hasGuideVertical = snap.snapVertical;
     context.hasGuideHorizontal = snap.snapHorizontal;
     context.guideVertical = RectF{(snap.guideX - context.camera.centerX) * context.camera.zoom +
@@ -6120,6 +6539,10 @@ inline void UpdateCardDrag(POINT cursor) {
     context.guideHorizontal = RectF{0.0f,
         (snap.guideY - context.camera.centerY) * context.camera.zoom + ScreenCenterY(),
         0.0f, 0.0f};
+}
+
+inline void UpdateCardDrag(POINT cursor) {
+    UpdateCardDrag(cursor, AltHeld());
 }
 
 inline void RememberDraggedStack() {
@@ -6140,11 +6563,24 @@ inline void RememberDraggedStack() {
     MarkLayoutDirty(GetTickCount());
 }
 
-inline void EndPointerDrag() {
+inline void EndPointerDrag(bool combine) {
+    // Alt+drop joins the dragged window to the card it lands on. A plain drop
+    // leaves both cards alone: only the Z-order decides what covers what.
+    if (context.draggedCard >= 0 && combine) {
+        const int target =
+            DropTargetCard(static_cast<size_t>(context.draggedCard));
+        if (target >= 0) {
+            StackCardOntoCard(static_cast<size_t>(context.draggedCard),
+                              static_cast<size_t>(target));
+        }
+    }
     RememberDraggedStack();
     context.panning = false;
     context.draggingMinimap = false;
     context.draggedCard = -1;
+    context.dragDetached = false;
+    context.detachFromKey.clear();
+    context.dropTargetCard = -1;
     context.hasGuideVertical = false;
     context.hasGuideHorizontal = false;
     context.hoverHeaderAction = CardHeaderAction::None;
@@ -6152,6 +6588,10 @@ inline void EndPointerDrag() {
     if (GetCapture() == context.hostWindow) {
         ReleaseCapture();
     }
+}
+
+inline void EndPointerDrag() {
+    EndPointerDrag(AltHeld());
 }
 
 inline void HandleMouseMove(POINT cursor) {
@@ -6265,7 +6705,7 @@ inline void HandleMouseWheel(WPARAM wParam, LPARAM lParam) {
     // otherwise bound to canvas zoom, so a plain wheel can never switch
     // cards. Alt+wheel that misses a cyclable stack falls through to
     // zoom, and a plain wheel is unchanged.
-    if ((GetKeyState(VK_MENU) & 0x8000) != 0) {
+    if (AltHeld()) {
         const int hit = HitTestCard(Vec2{static_cast<float>(cursor.x),
                                          static_cast<float>(cursor.y)});
         if (hit >= 0 && CycleStackWithAnimation(
