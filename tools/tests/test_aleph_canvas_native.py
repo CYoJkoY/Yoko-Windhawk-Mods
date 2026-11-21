@@ -243,6 +243,9 @@ class AlephCanvasNativeTests(unittest.TestCase):
     def test_stack_cycle_rotates_front_and_rejects_invalid(self) -> None:
         self.run_case("stack_cycle")
 
+    def test_stack_rotation_direction_options_parse(self) -> None:
+        self.run_case("stack_rotation_direction_options")
+
     def test_stack_removal_promotes_next_member(self) -> None:
         self.run_case("stack_removal")
 

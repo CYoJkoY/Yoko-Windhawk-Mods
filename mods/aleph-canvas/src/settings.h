@@ -225,9 +225,9 @@ static void LoadSettings() {
             L"Canvas.card_stack_scale_percent", 800, 1000)) / 1000.0f;
     settings.stackMaxDepth =
         yoko::GetClampedIntSetting(L"Canvas.card_stack_max_depth", 0, kMaxStackDepth);
-    settings.stackRotationDirection =
-        yoko::GetClampedIntSetting(L"Canvas.card_stack_rotation_direction", -1,
-                                   1);
+    settings.stackRotationDirection = RotationDirectionFromText(
+        yoko::GetStringSetting(L"Canvas.card_stack_rotation_direction",
+                               L"counter_clockwise"));
 
     WindhawkUtils::StringSetting initialLayout =
         WindhawkUtils::StringSetting::make(L"Canvas.initial_layout");

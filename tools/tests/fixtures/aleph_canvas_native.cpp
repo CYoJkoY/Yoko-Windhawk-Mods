@@ -865,6 +865,27 @@ static void StackGeometry() {
     Near(StackPlacementForSlot(2, key, context.settings).rotationRadians, 13.0f * radians);
 }
 
+// The rotation direction setting stores a named option, so the parser has to
+// accept the three option names plus the numeric spellings older settings
+// files may still hold.
+static void StackRotationDirectionOptions() {
+    Require(RotationDirectionFromText(L"counter_clockwise") == -1,
+            "counter-clockwise option lost its sign");
+    Require(RotationDirectionFromText(L"clockwise") == 1,
+            "clockwise option lost its sign");
+    Require(RotationDirectionFromText(L"none") == 0,
+            "no-rotation option did not clear the rotation");
+    Require(RotationDirectionFromText(L"  Clockwise  ") == 1,
+            "option matching ignored case or surrounding spaces");
+    Require(RotationDirectionFromText(L"-1") == -1, "legacy -1 was rejected");
+    Require(RotationDirectionFromText(L"0") == 0, "legacy 0 was rejected");
+    Require(RotationDirectionFromText(L"1") == 1, "legacy 1 was rejected");
+    Require(RotationDirectionFromText(L"") == -1,
+            "an empty setting did not fall back to counter-clockwise");
+    Require(RotationDirectionFromText(L"sideways") == -1,
+            "an unknown option did not fall back to counter-clockwise");
+}
+
 static void StackCycle() {
     UseStackSettings();
     AddStackCard(L"a#1", L"C:\\App\\Editor.exe");
@@ -2108,6 +2129,7 @@ static constexpr NativeCase kCases[] = {
     {"localization_out_of_range", LocalizationOutOfRange},
     {"localization_badge_selection", LocalizationBadgeSelection},
     {"stack_geometry", StackGeometry}, {"stack_cycle", StackCycle},
+    {"stack_rotation_direction_options", StackRotationDirectionOptions},
     {"stack_removal", StackRemoval}, {"stack_invalid", StackInvalid},
     {"stack_same_exe_name_groups", StackSameExeNameGroups},
     {"stack_window_sizes", StackWindowSizes},
