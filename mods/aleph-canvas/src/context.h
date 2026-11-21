@@ -20,6 +20,10 @@ struct CanvasContext {
     UINT hotkeyKey = 0;
     bool hotkeyRegistered = false;
     UINT hotkeyId = kToggleHotkeyId;
+    // Pending retry state for a hotkey that failed to register. Zero delay
+    // means no retry is scheduled.
+    DWORD hotkeyRetryDelayMs = 0;
+    DWORD hotkeyRetryTick = 0;
 
     // Windows. The host carries the DWM thumbnails and the grid; the HUD is a
     // click-through layered window drawn above it.

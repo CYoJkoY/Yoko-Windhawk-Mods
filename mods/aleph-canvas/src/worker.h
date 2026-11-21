@@ -155,6 +155,10 @@ inline bool RegisterCanvasHotkey() {
     UINT key = 0;
     if (!ParseHotkeyText(context.settings.toggleHotkey, modifiers, key)) {
         Wh_Log(L"Aleph: invalid toggle hotkey");
+        // An unparseable setting cannot become valid by retrying, so drop any
+        // pending retry instead of polling forever.
+        context.hotkeyRetryDelayMs = 0;
+        context.hotkeyRetryTick = 0;
         return false;
     }
     if (context.hotkeyRegistered && context.hotkeyModifiers == modifiers &&
@@ -165,6 +169,11 @@ inline bool RegisterCanvasHotkey() {
                             ? kToggleHotkeyId + 1 : kToggleHotkeyId;
     if (!RegisterHotKey(nullptr, nextId, modifiers | MOD_NOREPEAT, key)) {
         Wh_Log(L"Aleph: RegisterHotKey failed: %lu", GetLastError());
+        // The combination may still be held by another program that is closing,
+        // so schedule a capped exponential backoff retry. Without live cards
+        // the canvas stays hidden, but the loop still wakes to retry.
+        context.hotkeyRetryDelayMs = NextHotkeyRetryDelay(context.hotkeyRetryDelayMs);
+        context.hotkeyRetryTick = GetTickCount();
         return false;
     }
     if (context.hotkeyRegistered) {
@@ -174,7 +183,32 @@ inline bool RegisterCanvasHotkey() {
     context.hotkeyModifiers = modifiers;
     context.hotkeyKey = key;
     context.hotkeyRegistered = true;
+    context.hotkeyRetryDelayMs = 0;
+    context.hotkeyRetryTick = 0;
     return true;
+}
+
+inline bool HotkeyRetryPending() {
+    return context.hotkeyRetryDelayMs != 0;
+}
+
+// Milliseconds until the next hotkey retry is due; zero means it is due now.
+inline DWORD HotkeyRetryRemaining(DWORD now) {
+    if (!HotkeyRetryPending()) {
+        return INFINITE;
+    }
+    const DWORD elapsed = now - context.hotkeyRetryTick;
+    return elapsed >= context.hotkeyRetryDelayMs
+               ? 0 : context.hotkeyRetryDelayMs - elapsed;
+}
+
+inline void RetryCanvasHotkeyIfDue(DWORD now) {
+    if (HotkeyRetryRemaining(now) != 0) {
+        return;
+    }
+    if (RegisterCanvasHotkey()) {
+        Wh_Log(L"Aleph: toggle hotkey registered on retry");
+    }
 }
 
 inline void ScanAndMerge(IVirtualDesktopManager* desktopManager, DWORD now) {
@@ -281,11 +315,15 @@ inline DWORD CanvasWaitTimeout(DWORD now) {
                                     ? 0 : kLayoutSaveDelayMs - elapsed;
         timeout = std::min(timeout, remaining);
     }
+    // A pending hotkey retry must wake the loop even while the canvas is
+    // hidden, so a failed registration self-heals without user input.
+    timeout = std::min(timeout, HotkeyRetryRemaining(now));
     return timeout;
 }
 
 inline void AdvanceCanvasFrame(IVirtualDesktopManager* manager, DWORD now) {
     ApplyPendingSettings();
+    RetryCanvasHotkeyIfDue(now);
     ScanAndMerge(manager, now);
     UpdateCameraAndDive(now);
     const bool stackAnimationWasActive = !context.stackTransitions.empty();

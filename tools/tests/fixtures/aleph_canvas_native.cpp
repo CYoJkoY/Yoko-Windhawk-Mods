@@ -1135,6 +1135,22 @@ static void HotkeyDefaultAltZ() {
     Require(modifiers == MOD_ALT && key == static_cast<UINT>('Z'), "lowercase alt+z parsed incorrectly");
 }
 
+// A failed registration must schedule a capped exponential backoff so a hotkey
+// reloaded while another program holds the combination becomes active again
+// without the user editing the setting a second time.
+static void HotkeyRetryBackoff() {
+    Require(NextHotkeyRetryDelay(0) == kHotkeyRetryInitialMs,
+            "first retry delay is not the initial value");
+    Require(NextHotkeyRetryDelay(kHotkeyRetryInitialMs) == 2 * kHotkeyRetryInitialMs,
+            "second retry delay did not double");
+    Require(NextHotkeyRetryDelay(2 * kHotkeyRetryInitialMs) == 4 * kHotkeyRetryInitialMs,
+            "third retry delay did not double again");
+    Require(NextHotkeyRetryDelay(kHotkeyRetryMaxMs) == kHotkeyRetryMaxMs,
+            "retry delay overshot the cap");
+    Require(NextHotkeyRetryDelay(kHotkeyRetryMaxMs / 2 + 1) == kHotkeyRetryMaxMs,
+            "retry delay halved growth past the cap");
+}
+
 // The reported bug: with a real stack, the upright card at the front of the
 // stack was covered by the cards stacked beneath it. Every background member
 // must reserve the front preview, and the front itself must stay unclipped.
@@ -1509,6 +1525,7 @@ static constexpr NativeCase kCases[] = {
     {"stack_removal", StackRemoval}, {"stack_invalid", StackInvalid},
     {"stack_same_exe_name_groups", StackSameExeNameGroups},
     {"hotkey_default_alt_z", HotkeyDefaultAltZ},
+    {"hotkey_retry_backoff", HotkeyRetryBackoff},
     {"stack_z_order_front", StackZOrderFront},
     {"stack_draw_order_groups", StackDrawOrderGroups},
     {"stack_wheel_cycle", StackWheelCycle},
