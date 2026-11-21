@@ -4,7 +4,7 @@
 // @name:zh-CN      Aleph - 无限窗口画布
 // @description     Arrange open windows across a pannable canvas with live DWM previews.
 // @description:zh-CN 在可平移画布上管理已打开的窗口，并显示 DWM 实时预览。
-// @version         1.7.0
+// @version         1.8.0
 // @author          CYoJkoY
 // @github          https://github.com/CYoJkoY
 // @license         MIT
@@ -193,11 +193,19 @@ the mod still attempts normal foreground activation, which can also fail.
       $name:zh-CN: 堆叠深度
       $description: Maximum number of visible layers behind the active card. Range 0-8.
       $description:zh-CN: 当前卡片后方可见的最大层数。范围 0-8。
-    - card_stack_rotation_direction: -1
+    - card_stack_rotation_direction: counter_clockwise
       $name: Stack rotation direction
       $name:zh-CN: 堆叠旋转方向
-      $description: Use 1 for clockwise, -1 for counter-clockwise, or 0 for no rotation.
-      $description:zh-CN: 1 为顺时针，-1 为逆时针，0 为不旋转。
+      $description: Direction the fan turns away from the front card.
+      $description:zh-CN: 卡片堆从当前卡片向外展开时的旋转方向。
+      $options:
+        - counter_clockwise: Counter-clockwise
+        - clockwise: Clockwise
+        - none: No rotation
+      $options:zh-CN:
+        - counter_clockwise: 逆时针
+        - clockwise: 顺时针
+        - none: 不旋转
   $name: Canvas
   $name:zh-CN: 画布
 
@@ -1443,6 +1451,21 @@ static std::wstring FormatInteger(int value) {
     return std::wstring(buffer);
 }
 
+// Maps the named rotation direction option to the multiplier used by the stack
+// geometry: 1 clockwise, 0 no rotation, -1 counter-clockwise. The legacy
+// numeric spellings stay accepted so a stored layout or an old settings file
+// keeps its direction; anything else falls back to counter-clockwise.
+static int RotationDirectionFromText(const std::wstring& value) {
+    const std::wstring text = ToLowerText(TrimText(value));
+    if (text == L"clockwise" || text == L"1") {
+        return 1;
+    }
+    if (text == L"none" || text == L"0") {
+        return 0;
+    }
+    return -1;
+}
+
 // Settings schema, hotkey parsing and persistence paths.
 
 
@@ -1662,9 +1685,9 @@ static void LoadSettings() {
             L"Canvas.card_stack_scale_percent", 800, 1000)) / 1000.0f;
     settings.stackMaxDepth =
         yoko::GetClampedIntSetting(L"Canvas.card_stack_max_depth", 0, kMaxStackDepth);
-    settings.stackRotationDirection =
-        yoko::GetClampedIntSetting(L"Canvas.card_stack_rotation_direction", -1,
-                                   1);
+    settings.stackRotationDirection = RotationDirectionFromText(
+        yoko::GetStringSetting(L"Canvas.card_stack_rotation_direction",
+                               L"counter_clockwise"));
 
     WindhawkUtils::StringSetting initialLayout =
         WindhawkUtils::StringSetting::make(L"Canvas.initial_layout");
