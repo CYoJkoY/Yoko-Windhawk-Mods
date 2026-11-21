@@ -4,7 +4,7 @@
 // @name:zh-CN      Aleph - 无限窗口画布
 // @description     Arrange open windows across a pannable canvas with live DWM previews.
 // @description:zh-CN 在可平移画布上管理已打开的窗口，并显示 DWM 实时预览。
-// @version         1.4.0
+// @version         1.5.0
 // @author          CYoJkoY
 // @github          https://github.com/CYoJkoY
 // @license         MIT
@@ -27,6 +27,12 @@ Drag cards to arrange them without moving the real desktop windows.
   nothing, another program may already use it; pick a different combination.
 - Mouse wheel: zoom around the pointer.
 - Alt+wheel over a stacked card: cycle the stack; plain wheel still zooms.
+- The card header carries up to three buttons: pin, group (windows of the same
+  application only), and close. Hovering a button shows its localized label.
+- Group joins the windows of one application into a stack; pressing it again
+  splits the stack into a row. The grouped state is saved with the layout.
+- Close sends `WM_CLOSE` to the real window, so the application closes; the
+  card leaves the canvas once the next scan reports the window gone.
 - Middle mouse drag: pan the canvas.
 - Hold Space and drag empty canvas: pan.
 - Drag a card: arrange it; nearby edges snap into alignment.
@@ -533,12 +539,12 @@ constexpr float kCameraEpsilonPx = 0.2f;
 constexpr float kZoomEpsilon = 0.001f;
 constexpr float kCardOpacityEpsilon = 0.001f;
 
-constexpr float kCardHeaderPx = 28.0f;
+constexpr float kCardHeaderPx = 32.0f;
 constexpr float kCardHeaderMinPx = 10.0f;
-constexpr float kCardHeaderMaxPx = 30.0f;
-constexpr float kCardHeaderButtonPx = 18.0f;
+constexpr float kCardHeaderMaxPx = 36.0f;
+constexpr float kCardHeaderButtonPx = 22.0f;
 constexpr float kCardHeaderButtonInsetPx = 5.0f;
-constexpr float kCardHeaderButtonGapPx = 4.0f;
+constexpr float kCardHeaderButtonGapPx = 6.0f;
 constexpr float kCardCornerRadiusPx = 8.0f;
 constexpr float kCardTitlePaddingPx = 10.0f;
 constexpr float kCardIconMaxPx = 128.0f;
@@ -554,6 +560,22 @@ constexpr float kMinGridSpacingPx = 6.0f;
 constexpr DWORD kLayoutSaveDelayMs = 800;
 constexpr DWORD kIconRetryDelayMs = 4000;
 constexpr DWORD kThumbnailRetryDelayMs = 2000;
+
+// A hotkey registration can fail transiently, for example right after a
+// settings reload while another program still holds the combination. The
+// worker retries with a capped exponential backoff so a reloaded hotkey
+// becomes active without the user touching the settings again.
+constexpr DWORD kHotkeyRetryInitialMs = 1000;
+constexpr DWORD kHotkeyRetryMaxMs = 5000;
+
+[[nodiscard]] inline DWORD NextHotkeyRetryDelay(DWORD previous) {
+    if (previous == 0) {
+        return kHotkeyRetryInitialMs;
+    }
+    const DWORD doubled =
+        previous > kHotkeyRetryMaxMs / 2 ? kHotkeyRetryMaxMs : previous * 2;
+    return std::min(doubled, kHotkeyRetryMaxMs);
+}
 
 // Value types shared by the canvas modules.
 
@@ -590,6 +612,11 @@ enum class CanvasTextId : uint8_t {
     OtherDesktopBadge,
     PreviewUnavailableBadge,
     EmptyCanvas,
+    PinTooltip,
+    PinActiveTooltip,
+    CloseTooltip,
+    GroupTooltip,
+    UngroupTooltip,
     Count,
 };
 
@@ -619,6 +646,23 @@ inline constexpr std::array<CanvasLocaleEntry,
           L"No hay ventanas aptas", L"Não há janelas elegíveis",
           L"Keine geeigneten Fenster", L"Uygun pencere yok",
           L"Nessuna finestra idonea"}},
+        {{L"Pin to top", L"Épingler", L"置顶", L"最前面に固定",
+          L"맨 위에 고정", L"置頂", L"Закрепить", L"Przypnij", L"Fijar arriba",
+          L"Fixar no topo", L"Anheften", L"Üste sabitle", L"Fissa in alto"}},
+        {{L"Unpin", L"Détacher", L"取消置顶", L"固定を解除", L"고정 해제",
+          L"取消置頂", L"Открепить", L"Odepnij", L"Desfijar", L"Desafixar",
+          L"Lösen", L"Sabitlemeyi kaldır", L"Rimuovi fissaggio"}},
+        {{L"Close window", L"Fermer la fenêtre", L"关闭窗口",
+          L"ウィンドウを閉じる", L"창 닫기", L"關閉視窗", L"Закрыть окно",
+          L"Zamknij okno", L"Cerrar ventana", L"Fechar janela",
+          L"Fenster schließen", L"Pencereyi kapat", L"Chiudi finestra"}},
+        {{L"Group windows", L"Regrouper", L"分组", L"グループ化", L"그룹화",
+          L"分組", L"Сгруппировать", L"Grupuj", L"Agrupar", L"Agrupar",
+          L"Gruppieren", L"Grupla", L"Raggruppa"}},
+        {{L"Ungroup", L"Dissocier", L"取消分组", L"グループ解除", L"그룹 해제",
+          L"取消分組", L"Разгруппировать", L"Rozgrupuj", L"Desagrupar",
+          L"Desagrupar", L"Gruppierung aufheben", L"Gruplamayı kaldır",
+          L"Separa"}},
     }};
 
 // Setting key -> language. Keys are stable identifiers; display names live in
@@ -833,6 +877,7 @@ enum class InitialLayout {
 enum class CardHeaderAction : uint8_t {
     None,
     Pin,
+    Group,
     Close,
 };
 
@@ -1034,6 +1079,10 @@ struct CanvasContext {
     UINT hotkeyKey = 0;
     bool hotkeyRegistered = false;
     UINT hotkeyId = kToggleHotkeyId;
+    // Pending retry state for a hotkey that failed to register. Zero delay
+    // means no retry is scheduled.
+    DWORD hotkeyRetryDelayMs = 0;
+    DWORD hotkeyRetryTick = 0;
 
     // Windows. The host carries the DWM thumbnails and the grid; the HUD is a
     // click-through layered window drawn above it.
@@ -1093,6 +1142,7 @@ struct CanvasContext {
     IDWriteFactory* writeFactory = nullptr;
     IDWriteTextFormat* titleFormat = nullptr;
     IDWriteTextFormat* badgeFormat = nullptr;
+    IDWriteTextFormat* tooltipFormat = nullptr;
     IWICImagingFactory* wicFactory = nullptr;
     HDC hudDc = nullptr;
     HBITMAP hudBitmap = nullptr;
@@ -3936,6 +3986,10 @@ inline void ReleaseTextFormats() {
         context.badgeFormat->Release();
         context.badgeFormat = nullptr;
     }
+    if (context.tooltipFormat != nullptr) {
+        context.tooltipFormat->Release();
+        context.tooltipFormat = nullptr;
+    }
 }
 
 inline void ReleaseTextResources() {
@@ -3992,12 +4046,29 @@ inline bool CreateBadgeFormat() {
                DWRITE_PARAGRAPH_ALIGNMENT_CENTER));
 }
 
+inline bool CreateTooltipFormat() {
+    const float tooltipSize = 11.0f * ChromeScale();
+    const HRESULT result = context.writeFactory->CreateTextFormat(
+        L"Segoe UI", nullptr, DWRITE_FONT_WEIGHT_NORMAL, DWRITE_FONT_STYLE_NORMAL,
+        DWRITE_FONT_STRETCH_NORMAL, tooltipSize, L"", &context.tooltipFormat);
+    if (FAILED(result)) {
+        return false;
+    }
+    return SUCCEEDED(context.tooltipFormat->SetWordWrapping(
+               DWRITE_WORD_WRAPPING_NO_WRAP)) &&
+           SUCCEEDED(context.tooltipFormat->SetTextAlignment(
+               DWRITE_TEXT_ALIGNMENT_CENTER)) &&
+           SUCCEEDED(context.tooltipFormat->SetParagraphAlignment(
+               DWRITE_PARAGRAPH_ALIGNMENT_CENTER));
+}
+
 inline bool CreateTextFormats() {
     ReleaseTextFormats();
     if (context.writeFactory == nullptr) {
         return false;
     }
-    if (!CreateTitleFormat() || !CreateBadgeFormat()) {
+    if (!CreateTitleFormat() || !CreateBadgeFormat() ||
+        !CreateTooltipFormat()) {
         ReleaseTextFormats();
         return false;
     }
@@ -4088,7 +4159,8 @@ inline bool EnsureGraphics() {
             return false;
         }
     }
-    if ((context.titleFormat == nullptr || context.badgeFormat == nullptr) &&
+    if ((context.titleFormat == nullptr || context.badgeFormat == nullptr ||
+         context.tooltipFormat == nullptr) &&
         !CreateTextFormats()) {
         Wh_Log(L"Aleph: text format creation failed");
         return false;
@@ -4342,9 +4414,10 @@ inline Camera DiveCameraForCard(const Card& card) {
 
 // Card header chrome.
 //
-// Every live card reserves a 28 DIP strip above its body. The strip carries the
-// title and two buttons: pin keeps a card above every unpinned card, close
-// dismisses the card until the canvas is shown again.
+// Every live card reserves a fixed DIP strip above its body. The strip carries
+// the title and its buttons: group joins or splits the windows of one
+// executable, pin keeps a card above every unpinned card, close closes the
+// card's real window.
 //
 // This header stays free of Direct2D and Win32 drawing calls so the native
 // regressions can exercise the geometry on its own.
@@ -4373,7 +4446,42 @@ inline float CardHeaderButtonSize(float headerHeight, float scale) {
     return std::min(kCardHeaderButtonPx * scale, headerHeight - inset * 2.0f);
 }
 
-inline bool CardHeaderButtonsFit(const RectF& header, float scale) {
+// A window group only exists once another window of the same executable can
+// join it, so the group button appears only for those cards and only while
+// stacking is enabled. Tying the button count to the cards keeps every card's
+// row width predictable for both drawing and hit testing.
+inline int CardHeaderButtonCount(const std::vector<Card>& cards, size_t index,
+                                 bool stacksEnabled) {
+    if (!stacksEnabled || index >= cards.size()) {
+        return 2;
+    }
+    const std::wstring name = ExecutableName(cards[index].exePath);
+    if (name.empty()) {
+        return 2;
+    }
+    size_t sameName = 0;
+    for (const Card& card : cards) {
+        if (ExecutableName(card.exePath) == name) {
+            ++sameName;
+        }
+    }
+    return sameName >= 2 ? 3 : 2;
+}
+
+inline float CardHeaderButtonRowWidth(const RectF& header, float scale,
+                                      int buttons) {
+    if (buttons <= 0 || header.empty()) {
+        return 0.0f;
+    }
+    const float size = CardHeaderButtonSize(header.height(), scale);
+    const float inset = CardHeaderButtonInset(header.height(), scale);
+    const float gap = kCardHeaderButtonGapPx * scale;
+    const float count = static_cast<float>(buttons);
+    return size * count + gap * (count - 1.0f) + inset * 2.0f;
+}
+
+inline bool CardHeaderButtonsFit(const RectF& header, float scale,
+                                 int buttons) {
     if (header.empty()) {
         return false;
     }
@@ -4381,15 +4489,25 @@ inline bool CardHeaderButtonsFit(const RectF& header, float scale) {
     if (size <= 0.0f) {
         return false;
     }
-    const float inset = CardHeaderButtonInset(header.height(), scale);
-    const float gap = kCardHeaderButtonGapPx * scale;
-    const float needed =
-        size * 2.0f + gap + inset * 2.0f + kCardTitlePaddingPx * scale * 2.0f;
+    const float needed = CardHeaderButtonRowWidth(header, scale, buttons) +
+                         kCardTitlePaddingPx * scale * 2.0f;
     return header.width() >= needed;
 }
 
-inline RectF CardCloseButtonRect(const RectF& header, float scale) {
-    if (!CardHeaderButtonsFit(header, scale)) {
+// A narrow card gives up the optional group button first, so a small window of
+// a repeated application still keeps its pin and close buttons instead of
+// losing the whole row.
+inline int CardHeaderButtonCountForWidth(const RectF& header, float scale,
+                                         int buttons) {
+    if (buttons > 2 && !CardHeaderButtonsFit(header, scale, buttons) &&
+        CardHeaderButtonsFit(header, scale, 2)) {
+        return 2;
+    }
+    return buttons;
+}
+
+inline RectF CardCloseButtonRect(const RectF& header, float scale, int buttons) {
+    if (!CardHeaderButtonsFit(header, scale, buttons)) {
         return {};
     }
     const float size = CardHeaderButtonSize(header.height(), scale);
@@ -4398,8 +4516,8 @@ inline RectF CardCloseButtonRect(const RectF& header, float scale) {
     return MakeRectF(header.right - inset - size, top, size, size);
 }
 
-inline RectF CardPinButtonRect(const RectF& header, float scale) {
-    const RectF close = CardCloseButtonRect(header, scale);
+inline RectF CardPinButtonRect(const RectF& header, float scale, int buttons) {
+    const RectF close = CardCloseButtonRect(header, scale, buttons);
     if (close.empty()) {
         return {};
     }
@@ -4408,13 +4526,34 @@ inline RectF CardPinButtonRect(const RectF& header, float scale) {
                      close.height());
 }
 
+// The group button sits left of the pin; an empty rect means the card has no
+// window group and therefore no group button.
+inline RectF CardGroupButtonRect(const RectF& header, float scale, int buttons) {
+    if (buttons < 3) {
+        return {};
+    }
+    const RectF pin = CardPinButtonRect(header, scale, buttons);
+    if (pin.empty()) {
+        return {};
+    }
+    const float gap = kCardHeaderButtonGapPx * scale;
+    return MakeRectF(pin.left - gap - pin.width(), pin.top, pin.width(),
+                     pin.height());
+}
+
 inline CardHeaderAction HitTestCardHeader(const RectF& header, Vec2 point,
-                                          float scale) {
-    if (ContainsPoint(CardCloseButtonRect(header, scale), point.x, point.y)) {
+                                          float scale, int buttons) {
+    if (ContainsPoint(CardCloseButtonRect(header, scale, buttons), point.x,
+                      point.y)) {
         return CardHeaderAction::Close;
     }
-    if (ContainsPoint(CardPinButtonRect(header, scale), point.x, point.y)) {
+    if (ContainsPoint(CardPinButtonRect(header, scale, buttons), point.x,
+                      point.y)) {
         return CardHeaderAction::Pin;
+    }
+    if (ContainsPoint(CardGroupButtonRect(header, scale, buttons), point.x,
+                      point.y)) {
+        return CardHeaderAction::Group;
     }
     return CardHeaderAction::None;
 }
@@ -4872,6 +5011,93 @@ inline void DrawPinGlyph(const RectF& rect, bool pinned, float scale) {
                                 context.hudBrush, stroke);
 }
 
+// Two overlapping squares read as "these windows are grouped".
+inline void DrawGroupedGlyph(const RectF& rect, float stroke) {
+    const float width = rect.width();
+    const float height = rect.height();
+    context.hudTarget->DrawRectangle(
+        D2D1::RectF(rect.left + width * 0.18f, rect.top + height * 0.18f,
+                    rect.left + width * 0.62f, rect.top + height * 0.62f),
+        context.hudBrush, stroke);
+    context.hudTarget->DrawRectangle(
+        D2D1::RectF(rect.left + width * 0.38f, rect.top + height * 0.38f,
+                    rect.left + width * 0.82f, rect.top + height * 0.82f),
+        context.hudBrush, stroke);
+}
+
+// Two separated squares read as "these windows can still be grouped".
+inline void DrawSplitGlyph(const RectF& rect, float stroke) {
+    const float width = rect.width();
+    const float height = rect.height();
+    context.hudTarget->DrawRectangle(
+        D2D1::RectF(rect.left + width * 0.12f, rect.top + height * 0.28f,
+                    rect.left + width * 0.46f, rect.top + height * 0.72f),
+        context.hudBrush, stroke);
+    context.hudTarget->DrawRectangle(
+        D2D1::RectF(rect.left + width * 0.54f, rect.top + height * 0.28f,
+                    rect.left + width * 0.88f, rect.top + height * 0.72f),
+        context.hudBrush, stroke);
+}
+
+inline void DrawGroupGlyph(const RectF& rect, bool grouped, float scale) {
+    if (rect.empty()) {
+        return;
+    }
+    SetHudColor(grouped ? context.settings.accentColor
+                        : context.settings.textColor,
+                grouped ? 1.0f : 0.85f);
+    const float stroke = 1.2f * scale;
+    if (grouped) {
+        DrawGroupedGlyph(rect, stroke);
+        return;
+    }
+    DrawSplitGlyph(rect, stroke);
+}
+// The header geometry is resolved once and then shared by the title, the
+// backdrops and the glyphs, so the three can never disagree about where a
+// button begins.
+struct CardHeaderRow {
+    RectF group;
+    RectF pin;
+    RectF close;
+    float scale = 1.0f;
+};
+
+[[nodiscard]] inline CardHeaderRow CardHeaderRowFor(const RectF& header,
+                                                    float scale, int buttons) {
+    return CardHeaderRow{CardGroupButtonRect(header, scale, buttons),
+                         CardPinButtonRect(header, scale, buttons),
+                         CardCloseButtonRect(header, scale, buttons), scale};
+}
+
+// The title stops before the leftmost button, so it never slides under one.
+[[nodiscard]] inline RectF CardHeaderTitleRect(const RectF& header,
+                                               const CardHeaderRow& row) {
+    const RectF titleLimit = row.group.empty() ? row.pin : row.group;
+    if (titleLimit.empty()) {
+        return header;
+    }
+    RectF title = header;
+    title.right = titleLimit.left;
+    return title;
+}
+
+// The row is drawn from the right edge inwards: close, then pin, then the
+// group button when the card has one. Each backdrop lights up under the
+// cursor, so the tooltip drawn above always names the button it points at.
+inline void DrawCardHeaderButtons(const Card& card, const CardHeaderRow& row,
+                                  CardHeaderAction hovered) {
+    DrawHeaderButtonBackdrop(row.group, hovered == CardHeaderAction::Group,
+                             row.scale);
+    DrawHeaderButtonBackdrop(row.pin, hovered == CardHeaderAction::Pin,
+                             row.scale);
+    DrawHeaderButtonBackdrop(row.close, hovered == CardHeaderAction::Close,
+                             row.scale);
+    DrawGroupGlyph(row.group, IsGroupedStackCard(card), row.scale);
+    DrawPinGlyph(row.pin, card.pinned, row.scale);
+    DrawCloseGlyph(row.close, row.scale);
+}
+
 inline void DrawCardHeader(const Card& card, int index, const RectF& header,
                            float scale) {
     if (header.empty()) {
@@ -4881,26 +5107,166 @@ inline void DrawCardHeader(const Card& card, int index, const RectF& header,
     context.hudTarget->FillRectangle(
         D2D1::RectF(header.left, header.top, header.right, header.bottom),
         context.hudBrush);
+    const int buttons = CardHeaderButtonCountForWidth(
+        header, scale,
+        CardHeaderButtonCount(context.cards, static_cast<size_t>(index),
+                              context.settings.stacksEnabled));
+    const CardHeaderRow row = CardHeaderRowFor(header, scale, buttons);
+    DrawCardTitle(card, CardHeaderTitleRect(header, row), scale);
+    const CardHeaderAction hovered =
+        index == context.hoverCard ? context.hoverHeaderAction
+                                   : CardHeaderAction::None;
+    DrawCardHeaderButtons(card, row, hovered);
+}
 
-    const RectF pin = CardPinButtonRect(header, scale);
-    const RectF close = CardCloseButtonRect(header, scale);
-    RectF title = header;
-    if (!pin.empty()) {
-        title.right = pin.left;
+// Tooltips are drawn by the HUD itself: the HUD is a layered click-through
+// window, so a native Win32 tooltip on it would never receive hover input.
+struct TooltipMetrics {
+    float width = 0.0f;
+    float height = 0.0f;
+};
+
+inline bool MeasureTooltipText(const wchar_t* text, size_t length,
+                               TooltipMetrics& metrics) {
+    metrics = TooltipMetrics{};
+    if (text == nullptr || context.writeFactory == nullptr ||
+        context.tooltipFormat == nullptr || length == 0) {
+        return false;
     }
-    DrawCardTitle(card, title, scale);
+    IDWriteTextLayout* layout = nullptr;
+    const HRESULT created = context.writeFactory->CreateTextLayout(
+        text, static_cast<UINT32>(length), context.tooltipFormat,
+        static_cast<float>(VirtualScreenWidth()),
+        static_cast<float>(VirtualScreenHeight()), &layout);
+    if (FAILED(created) || layout == nullptr) {
+        return false;
+    }
+    DWRITE_TEXT_METRICS measured = {};
+    const HRESULT result = layout->GetMetrics(&measured);
+    // CreateTextLayout hands over the only reference, so it is released on
+    // both the success and the failure path.
+    layout->Release();
+    if (FAILED(result)) {
+        return false;
+    }
+    metrics.width = measured.width;
+    metrics.height = measured.height;
+    return true;
+}
 
-    const bool hovered = index == context.hoverCard;
-    DrawHeaderButtonBackdrop(pin, hovered &&
-                                      context.hoverHeaderAction ==
-                                          CardHeaderAction::Pin,
-                             scale);
-    DrawHeaderButtonBackdrop(close, hovered &&
-                                        context.hoverHeaderAction ==
-                                            CardHeaderAction::Close,
-                             scale);
-    DrawPinGlyph(pin, card.pinned, scale);
-    DrawCloseGlyph(close, scale);
+[[nodiscard]] inline CanvasTextId HeaderTooltipText(const Card& card) {
+    switch (context.hoverHeaderAction) {
+        case CardHeaderAction::Close:
+            return CanvasTextId::CloseTooltip;
+        case CardHeaderAction::Pin:
+            return card.pinned ? CanvasTextId::PinActiveTooltip
+                               : CanvasTextId::PinTooltip;
+        case CardHeaderAction::Group:
+            return IsGroupedStackCard(card) ? CanvasTextId::UngroupTooltip
+                                            : CanvasTextId::GroupTooltip;
+        case CardHeaderAction::None:
+            break;
+    }
+    return CanvasTextId::PinTooltip;
+}
+
+[[nodiscard]] inline RectF HeaderActionRect(const RectF& header, float scale,
+                                            CardHeaderAction action,
+                                            int buttons) {
+    switch (action) {
+        case CardHeaderAction::Close:
+            return CardCloseButtonRect(header, scale, buttons);
+        case CardHeaderAction::Pin:
+            return CardPinButtonRect(header, scale, buttons);
+        case CardHeaderAction::Group:
+            return CardGroupButtonRect(header, scale, buttons);
+        case CardHeaderAction::None:
+            break;
+    }
+    return {};
+}
+
+// Defaults above the button; flips below and clamps horizontally so a button
+// near a screen edge keeps its label fully visible.
+[[nodiscard]] inline RectF PlaceTooltipBox(const RectF& anchor,
+                                           const TooltipMetrics& metrics,
+                                           float scale) {
+    const float margin = 4.0f * scale;
+    const float gap = 6.0f * scale;
+    const float padding = 6.0f * scale;
+    const float width = metrics.width + padding * 2.0f;
+    // Padding on all four sides; a single-sided value would leave the label
+    // flush against the top edge of its own box.
+    const float height = metrics.height + padding * 2.0f;
+    const float screenWidth = static_cast<float>(VirtualScreenWidth());
+    const float maxLeft = std::max(margin, screenWidth - margin - width);
+    const float left =
+        std::max(margin, std::min(anchor.centerX() - width * 0.5f, maxLeft));
+    float top = anchor.top - gap - height;
+    if (top < margin) {
+        top = anchor.bottom + gap;
+    }
+    return MakeRectF(left, top, width, height);
+}
+
+// What the header tooltip needs to draw itself: the button it points at and
+// the already localized label. An empty anchor means nothing is hovered.
+struct HeaderTooltip {
+    RectF anchor;
+    const wchar_t* text = nullptr;
+    size_t length = 0;
+};
+
+[[nodiscard]] inline HeaderTooltip ResolveHeaderTooltip(float scale) {
+    HeaderTooltip tooltip;
+    if (context.hoverHeaderAction == CardHeaderAction::None ||
+        context.hoverCard < 0 ||
+        static_cast<size_t>(context.hoverCard) >= context.cards.size()) {
+        return tooltip;
+    }
+    const size_t cardIndex = static_cast<size_t>(context.hoverCard);
+    const Card& card = context.cards[cardIndex];
+    const RectF header = CardHeaderRect(card);
+    const int buttons = CardHeaderButtonCountForWidth(
+        header, scale,
+        CardHeaderButtonCount(context.cards, cardIndex,
+                              context.settings.stacksEnabled));
+    tooltip.anchor =
+        HeaderActionRect(header, scale, context.hoverHeaderAction, buttons);
+    const CanvasTextId textId = HeaderTooltipText(card);
+    tooltip.text = CanvasText(textId, context.settings.language);
+    tooltip.length = CanvasTextLength(textId, context.settings.language);
+    return tooltip;
+}
+
+inline void DrawTooltipBox(const RectF& box, const HeaderTooltip& tooltip,
+                           float scale) {
+    SetHudColor(context.settings.backgroundColor, 0.95f);
+    context.hudTarget->FillRoundedRectangle(RoundedRect(box, 4.0f * scale),
+                                            context.hudBrush);
+    SetHudColor(context.settings.gridColor, 0.9f);
+    context.hudTarget->DrawRoundedRectangle(RoundedRect(box, 4.0f * scale),
+                                            context.hudBrush, 1.0f * scale);
+    const float padding = 6.0f * scale;
+    SetHudColor(context.settings.textColor);
+    context.hudTarget->DrawTextW(
+        tooltip.text, static_cast<UINT32>(tooltip.length), context.tooltipFormat,
+        D2D1::RectF(box.left + padding, box.top + padding, box.right - padding,
+                    box.bottom - padding),
+        context.hudBrush, D2D1_DRAW_TEXT_OPTIONS_CLIP);
+}
+
+inline void DrawHeaderTooltip(float scale) {
+    const HeaderTooltip tooltip = ResolveHeaderTooltip(scale);
+    if (tooltip.anchor.empty() || tooltip.text == nullptr) {
+        return;
+    }
+    TooltipMetrics metrics;
+    if (!MeasureTooltipText(tooltip.text, tooltip.length, metrics)) {
+        return;
+    }
+    DrawTooltipBox(PlaceTooltipBox(tooltip.anchor, metrics, scale), tooltip,
+                   scale);
 }
 
 inline RectF CardBadgeBounds(const RectF& body, float scale) {
@@ -5213,6 +5579,7 @@ inline bool SubmitHudFrame() {
     DrawEmptyCanvas(scale);
     DrawMinimap(scale);
     DrawAlignmentGuides(scale);
+    DrawHeaderTooltip(scale);
     if (FAILED(context.hudTarget->EndDraw())) {
         ReleaseHudSurface();
         return false;
@@ -5404,8 +5771,14 @@ inline CardHeaderAction HeaderActionAt(int index, Vec2 point) {
     if (index < 0 || static_cast<size_t>(index) >= context.cards.size()) {
         return CardHeaderAction::None;
     }
-    return HitTestCardHeader(CardHeaderRect(context.cards[static_cast<size_t>(index)]),
-                             point, ChromeScale());
+    const size_t cardIndex = static_cast<size_t>(index);
+    const RectF header = CardHeaderRect(context.cards[cardIndex]);
+    const float scale = ChromeScale();
+    const int buttons = CardHeaderButtonCountForWidth(
+        header, scale,
+        CardHeaderButtonCount(context.cards, cardIndex,
+                              context.settings.stacksEnabled));
+    return HitTestCardHeader(header, point, scale, buttons);
 }
 
 inline void DismissCard(int index) {
@@ -5429,6 +5802,152 @@ inline void ToggleCardPin(int index) {
     card.pinned = !card.pinned;
     RememberLayoutPin(card.fingerprint, card.world, card.pinned, card.stack.grouped);
     MarkLayoutDirty(GetTickCount());
+    context.sceneDirty = true;
+}
+
+// A close request goes to the real window. The card only leaves the canvas
+// once the next scan reports the window gone, so a document that refuses to
+// close - a save prompt, for example - keeps its card instead of silently
+// disappearing and reappearing the next time the canvas is shown.
+inline void CloseCardWindow(int index) {
+    if (index < 0 || static_cast<size_t>(index) >= context.cards.size()) {
+        return;
+    }
+    const HWND window = context.cards[static_cast<size_t>(index)].hwnd;
+    if (window == nullptr || IsWindow(window) == FALSE) {
+        // Nothing is left to close, so dismissal is the only remaining action.
+        DismissCard(index);
+        return;
+    }
+    if (PostMessageW(window, WM_CLOSE, 0, 0) == FALSE) {
+        Wh_Log(L"Aleph: WM_CLOSE could not be posted: %lu", GetLastError());
+        return;
+    }
+    context.hoverHeaderAction = CardHeaderAction::None;
+    context.scanRequested = true;
+    context.sceneDirty = true;
+}
+
+// Group members share one executable: a grouped card is matched by the key its
+// stack already carries, an ungrouped card by its executable name, so toggling
+// either way touches exactly the windows the button refers to.
+inline std::vector<size_t> CollectGroupMemberIndices(
+    const std::wstring& groupKey) {
+    std::vector<size_t> members;
+    if (groupKey.empty()) {
+        return members;
+    }
+    for (size_t index = 0; index < context.cards.size(); ++index) {
+        const Card& card = context.cards[index];
+        const bool matches = IsGroupedStackCard(card)
+                                 ? card.stack.groupKey == groupKey
+                                 : ExecutableName(card.exePath) == groupKey;
+        if (matches) {
+            members.push_back(index);
+        }
+    }
+    std::stable_sort(members.begin(), members.end(),
+                     [](const size_t& left, const size_t& right) {
+                         return context.cards[left].stack.slot <
+                                context.cards[right].stack.slot;
+                     });
+    return members;
+}
+
+// The stack's own anchor is the place the group occupies; members without one
+// fall back to the first member's world rectangle.
+inline RectF StackAnchorForMembers(const std::vector<size_t>& members) {
+    for (const size_t index : members) {
+        if (index < context.cards.size() &&
+            !context.cards[index].stack.anchorWorld.empty()) {
+            return context.cards[index].stack.anchorWorld;
+        }
+    }
+    if (members.empty() || members.front() >= context.cards.size()) {
+        return RectF{};
+    }
+    return context.cards[members.front()].world;
+}
+
+// Grouping reuses the stack the canvas already knows: every member takes the
+// key and the shared anchor, then the regular reconcile fans them into slots.
+inline void GroupCards(const std::vector<size_t>& members,
+                       const std::wstring& groupKey) {
+    if (members.size() < 2 || groupKey.empty()) {
+        return;
+    }
+    const RectF anchor = StackAnchorForMembers(members);
+    for (const size_t index : members) {
+        if (index >= context.cards.size()) {
+            continue;
+        }
+        Card& card = context.cards[index];
+        ResetStackPlacement(card);
+        card.stack.grouped = true;
+        card.stack.groupKey = groupKey;
+        card.stack.anchorWorld = anchor;
+        // The grouped flag is saved too: a later rescan restores the stack
+        // from the layout instead of splitting the windows apart again.
+        RememberLayoutPin(card.fingerprint,
+                          anchor.empty() ? card.world : anchor, card.pinned,
+                          true);
+    }
+    MarkLayoutDirty(GetTickCount());
+}
+
+// Ungrouping fans the members out in a row from where the stack stood, so each
+// window becomes individually visible and draggable instead of jumping back to
+// its own desktop position. The ungrouped flag is saved with the layout so a
+// rescan does not restack the windows.
+inline void UngroupCards(const std::vector<size_t>& members) {
+    const RectF anchor = StackAnchorForMembers(members);
+    const float step =
+        anchor.width() + static_cast<float>(context.settings.gap);
+    // Only the windows that were part of the stack move. A window of the same
+    // executable that the user kept apart is a member of the group key but not
+    // of the stack, so it keeps the place it was put in.
+    size_t position = 0;
+    for (const size_t index : members) {
+        if (index >= context.cards.size()) {
+            continue;
+        }
+        Card& card = context.cards[index];
+        const bool wasStacked = IsGroupedStackCard(card);
+        if (wasStacked && !anchor.empty()) {
+            card.world =
+                MakeRectF(anchor.left + step * static_cast<float>(position),
+                          anchor.top, anchor.width(), anchor.height());
+            ++position;
+        }
+        ResetStackPlacement(card);
+        card.stack.grouped = false;
+        RememberLayoutPin(card.fingerprint, card.world, card.pinned, false);
+    }
+    MarkLayoutDirty(GetTickCount());
+}
+
+inline void ToggleCardGroup(int index) {
+    if (!context.settings.stacksEnabled || index < 0 ||
+        static_cast<size_t>(index) >= context.cards.size()) {
+        return;
+    }
+    const Card& card = context.cards[static_cast<size_t>(index)];
+    const bool grouped = IsGroupedStackCard(card);
+    const std::wstring groupKey =
+        grouped ? card.stack.groupKey : ExecutableName(card.exePath);
+    const std::vector<size_t> members = CollectGroupMemberIndices(groupKey);
+    if (members.size() < 2) {
+        return;
+    }
+    if (grouped) {
+        UngroupCards(members);
+    } else {
+        GroupCards(members, groupKey);
+    }
+    // A split group must not keep the animation of a stack it no longer has.
+    context.stackTransitions.clear();
+    ReconcileCardStacks(context.cards, context.settings);
+    context.hoverHeaderAction = CardHeaderAction::None;
     context.sceneDirty = true;
 }
 
@@ -5650,11 +6169,15 @@ inline void HandleLeftButtonDown(POINT cursor) {
     if (card >= 0) {
         const CardHeaderAction action = HeaderActionAt(card, point);
         if (action == CardHeaderAction::Close) {
-            DismissCard(card);
+            CloseCardWindow(card);
             return;
         }
         if (action == CardHeaderAction::Pin) {
             ToggleCardPin(card);
+            return;
+        }
+        if (action == CardHeaderAction::Group) {
+            ToggleCardGroup(card);
             return;
         }
     }
@@ -5900,11 +6423,17 @@ inline bool RegisterCanvasWindows(HINSTANCE instance) {
     return true;
 }
 
-inline bool RegisterCanvasHotkey() {
+// `logFailure` is false for the automatic backoff retries: a combination that
+// stays taken would otherwise log one failure every few seconds forever.
+inline bool RegisterCanvasHotkey(bool logFailure) {
     UINT modifiers = 0;
     UINT key = 0;
     if (!ParseHotkeyText(context.settings.toggleHotkey, modifiers, key)) {
         Wh_Log(L"Aleph: invalid toggle hotkey");
+        // An unparseable setting cannot become valid by retrying, so drop any
+        // pending retry instead of polling forever.
+        context.hotkeyRetryDelayMs = 0;
+        context.hotkeyRetryTick = 0;
         return false;
     }
     if (context.hotkeyRegistered && context.hotkeyModifiers == modifiers &&
@@ -5914,7 +6443,15 @@ inline bool RegisterCanvasHotkey() {
     const UINT nextId = context.hotkeyId == kToggleHotkeyId
                             ? kToggleHotkeyId + 1 : kToggleHotkeyId;
     if (!RegisterHotKey(nullptr, nextId, modifiers | MOD_NOREPEAT, key)) {
-        Wh_Log(L"Aleph: RegisterHotKey failed: %lu", GetLastError());
+        if (logFailure) {
+            Wh_Log(L"Aleph: RegisterHotKey failed: %lu", GetLastError());
+        }
+        // The combination may still be held by another program that is closing,
+        // so schedule a capped exponential backoff retry. Without live cards
+        // the canvas stays hidden, but the loop still wakes to retry.
+        context.hotkeyRetryDelayMs =
+            NextHotkeyRetryDelay(context.hotkeyRetryDelayMs);
+        context.hotkeyRetryTick = GetTickCount();
         return false;
     }
     if (context.hotkeyRegistered) {
@@ -5924,7 +6461,32 @@ inline bool RegisterCanvasHotkey() {
     context.hotkeyModifiers = modifiers;
     context.hotkeyKey = key;
     context.hotkeyRegistered = true;
+    context.hotkeyRetryDelayMs = 0;
+    context.hotkeyRetryTick = 0;
     return true;
+}
+
+inline bool HotkeyRetryPending() {
+    return context.hotkeyRetryDelayMs != 0;
+}
+
+// Milliseconds until the next hotkey retry is due; zero means it is due now.
+inline DWORD HotkeyRetryRemaining(DWORD now) {
+    if (!HotkeyRetryPending()) {
+        return INFINITE;
+    }
+    const DWORD elapsed = now - context.hotkeyRetryTick;
+    return elapsed >= context.hotkeyRetryDelayMs
+               ? 0 : context.hotkeyRetryDelayMs - elapsed;
+}
+
+inline void RetryCanvasHotkeyIfDue(DWORD now) {
+    if (HotkeyRetryRemaining(now) != 0) {
+        return;
+    }
+    if (RegisterCanvasHotkey(false)) {
+        Wh_Log(L"Aleph: toggle hotkey registered on retry");
+    }
 }
 
 inline void ScanAndMerge(IVirtualDesktopManager* desktopManager, DWORD now) {
@@ -6011,7 +6573,7 @@ inline void ApplyPendingSettings() {
     LoadSettings();
     context.stackTransitions.clear();
     ReconcileCardStacks(context.cards, context.settings);
-    RegisterCanvasHotkey();
+    RegisterCanvasHotkey(true);
     context.camera.targetZoom = ClampZoom(context.camera.targetZoom);
     context.camera.zoomAnchored = false;
     context.scanRequested = true;
@@ -6031,11 +6593,15 @@ inline DWORD CanvasWaitTimeout(DWORD now) {
                                     ? 0 : kLayoutSaveDelayMs - elapsed;
         timeout = std::min(timeout, remaining);
     }
+    // A pending hotkey retry must wake the loop even while the canvas is
+    // hidden, so a failed registration self-heals without user input.
+    timeout = std::min(timeout, HotkeyRetryRemaining(now));
     return timeout;
 }
 
 inline void AdvanceCanvasFrame(IVirtualDesktopManager* manager, DWORD now) {
     ApplyPendingSettings();
+    RetryCanvasHotkeyIfDue(now);
     ScanAndMerge(manager, now);
     UpdateCameraAndDive(now);
     const bool stackAnimationWasActive = !context.stackTransitions.empty();
@@ -6095,7 +6661,7 @@ inline DWORD WINAPI CanvasWorkerThread(LPVOID) {
         if (previousDpi != nullptr) SetThreadDpiAwarenessContext(previousDpi);
         return 1;
     }
-    if (!RegisterCanvasHotkey()) {
+    if (!RegisterCanvasHotkey(true)) {
         Wh_Log(L"Aleph: the toggle hotkey is unavailable");
     }
     IVirtualDesktopManager* desktopManager = nullptr;
