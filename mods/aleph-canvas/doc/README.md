@@ -57,9 +57,12 @@ unrecognized stored value also falls back to English.
 
 ## Card controls
 
-Every card reserves a 32 DIP header above the window preview. The header shows
+Every card reserves a 44 DIP header above the window preview. The header shows
 the window title and up to three buttons on the right edge; a card that is too
-narrow for the row drops the group button first and then the whole row.
+narrow for the row drops the group button first and then the whole row. The
+buttons are sized relative to the header (30 DIP squares) rather than to an
+absolute pixel count, so pin, group and close stay legible on large cards
+instead of shrinking into a corner.
 
 - Pin raises the card above every unpinned card and is saved with the layout,
   so a pinned card returns pinned after a restart.

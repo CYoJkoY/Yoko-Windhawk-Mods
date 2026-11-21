@@ -431,7 +431,7 @@ static void HeaderChrome() {
     Near(header.left, bounds.left);
     Near(header.right, bounds.right);
     Near(header.top, bounds.top);
-    Near(header.height(), 32.0f * ChromeScale());
+    Near(header.height(), 44.0f * ChromeScale());
 
     const RectF close = CardCloseButtonRect(header, ChromeScale(), 2);
     const RectF pin = CardPinButtonRect(header, ChromeScale(), 2);
@@ -468,10 +468,10 @@ static void HeaderChrome() {
     Require(CardPinButtonRect(narrowHeader, ChromeScale(), 2).empty(),
             "narrow header kept a pin button");
 
-    // The strip is DPI relative: 32 DIP is 32 px at 96 DPI.
+    // The strip is DPI relative: 44 DIP is 44 px at 96 DPI.
     context.chromeDpi = 96;
     const RectF scaled = CardHeaderRect(card);
-    Near(scaled.height(), 32.0f);
+    Near(scaled.height(), 44.0f);
     const RectF scaledClose = CardCloseButtonRect(scaled, ChromeScale(), 2);
     Near(scaledClose.width(), kCardHeaderButtonPx);
     Near(scaledClose.right, scaled.right - kCardHeaderButtonInsetPx);
@@ -1607,21 +1607,21 @@ static void HeaderThreeButtons() {
                               scale, 3) == CardHeaderAction::Group,
             "group button did not hit");
 
-    // A 140 px card fits close and pin but not the third button, so the row
+    // A 200 px card fits close and pin but not the third button, so the row
     // drops the group button instead of colliding with the title.
     Card narrow;
-    narrow.world = MakeRectF(0.0f, 0.0f, 140.0f, 300.0f);
+    narrow.world = MakeRectF(0.0f, 0.0f, 200.0f, 300.0f);
     const RectF narrowHeader = CardHeaderRect(narrow);
     const int narrowButtons =
         CardHeaderButtonCountForWidth(narrowHeader, scale, 3);
     Require(narrowButtons == 2,
-            "a 140 px card did not drop the group button");
+            "a 200 px card did not drop the group button");
     Require(!CardCloseButtonRect(narrowHeader, scale, narrowButtons).empty(),
-        "a 140 px card lost the buttons it can still fit");
-    narrow.world = MakeRectF(0.0f, 0.0f, 70.0f, 300.0f);
+        "a 200 px card lost the buttons it can still fit");
+    narrow.world = MakeRectF(0.0f, 0.0f, 110.0f, 300.0f);
     const RectF tinyHeader = CardHeaderRect(narrow);
     Require(CardCloseButtonRect(tinyHeader, scale, 2).empty(),
-            "a 70 px card kept header buttons");
+            "a 110 px card kept header buttons");
 }
 
 // Ungrouping fans the members out from the stack anchor and saves the
