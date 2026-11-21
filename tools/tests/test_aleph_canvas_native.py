@@ -303,8 +303,12 @@ class AlephCanvasNativeTests(unittest.TestCase):
     def test_group_toggle_fans_out_and_persists(self) -> None:
         self.run_case("group_toggle_persistence")
 
+    def test_ungroup_keeps_a_loose_same_app_window_in_place(self) -> None:
+        self.run_case("ungroup_keeps_loose_window")
+
     def test_close_button_targets_the_real_window(self) -> None:
         self.run_case("close_request_fallback")
+
 
 if __name__ == "__main__":
     unittest.main()

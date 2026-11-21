@@ -154,16 +154,21 @@ inline void UngroupCards(const std::vector<size_t>& members) {
     const RectF anchor = StackAnchorForMembers(members);
     const float step =
         anchor.width() + static_cast<float>(context.settings.gap);
-    for (size_t position = 0; position < members.size(); ++position) {
-        const size_t index = members[position];
+    // Only the windows that were part of the stack move. A window of the same
+    // executable that the user kept apart is a member of the group key but not
+    // of the stack, so it keeps the place it was put in.
+    size_t position = 0;
+    for (const size_t index : members) {
         if (index >= context.cards.size()) {
             continue;
         }
         Card& card = context.cards[index];
-        if (!anchor.empty()) {
+        const bool wasStacked = IsGroupedStackCard(card);
+        if (wasStacked && !anchor.empty()) {
             card.world =
                 MakeRectF(anchor.left + step * static_cast<float>(position),
                           anchor.top, anchor.width(), anchor.height());
+            ++position;
         }
         ResetStackPlacement(card);
         card.stack.grouped = false;

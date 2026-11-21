@@ -1587,6 +1587,38 @@ static void GroupTogglePersistence() {
             "the regrouped state was still saved as ungrouped");
 }
 
+// A window of the same executable that the user kept apart shares the group
+// key but not the stack, so ungrouping must leave it where it stands instead of
+// dragging it into the fan beside the released windows.
+static void UngroupKeepsLooseWindow() {
+    UseStackSettings();
+    context.cards.clear();
+    context.layout = LayoutSnapshot{};
+    context.dismissedFingerprints.clear();
+    context.stackTransitions.clear();
+    AddStackCard(L"a#1", L"C:\\App\\Editor.exe");
+    AddStackCard(L"b#1", L"C:\\App\\Editor.exe");
+    AddStackCard(L"loose#1", L"C:\\App\\Editor.exe");
+    context.cards[2].stack.grouped = false;
+    context.cards[2].stack.groupKey.clear();
+    const RectF looseWorld = MakeRectF(900.0f, 400.0f, 320.0f, 240.0f);
+    context.cards[2].world = looseWorld;
+    ReconcileCardStacks(context.cards, context.settings);
+    Require(IsGroupedStackCard(context.cards[0]) &&
+                IsGroupedStackCard(context.cards[1]),
+            "the two windows did not form a stack");
+    Require(!IsGroupedStackCard(context.cards[2]),
+            "the loose window was pulled into the stack");
+
+    ToggleCardGroup(0);
+    Require(!IsGroupedStackCard(context.cards[0]) &&
+                !IsGroupedStackCard(context.cards[1]),
+            "ungrouping left the cards stacked");
+    SameRect(context.cards[2].world, looseWorld);
+    Require(!RectsOverlap(context.cards[0].world, context.cards[1].world),
+            "the released windows still overlap");
+}
+
 // Closing a card reaches the real window. Without a live window the card falls
 // back to a dismissal; with one the WM_CLOSE is posted and the card stays until
 // a rescan reports the window gone.
@@ -1683,6 +1715,7 @@ static constexpr NativeCase kCases[] = {
     {"layout_grouped_roundtrip", LayoutGroupedRoundtrip},
     {"header_three_buttons", HeaderThreeButtons},
     {"group_toggle_persistence", GroupTogglePersistence},
+    {"ungroup_keeps_loose_window", UngroupKeepsLooseWindow},
     {"close_request_fallback", CloseRequestFallback},
 };
 
