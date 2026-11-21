@@ -29,12 +29,12 @@ constexpr float kCameraEpsilonPx = 0.2f;
 constexpr float kZoomEpsilon = 0.001f;
 constexpr float kCardOpacityEpsilon = 0.001f;
 
-constexpr float kCardHeaderPx = 28.0f;
+constexpr float kCardHeaderPx = 32.0f;
 constexpr float kCardHeaderMinPx = 10.0f;
-constexpr float kCardHeaderMaxPx = 30.0f;
-constexpr float kCardHeaderButtonPx = 18.0f;
+constexpr float kCardHeaderMaxPx = 36.0f;
+constexpr float kCardHeaderButtonPx = 22.0f;
 constexpr float kCardHeaderButtonInsetPx = 5.0f;
-constexpr float kCardHeaderButtonGapPx = 4.0f;
+constexpr float kCardHeaderButtonGapPx = 6.0f;
 constexpr float kCardCornerRadiusPx = 8.0f;
 constexpr float kCardTitlePaddingPx = 10.0f;
 constexpr float kCardIconMaxPx = 128.0f;
@@ -50,3 +50,19 @@ constexpr float kMinGridSpacingPx = 6.0f;
 constexpr DWORD kLayoutSaveDelayMs = 800;
 constexpr DWORD kIconRetryDelayMs = 4000;
 constexpr DWORD kThumbnailRetryDelayMs = 2000;
+
+// A hotkey registration can fail transiently, for example right after a
+// settings reload while another program still holds the combination. The
+// worker retries with a capped exponential backoff so a reloaded hotkey
+// becomes active without the user touching the settings again.
+constexpr DWORD kHotkeyRetryInitialMs = 1000;
+constexpr DWORD kHotkeyRetryMaxMs = 5000;
+
+[[nodiscard]] inline DWORD NextHotkeyRetryDelay(DWORD previous) {
+    if (previous == 0) {
+        return kHotkeyRetryInitialMs;
+    }
+    const DWORD doubled =
+        previous > kHotkeyRetryMaxMs / 2 ? kHotkeyRetryMaxMs : previous * 2;
+    return std::min(doubled, kHotkeyRetryMaxMs);
+}

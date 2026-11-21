@@ -92,6 +92,10 @@ inline void ReleaseTextFormats() {
         context.badgeFormat->Release();
         context.badgeFormat = nullptr;
     }
+    if (context.tooltipFormat != nullptr) {
+        context.tooltipFormat->Release();
+        context.tooltipFormat = nullptr;
+    }
 }
 
 inline void ReleaseTextResources() {
@@ -148,12 +152,29 @@ inline bool CreateBadgeFormat() {
                DWRITE_PARAGRAPH_ALIGNMENT_CENTER));
 }
 
+inline bool CreateTooltipFormat() {
+    const float tooltipSize = 11.0f * ChromeScale();
+    const HRESULT result = context.writeFactory->CreateTextFormat(
+        L"Segoe UI", nullptr, DWRITE_FONT_WEIGHT_NORMAL, DWRITE_FONT_STYLE_NORMAL,
+        DWRITE_FONT_STRETCH_NORMAL, tooltipSize, L"", &context.tooltipFormat);
+    if (FAILED(result)) {
+        return false;
+    }
+    return SUCCEEDED(context.tooltipFormat->SetWordWrapping(
+               DWRITE_WORD_WRAPPING_NO_WRAP)) &&
+           SUCCEEDED(context.tooltipFormat->SetTextAlignment(
+               DWRITE_TEXT_ALIGNMENT_CENTER)) &&
+           SUCCEEDED(context.tooltipFormat->SetParagraphAlignment(
+               DWRITE_PARAGRAPH_ALIGNMENT_CENTER));
+}
+
 inline bool CreateTextFormats() {
     ReleaseTextFormats();
     if (context.writeFactory == nullptr) {
         return false;
     }
-    if (!CreateTitleFormat() || !CreateBadgeFormat()) {
+    if (!CreateTitleFormat() || !CreateBadgeFormat() ||
+        !CreateTooltipFormat()) {
         ReleaseTextFormats();
         return false;
     }
@@ -244,7 +265,8 @@ inline bool EnsureGraphics() {
             return false;
         }
     }
-    if ((context.titleFormat == nullptr || context.badgeFormat == nullptr) &&
+    if ((context.titleFormat == nullptr || context.badgeFormat == nullptr ||
+         context.tooltipFormat == nullptr) &&
         !CreateTextFormats()) {
         Wh_Log(L"Aleph: text format creation failed");
         return false;

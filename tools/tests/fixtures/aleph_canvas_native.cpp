@@ -10,6 +10,7 @@
 #include "mods/aleph-canvas/src/resources.h"
 #include "mods/aleph-canvas/src/settings.h"
 #include "mods/aleph-canvas/src/windows.h"
+#include "mods/aleph-canvas/src/interaction.h"
 
 #include <array>
 #include <iostream>
@@ -427,10 +428,10 @@ static void HeaderChrome() {
     Near(header.left, bounds.left);
     Near(header.right, bounds.right);
     Near(header.top, bounds.top);
-    Near(header.height(), 28.0f * ChromeScale());
+    Near(header.height(), 32.0f * ChromeScale());
 
-    const RectF close = CardCloseButtonRect(header, ChromeScale());
-    const RectF pin = CardPinButtonRect(header, ChromeScale());
+    const RectF close = CardCloseButtonRect(header, ChromeScale(), 2);
+    const RectF pin = CardPinButtonRect(header, ChromeScale(), 2);
     Require(!close.empty() && !pin.empty(), "buttons missing on a wide header");
     Require(!RectsOverlap(close, pin), "header buttons overlap");
     Require(close.right <= header.right && close.left >= header.left,
@@ -442,33 +443,33 @@ static void HeaderChrome() {
     Near(pin.centerY(), header.centerY());
 
     Require(HitTestCardHeader(header, Vec2{close.centerX(), close.centerY()},
-                              ChromeScale()) == CardHeaderAction::Close,
+                              ChromeScale(), 2) == CardHeaderAction::Close,
             "close button did not hit");
     Require(HitTestCardHeader(header, Vec2{pin.centerX(), pin.centerY()},
-                              ChromeScale()) == CardHeaderAction::Pin,
+                              ChromeScale(), 2) == CardHeaderAction::Pin,
             "pin button did not hit");
     Require(HitTestCardHeader(header, Vec2{header.left + 40.0f, header.centerY()},
-                              ChromeScale()) == CardHeaderAction::None,
+                              ChromeScale(), 2) == CardHeaderAction::None,
             "title area reported a button");
     Require(HitTestCardHeader(header,
                               Vec2{header.centerX(), header.bottom + 4.0f},
-                              ChromeScale()) == CardHeaderAction::None,
+                              ChromeScale(), 2) == CardHeaderAction::None,
             "point below the header reported a button");
 
     // A narrow card cannot host both buttons, so none are drawn or hit.
     Card narrow;
     narrow.world = MakeRectF(0.0f, 0.0f, 40.0f, 300.0f);
     const RectF narrowHeader = CardHeaderRect(narrow);
-    Require(CardCloseButtonRect(narrowHeader, ChromeScale()).empty(),
+    Require(CardCloseButtonRect(narrowHeader, ChromeScale(), 2).empty(),
             "narrow header kept a close button");
-    Require(CardPinButtonRect(narrowHeader, ChromeScale()).empty(),
+    Require(CardPinButtonRect(narrowHeader, ChromeScale(), 2).empty(),
             "narrow header kept a pin button");
 
-    // The strip is DPI relative: 28 DIP is 28 px at 96 DPI.
+    // The strip is DPI relative: 32 DIP is 32 px at 96 DPI.
     context.chromeDpi = 96;
     const RectF scaled = CardHeaderRect(card);
-    Near(scaled.height(), 28.0f);
-    const RectF scaledClose = CardCloseButtonRect(scaled, ChromeScale());
+    Near(scaled.height(), 32.0f);
+    const RectF scaledClose = CardCloseButtonRect(scaled, ChromeScale(), 2);
     Near(scaledClose.width(), kCardHeaderButtonPx);
     Near(scaledClose.right, scaled.right - kCardHeaderButtonInsetPx);
 }
@@ -1135,6 +1136,22 @@ static void HotkeyDefaultAltZ() {
     Require(modifiers == MOD_ALT && key == static_cast<UINT>('Z'), "lowercase alt+z parsed incorrectly");
 }
 
+// A failed registration must schedule a capped exponential backoff so a hotkey
+// reloaded while another program holds the combination becomes active again
+// without the user editing the setting a second time.
+static void HotkeyRetryBackoff() {
+    Require(NextHotkeyRetryDelay(0) == kHotkeyRetryInitialMs,
+            "first retry delay is not the initial value");
+    Require(NextHotkeyRetryDelay(kHotkeyRetryInitialMs) == 2 * kHotkeyRetryInitialMs,
+            "second retry delay did not double");
+    Require(NextHotkeyRetryDelay(2 * kHotkeyRetryInitialMs) == 4 * kHotkeyRetryInitialMs,
+            "third retry delay did not double again");
+    Require(NextHotkeyRetryDelay(kHotkeyRetryMaxMs) == kHotkeyRetryMaxMs,
+            "retry delay overshot the cap");
+    Require(NextHotkeyRetryDelay(kHotkeyRetryMaxMs / 2 + 1) == kHotkeyRetryMaxMs,
+            "retry delay halved growth past the cap");
+}
+
 // The reported bug: with a real stack, the upright card at the front of the
 // stack was covered by the cards stacked beneath it. Every background member
 // must reserve the front preview, and the front itself must stay unclipped.
@@ -1466,6 +1483,183 @@ static void LayoutGroupedRoundtrip() {
     SameRect(context.layout.entries[0].world, MakeRectF(5.0f, 5.0f, 10.0f, 10.0f));
 }
 
+// Two windows of one executable get the extra group button; a lone window and
+// an out-of-range index keep the two-button row.
+static void HeaderThreeButtons() {
+    context.cards.clear();
+    AddStackCard(L"a#1", L"C:\\App\\Editor.exe");
+    AddStackCard(L"b#1", L"C:\\App\\Editor.exe");
+    AddStackCard(L"c#1", L"C:\\App\\Player.exe");
+    Require(CardHeaderButtonCount(context.cards, 0, true) == 3,
+            "a grouped candidate lost its group button");
+    Require(CardHeaderButtonCount(context.cards, 1, true) == 3,
+            "the second member lost its group button");
+    Require(CardHeaderButtonCount(context.cards, 2, true) == 2,
+            "a lone window gained a group button");
+    Require(CardHeaderButtonCount(context.cards, 3, true) == 2,
+            "an out-of-range index gained a group button");
+    Require(CardHeaderButtonCount(context.cards, 0, false) == 2,
+            "a disabled stack kept a group button");
+
+    const float scale = ChromeScale();
+    const RectF header = CardHeaderRect(context.cards[0]);
+    const RectF close = CardCloseButtonRect(header, scale, 3);
+    const RectF pin = CardPinButtonRect(header, scale, 3);
+    const RectF group = CardGroupButtonRect(header, scale, 3);
+    Require(!close.empty() && !pin.empty() && !group.empty(),
+            "the three-button row is missing a button");
+    Require(!RectsOverlap(close, pin) && !RectsOverlap(pin, group) &&
+                !RectsOverlap(group, close),
+            "header buttons overlap");
+    Require(close.right <= header.right && group.left >= header.left,
+            "a header button escaped the strip");
+    Near(group.right, pin.left - kCardHeaderButtonGapPx * scale);
+    Require(CardGroupButtonRect(header, scale, 2).empty(),
+            "a two-button row drew a group button");
+    Require(HitTestCardHeader(header, Vec2{close.centerX(), close.centerY()},
+                              scale, 3) == CardHeaderAction::Close,
+            "close button did not hit in a three-button row");
+    Require(HitTestCardHeader(header, Vec2{pin.centerX(), pin.centerY()}, scale,
+                              3) == CardHeaderAction::Pin,
+            "pin button did not hit in a three-button row");
+    Require(HitTestCardHeader(header, Vec2{group.centerX(), group.centerY()},
+                              scale, 3) == CardHeaderAction::Group,
+            "group button did not hit");
+
+    // A 140 px card fits close and pin but not the third button, so the row
+    // drops the group button instead of colliding with the title.
+    Card narrow;
+    narrow.world = MakeRectF(0.0f, 0.0f, 140.0f, 300.0f);
+    const RectF narrowHeader = CardHeaderRect(narrow);
+    const int narrowButtons =
+        CardHeaderButtonCountForWidth(narrowHeader, scale, 3);
+    Require(narrowButtons == 2,
+            "a 140 px card did not drop the group button");
+    Require(!CardCloseButtonRect(narrowHeader, scale, narrowButtons).empty(),
+        "a 140 px card lost the buttons it can still fit");
+    narrow.world = MakeRectF(0.0f, 0.0f, 70.0f, 300.0f);
+    const RectF tinyHeader = CardHeaderRect(narrow);
+    Require(CardCloseButtonRect(tinyHeader, scale, 2).empty(),
+            "a 70 px card kept header buttons");
+}
+
+// Ungrouping fans the members out from the stack anchor and saves the
+// ungrouped flag, so a rescan keeps them apart; grouping them again restores
+// the stack and clears the saved flag.
+static void GroupTogglePersistence() {
+    UseStackSettings();
+    context.cards.clear();
+    context.layout = LayoutSnapshot{};
+    context.dismissedFingerprints.clear();
+    context.stackTransitions.clear();
+    AddStackCard(L"a#1", L"C:\\App\\Editor.exe");
+    AddStackCard(L"b#1", L"C:\\App\\Editor.exe");
+    ReconcileCardStacks(context.cards, context.settings);
+    Require(IsGroupedStackCard(context.cards[0]) &&
+                IsGroupedStackCard(context.cards[1]),
+            "two windows of one executable did not group");
+    Require(!context.cards[0].stack.anchorWorld.empty(),
+            "the formed group lost its anchor");
+
+    const RectF anchor = context.cards[0].stack.anchorWorld;
+    ToggleCardGroup(0);
+    Require(!IsGroupedStackCard(context.cards[0]) &&
+                !IsGroupedStackCard(context.cards[1]),
+            "ungrouping left the cards stacked");
+    Require(context.cards[0].stack.groupKey.empty() &&
+                context.cards[1].stack.groupKey.empty(),
+            "an ungrouped card kept its group key");
+    Require(!RectsOverlap(context.cards[0].world, context.cards[1].world),
+            "ungrouped cards still overlap");
+    Near(context.cards[0].world.left, anchor.left);
+    Near(context.cards[1].world.left,
+         anchor.left + anchor.width() + static_cast<float>(context.settings.gap));
+    Require(SerializeLayout(context.layout).find("\"is_grouped\":0") !=
+                std::string::npos,
+            "the ungrouped state was not saved");
+
+    ToggleCardGroup(0);
+    Require(IsGroupedStackCard(context.cards[0]) &&
+                IsGroupedStackCard(context.cards[1]),
+            "regrouping did not stack the windows again");
+    Require(context.cards[0].stack.slot == 0 && context.cards[1].stack.slot == 1,
+            "regrouping assigned the wrong slots");
+    Require(context.cards[0].stack.groupKey == context.cards[1].stack.groupKey,
+            "regrouped cards disagree on their key");
+    Require(SerializeLayout(context.layout).find("is_grouped") == std::string::npos,
+            "the regrouped state was still saved as ungrouped");
+}
+
+// A window of the same executable that the user kept apart shares the group
+// key but not the stack, so ungrouping must leave it where it stands instead of
+// dragging it into the fan beside the released windows.
+static void UngroupKeepsLooseWindow() {
+    UseStackSettings();
+    context.cards.clear();
+    context.layout = LayoutSnapshot{};
+    context.dismissedFingerprints.clear();
+    context.stackTransitions.clear();
+    AddStackCard(L"a#1", L"C:\\App\\Editor.exe");
+    AddStackCard(L"b#1", L"C:\\App\\Editor.exe");
+    AddStackCard(L"loose#1", L"C:\\App\\Editor.exe");
+    context.cards[2].stack.grouped = false;
+    context.cards[2].stack.groupKey.clear();
+    const RectF looseWorld = MakeRectF(900.0f, 400.0f, 320.0f, 240.0f);
+    context.cards[2].world = looseWorld;
+    ReconcileCardStacks(context.cards, context.settings);
+    Require(IsGroupedStackCard(context.cards[0]) &&
+                IsGroupedStackCard(context.cards[1]),
+            "the two windows did not form a stack");
+    Require(!IsGroupedStackCard(context.cards[2]),
+            "the loose window was pulled into the stack");
+
+    ToggleCardGroup(0);
+    Require(!IsGroupedStackCard(context.cards[0]) &&
+                !IsGroupedStackCard(context.cards[1]),
+            "ungrouping left the cards stacked");
+    SameRect(context.cards[2].world, looseWorld);
+    Require(!RectsOverlap(context.cards[0].world, context.cards[1].world),
+            "the released windows still overlap");
+}
+
+// Closing a card reaches the real window. Without a live window the card falls
+// back to a dismissal; with one the WM_CLOSE is posted and the card stays until
+// a rescan reports the window gone.
+static void CloseRequestFallback() {
+    context.cards.clear();
+    context.dismissedFingerprints.clear();
+    context.scanRequested = false;
+    AddStackCard(L"closeme#1", L"C:\\App\\Editor.exe");
+    CloseCardWindow(0);
+    Require(context.cards.empty(), "a card without a window was not dismissed");
+    Require(context.dismissedFingerprints.count(L"closeme#1") == 1,
+            "the dismissed fingerprint was not remembered");
+    CloseCardWindow(-1);
+    CloseCardWindow(99);
+    Require(context.cards.empty(), "an out-of-range close changed the cards");
+
+    // A window with no message pump keeps its queue, so a posted WM_CLOSE can
+    // be observed without closing it. Skip the block when the session cannot
+    // create a window at all.
+    const HWND probe = CreateWindowExW(0, L"STATIC", L"AlephCloseProbe", WS_POPUP,
+                                       0, 0, 120, 80, nullptr, nullptr, nullptr,
+                                       nullptr);
+    if (probe == nullptr) {
+        return;
+    }
+    context.cards.clear();
+    context.dismissedFingerprints.clear();
+    context.scanRequested = false;
+    AddStackCard(L"live#1", L"C:\\App\\Editor.exe");
+    context.cards[0].hwnd = probe;
+    CloseCardWindow(0);
+    Require(context.cards.size() == 1,
+            "a live window was dismissed before it closed");
+    Require(context.scanRequested, "a live close did not request a rescan");
+    Require(IsWindow(probe) != FALSE, "the probe window closed itself");
+    DestroyWindow(probe);
+}
+
 struct NativeCase {
     const char* name;
     void (*run)();
@@ -1509,6 +1703,7 @@ static constexpr NativeCase kCases[] = {
     {"stack_removal", StackRemoval}, {"stack_invalid", StackInvalid},
     {"stack_same_exe_name_groups", StackSameExeNameGroups},
     {"hotkey_default_alt_z", HotkeyDefaultAltZ},
+    {"hotkey_retry_backoff", HotkeyRetryBackoff},
     {"stack_z_order_front", StackZOrderFront},
     {"stack_draw_order_groups", StackDrawOrderGroups},
     {"stack_wheel_cycle", StackWheelCycle},
@@ -1521,6 +1716,10 @@ static constexpr NativeCase kCases[] = {
     {"stack_thumbnail_occlusion", StackThumbnailOcclusionClips},
     {"stack_front_occlusion_full_stack", StackFrontOcclusionFullStack},
     {"layout_grouped_roundtrip", LayoutGroupedRoundtrip},
+    {"header_three_buttons", HeaderThreeButtons},
+    {"group_toggle_persistence", GroupTogglePersistence},
+    {"ungroup_keeps_loose_window", UngroupKeepsLooseWindow},
+    {"close_request_fallback", CloseRequestFallback},
 };
 
 static int RunCase(const char* name) {
