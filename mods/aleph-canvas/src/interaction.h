@@ -9,6 +9,8 @@
 #include "math_utils.h"
 #include "minimap.h"
 
+#include <optional>
+
 inline POINT CursorInCanvas() {
     POINT point = {};
     GetCursorPos(&point);
@@ -35,26 +37,13 @@ inline CardHeaderAction HeaderActionAt(int index, Vec2 point) {
     return HitTestCardHeader(header, point, scale, buttons);
 }
 
-inline void DismissCard(int index) {
-    if (index < 0 || static_cast<size_t>(index) >= context.cards.size()) {
-        return;
-    }
-    context.dismissedFingerprints.insert(
-        context.cards[static_cast<size_t>(index)].fingerprint);
-    RemoveCardAt(static_cast<size_t>(index));
-    context.stackTransitions.clear();
-    ReconcileCardStacks(context.cards, context.settings);
-    context.hoverHeaderAction = CardHeaderAction::None;
-    context.sceneDirty = true;
-}
-
 inline void ToggleCardPin(int index) {
     if (index < 0 || static_cast<size_t>(index) >= context.cards.size()) {
         return;
     }
     Card& card = context.cards[static_cast<size_t>(index)];
     card.pinned = !card.pinned;
-    RememberLayoutPin(card.fingerprint, card.world, card.pinned, card.stack.grouped);
+    RememberLayoutPin(card.fingerprint, StackWorldRect(card), card.pinned, card.stack.grouped);
     MarkLayoutDirty(GetTickCount());
     context.sceneDirty = true;
 }
@@ -67,13 +56,16 @@ inline void CloseCardWindow(int index) {
     if (index < 0 || static_cast<size_t>(index) >= context.cards.size()) {
         return;
     }
-    const HWND window = context.cards[static_cast<size_t>(index)].hwnd;
-    if (window == nullptr || IsWindow(window) == FALSE) {
-        // Nothing is left to close, so dismissal is the only remaining action.
-        DismissCard(index);
-        return;
-    }
-    if (PostMessageW(window, WM_CLOSE, 0, 0) == FALSE) {
+    const Card& card = context.cards[static_cast<size_t>(index)];
+    const HWND window = card.hwnd;
+    DWORD processId = 0;
+    const DWORD threadId = card.destroyed || window == nullptr
+                               ? 0 : GetWindowThreadProcessId(window, &processId);
+    if (threadId == 0 || threadId != card.threadId || processId != card.processId) {
+        RemoveCardAt(static_cast<size_t>(index));
+        context.stackTransitions.clear();
+        ReconcileCardStacks(context.cards, context.settings);
+    } else if (PostMessageW(window, WM_CLOSE, 0, 0) == FALSE) {
         Wh_Log(L"Aleph: WM_CLOSE could not be posted: %lu", GetLastError());
         return;
     }
@@ -82,9 +74,6 @@ inline void CloseCardWindow(int index) {
     context.sceneDirty = true;
 }
 
-// Group members share one executable: a grouped card is matched by the key its
-// stack already carries, an ungrouped card by its executable name, so toggling
-// either way touches exactly the windows the button refers to.
 inline std::vector<size_t> CollectGroupMemberIndices(
     const std::wstring& groupKey) {
     std::vector<size_t> members;
@@ -93,10 +82,7 @@ inline std::vector<size_t> CollectGroupMemberIndices(
     }
     for (size_t index = 0; index < context.cards.size(); ++index) {
         const Card& card = context.cards[index];
-        const bool matches = IsGroupedStackCard(card)
-                                 ? card.stack.groupKey == groupKey
-                                 : ExecutableName(card.exePath) == groupKey;
-        if (matches) {
+        if (card.applicationKey == groupKey) {
             members.push_back(index);
         }
     }
@@ -142,9 +128,7 @@ inline void GroupCards(const std::vector<size_t>& members,
         card.stack.anchorWorld = anchor;
         // The grouped flag is saved too: a later rescan restores the stack
         // from the layout instead of splitting the windows apart again.
-        RememberLayoutPin(card.fingerprint,
-                          anchor.empty() ? card.world : anchor, card.pinned,
-                          true);
+        RememberLayoutPin(card.fingerprint, StackWorldRect(card), card.pinned, true);
     }
     MarkLayoutDirty(GetTickCount());
 }
@@ -154,24 +138,17 @@ inline void GroupCards(const std::vector<size_t>& members,
 // its own desktop position. The ungrouped flag is saved with the layout so a
 // rescan does not restack the windows.
 inline void UngroupCards(const std::vector<size_t>& members) {
-    const RectF anchor = StackAnchorForMembers(members);
-    const float step =
-        anchor.width() + static_cast<float>(context.settings.gap);
-    // Only the windows that were part of the stack move. A window of the same
-    // executable that the user kept apart is a member of the group key but not
-    // of the stack, so it keeps the place it was put in.
-    size_t position = 0;
+    std::optional<float> nextLeft;
     for (const size_t index : members) {
         if (index >= context.cards.size()) {
             continue;
         }
         Card& card = context.cards[index];
-        const bool wasStacked = IsGroupedStackCard(card);
-        if (wasStacked && !anchor.empty()) {
-            card.world =
-                MakeRectF(anchor.left + step * static_cast<float>(position),
-                          anchor.top, anchor.width(), anchor.height());
-            ++position;
+        if (IsGroupedStackCard(card)) {
+            const RectF world = StackWorldRect(card);
+            card.world = MakeRectF(nextLeft.value_or(world.left), world.top,
+                                   world.width(), world.height());
+            nextLeft = card.world.right + static_cast<float>(context.settings.gap);
         }
         ResetStackPlacement(card);
         card.stack.grouped = false;
@@ -187,8 +164,7 @@ inline void ToggleCardGroup(int index) {
     }
     const Card& card = context.cards[static_cast<size_t>(index)];
     const bool grouped = IsGroupedStackCard(card);
-    const std::wstring groupKey =
-        grouped ? card.stack.groupKey : ExecutableName(card.exePath);
+    const std::wstring groupKey = card.applicationKey;
     const std::vector<size_t> members = CollectGroupMemberIndices(groupKey);
     if (members.size() < 2) {
         return;
@@ -328,15 +304,22 @@ inline void UpdateCardDrag(POINT cursor) {
     moved.top = snap.top;
     moved.right = moved.left + card.world.width();
     moved.bottom = moved.top + card.world.height();
-    card.world = moved;
-    // Dragging one member moves the whole stack: every member shares the
-    // anchor, so update it together instead of leaving the stack behind.
-    if (card.stack.grouped && !card.stack.groupKey.empty()) {
+    if (IsGroupedStackCard(card)) {
+        const RectF current = StackWorldRect(card);
+        const RectF previousAnchor = card.stack.anchorWorld;
+        const RectF anchor = MakeRectF(
+            previousAnchor.left + moved.left - current.left,
+            previousAnchor.top + moved.top - current.top,
+            previousAnchor.width(), previousAnchor.height());
         for (Card& member : context.cards) {
-            if (member.stack.grouped && member.stack.groupKey == card.stack.groupKey) {
-                member.stack.anchorWorld = moved;
+            if (SameActiveStack(card, member)) {
+                member.stack.anchorWorld = anchor;
             }
         }
+    } else {
+        card.world = moved;
+        RememberLayoutEntry(card.fingerprint, card.world);
+        MarkLayoutDirty(GetTickCount());
     }
     context.hasGuideVertical = snap.snapVertical;
     context.hasGuideHorizontal = snap.snapHorizontal;
@@ -345,11 +328,28 @@ inline void UpdateCardDrag(POINT cursor) {
     context.guideHorizontal = RectF{0.0f,
         (snap.guideY - context.camera.centerY) * context.camera.zoom + ScreenCenterY(),
         0.0f, 0.0f};
-    RememberLayoutEntry(card.fingerprint, card.world);
+}
+
+inline void RememberDraggedStack() {
+    if (context.draggedCard < 0 ||
+        static_cast<size_t>(context.draggedCard) >= context.cards.size()) {
+        return;
+    }
+    const Card& dragged = context.cards[static_cast<size_t>(context.draggedCard)];
+    if (!IsGroupedStackCard(dragged)) {
+        return;
+    }
+    for (const Card& member : context.cards) {
+        if (SameActiveStack(dragged, member)) {
+            RememberLayoutPin(member.fingerprint, StackWorldRect(member),
+                              member.pinned, member.stack.grouped);
+        }
+    }
     MarkLayoutDirty(GetTickCount());
 }
 
 inline void EndPointerDrag() {
+    RememberDraggedStack();
     context.panning = false;
     context.draggingMinimap = false;
     context.draggedCard = -1;

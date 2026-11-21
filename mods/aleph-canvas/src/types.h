@@ -149,10 +149,10 @@ struct CardStackPlacement {
     float scale = 1.0f;
     float opacity = 1.0f;
     bool drawAboveStack = false;
-    // Shared world rectangle for the whole stack. Empty until the stack
-    // is formed; the front card's world rectangle is captured as the
-    // anchor so every member renders at one place instead of at its own
-    // unrelated window position.
+    // Position of the whole stack, used as its centre only: the anchor is
+    // captured from the front card's world rectangle when a stack of two or
+    // more forms, and each member keeps its own size. Empty while the card
+    // stands alone, so a lone window never gets a stale size.
     RectF anchorWorld{};
 };
 
@@ -186,6 +186,8 @@ struct Card {
     std::wstring title;
     std::wstring fingerprint;
     std::wstring exePath;
+    std::wstring applicationKey;
+    bool hasApplicationPeers = false;
     // Scan index from EnumWindows, topmost window first (0 = topmost).
     // Copied from ScannedWindow on every merge so stack order follows
     // the desktop Z-order instead of card insertion order.
@@ -199,13 +201,18 @@ struct Card {
     bool pinned = false;
 };
 
-// World rectangle a card occupies on the canvas. Grouped cards share
-// their stack anchor once it is captured; ungrouped cards and stacks
-// without an anchor keep their own world rectangle.
+// World rectangle a card occupies on the canvas. A grouped card takes the
+// size of its own window and the centre of the stack anchor, so resized or
+// maximized windows keep their real proportions and a stack member shown at
+// the front is never stretched. Ungrouped cards and stacks without an anchor
+// use their own world rectangle.
 inline RectF StackWorldRect(const Card& card) {
     if (card.stack.grouped && !card.stack.groupKey.empty() &&
         !card.stack.anchorWorld.empty()) {
-        return card.stack.anchorWorld;
+        const RectF& anchor = card.stack.anchorWorld;
+        return MakeRectF(anchor.centerX() - card.world.width() * 0.5f,
+                         anchor.centerY() - card.world.height() * 0.5f,
+                         card.world.width(), card.world.height());
     }
     return card.world;
 }
@@ -213,6 +220,11 @@ inline RectF StackWorldRect(const Card& card) {
 inline bool IsStackBackground(const Card& card) {
     return card.stack.grouped && !card.stack.groupKey.empty() &&
            card.stack.slot != 0;
+}
+
+inline bool SameActiveStack(const Card& left, const Card& right) {
+    return left.stack.grouped && right.stack.grouped &&
+           !left.stack.groupKey.empty() && left.stack.groupKey == right.stack.groupKey;
 }
 
 struct ScannedWindow {
@@ -225,6 +237,7 @@ struct ScannedWindow {
     std::wstring title;
     std::wstring fingerprint;
     std::wstring exePath;
+    std::wstring applicationKey;
     // Scan index from EnumWindows, topmost window first (0 = topmost).
     // Stacks order members by this rank so the focused/topmost window
     // becomes the straight front card instead of an arbitrary member.
@@ -240,7 +253,7 @@ inline bool MatchesWindow(const Card& card, const ScannedWindow& window) {
 }
 
 struct CanvasSettings {
-    std::wstring toggleHotkey = L"Alt+Z";
+    std::wstring toggleHotkey = L"Ctrl+Alt+Shift+F12";
     LanguageId language = LanguageId::English;
     bool openOnStart = false;
     int animationMs = 140;

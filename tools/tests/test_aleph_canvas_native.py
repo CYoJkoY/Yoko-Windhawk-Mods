@@ -40,7 +40,7 @@ COMPILER_FLAGS = (
     "-Wl,--gc-sections",
     "-static",
 )
-WINDOWS_LIBRARIES = ("-ldwmapi", "-luser32", "-lshell32", "-lole32", "-lshcore")
+WINDOWS_LIBRARIES = ("-ldwmapi", "-luser32", "-lshell32", "-lole32", "-lshcore", "-luuid")
 
 
 def windhawk_roots() -> list[Path]:
@@ -192,12 +192,6 @@ class AlephCanvasNativeTests(unittest.TestCase):
     def test_layout_capacity_refuses_new_entries_when_all_are_pinned(self) -> None:
         self.run_case("layout_pinned_capacity")
 
-    def test_dismissed_windows_free_their_candidate_slots(self) -> None:
-        self.run_case("dismissed_windows_skip_cut")
-
-    def test_dismissed_window_stays_off_the_canvas(self) -> None:
-        self.run_case("dismissed_cards")
-
     def test_other_desktop_window_is_pulled_onto_the_canvas_desktop(self) -> None:
         self.run_case("desktop_pull_moves")
 
@@ -259,7 +253,16 @@ class AlephCanvasNativeTests(unittest.TestCase):
         self.run_case("stack_same_exe_name_groups")
 
     def test_default_hotkey_is_alt_z(self) -> None:
-        self.run_case("hotkey_default_alt_z")
+        self.run_case("hotkey_default_and_disable")
+
+    def test_stacks_share_position_but_not_window_size(self) -> None:
+        self.run_case("stack_window_sizes")
+
+    def test_app_ids_partition_shared_executables(self) -> None:
+        self.run_case("stack_app_ids")
+
+    def test_hotkey_registration_recovers_from_conflict_and_disables(self) -> None:
+        self.run_case("hotkey_registration_recovery")
 
     def test_failed_hotkey_registration_backs_off_and_retries(self) -> None:
         self.run_case("hotkey_retry_backoff")

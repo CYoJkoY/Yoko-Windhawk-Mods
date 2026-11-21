@@ -54,9 +54,11 @@ constexpr DWORD kThumbnailRetryDelayMs = 2000;
 // A hotkey registration can fail transiently, for example right after a
 // settings reload while another program still holds the combination. The
 // worker retries with a capped exponential backoff so a reloaded hotkey
-// becomes active without the user touching the settings again.
+// becomes active without the user touching the settings again. The cap is a
+// full minute: a combination held for good by another program costs the idle
+// worker one wake-up per minute, not one every few seconds.
 constexpr DWORD kHotkeyRetryInitialMs = 1000;
-constexpr DWORD kHotkeyRetryMaxMs = 5000;
+constexpr DWORD kHotkeyRetryMaxMs = 60000;
 
 [[nodiscard]] inline DWORD NextHotkeyRetryDelay(DWORD previous) {
     if (previous == 0) {

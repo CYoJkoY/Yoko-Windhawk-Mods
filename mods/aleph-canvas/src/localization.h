@@ -153,8 +153,8 @@ inline constexpr SystemLanguageRule kSystemLanguageRules[] = {
     return kCanvasStrings[entryIndex].texts[languageIndex].size();
 }
 
-// Simplified Chinese is the default for every non-traditional Chinese
-// sublanguage, including Hong Kong and Macau.
+// Every Chinese sublanguage listed here uses Traditional characters: Taiwan,
+// Hong Kong and Macau. Simplified Chinese is the fallback for the rest.
 [[nodiscard]] inline bool IsTraditionalChineseSubLanguage(WORD subLanguage) {
     return subLanguage == SUBLANG_CHINESE_TRADITIONAL ||
            subLanguage == SUBLANG_CHINESE_HONGKONG ||

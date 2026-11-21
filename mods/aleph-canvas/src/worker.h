@@ -153,6 +153,17 @@ inline bool RegisterCanvasWindows(HINSTANCE instance) {
 // `logFailure` is false for the automatic backoff retries: a combination that
 // stays taken would otherwise log one failure every few seconds forever.
 inline bool RegisterCanvasHotkey(bool logFailure) {
+    if (context.settings.toggleHotkey.empty()) {
+        context.hotkeyRetryDelayMs = 0;
+        context.hotkeyRetryTick = 0;
+        if (context.hotkeyRegistered &&
+            UnregisterHotKey(nullptr, context.hotkeyId) == FALSE) {
+            Wh_Log(L"Aleph: UnregisterHotKey failed: %lu", GetLastError());
+            return false;
+        }
+        context.hotkeyRegistered = false;
+        return true;
+    }
     UINT modifiers = 0;
     UINT key = 0;
     if (!ParseHotkeyText(context.settings.toggleHotkey, modifiers, key)) {
@@ -165,6 +176,8 @@ inline bool RegisterCanvasHotkey(bool logFailure) {
     }
     if (context.hotkeyRegistered && context.hotkeyModifiers == modifiers &&
         context.hotkeyKey == key) {
+        context.hotkeyRetryDelayMs = 0;
+        context.hotkeyRetryTick = 0;
         return true;
     }
     const UINT nextId = context.hotkeyId == kToggleHotkeyId
@@ -259,7 +272,8 @@ inline void UpdateCameraAndDive(DWORD now) {
 }
 
 inline void ProcessCanvasMessage(const MSG& message) {
-    if (message.message == WM_HOTKEY && message.wParam == context.hotkeyId) {
+    if (message.message == WM_HOTKEY && context.hotkeyRegistered &&
+        !context.settings.toggleHotkey.empty() && message.wParam == context.hotkeyId) {
         ToggleCanvas();
         return;
     }
