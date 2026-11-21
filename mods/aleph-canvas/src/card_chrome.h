@@ -3,9 +3,9 @@
 // Card header chrome.
 //
 // Every live card reserves a fixed DIP strip above its body. The strip carries
-// the title and its buttons: group joins or splits the windows of one
-// executable, pin keeps a card above every unpinned card, close closes the
-// card's real window.
+// the title and its buttons: group joins or splits the windows of one stack
+// key - an application group or a hand-made stack - pin keeps a card above
+// every unpinned card, close closes the card's real window.
 //
 // This header stays free of Direct2D and Win32 drawing calls so the native
 // regressions can exercise the geometry on its own.
@@ -39,7 +39,7 @@ inline float CardHeaderButtonSize(float headerHeight, float scale) {
     return std::min(kCardHeaderButtonPx * scale, headerHeight - inset * 2.0f);
 }
 
-// A window group only exists once another window of the same executable can
+// A window group only exists once another window of the same stack key can
 // join it, so the group button appears only for those cards and only while
 // stacking is enabled. Tying the button count to the cards keeps every card's
 // row width predictable for both drawing and hit testing.
@@ -48,7 +48,7 @@ inline int CardHeaderButtonCount(const std::vector<Card>& cards, size_t index,
     if (!stacksEnabled || index >= cards.size()) {
         return 2;
     }
-    return cards[index].hasApplicationPeers ? 3 : 2;
+    return cards[index].hasStackPeers ? 3 : 2;
 }
 
 inline float CardHeaderButtonRowWidth(const RectF& header, float scale,

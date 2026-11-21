@@ -191,7 +191,7 @@ inline void ClearAllStackPlacements(std::vector<Card>& cards) {
 
 inline void ClearIneligibleStackPlacements(std::vector<Card>& cards) {
     for (Card& card : cards) {
-        if (!card.stack.grouped || card.applicationKey.empty()) {
+        if (!card.stack.grouped || StackGroupKeyOf(card).empty()) {
             ResetStackPlacement(card);
         }
     }
@@ -202,8 +202,9 @@ inline std::vector<StackMember> CollectStackMembers(const std::vector<Card>& car
     members.reserve(cards.size());
     for (size_t index = 0; index < cards.size(); ++index) {
         const Card& card = cards[index];
-        if (card.stack.grouped && !card.applicationKey.empty()) {
-            members.push_back({index, card.applicationKey});
+        const std::wstring stackKey = StackGroupKeyOf(card);
+        if (card.stack.grouped && !stackKey.empty()) {
+            members.push_back({index, stackKey});
         }
     }
     return members;
@@ -324,15 +325,18 @@ inline void ReconcileCardStacks(std::vector<Card>& cards, const CanvasSettings& 
         ClearAllStackPlacements(cards);
         return;
     }
-    std::unordered_map<std::wstring, size_t> applicationCounts;
+    // Peer counts follow the same key that forms the stacks, so a hand-made
+    // group also offers the header button that splits it again.
+    std::unordered_map<std::wstring, size_t> stackPeerCounts;
     for (const Card& card : cards) {
-        if (!card.applicationKey.empty()) {
-            ++applicationCounts[card.applicationKey];
+        const std::wstring stackKey = StackGroupKeyOf(card);
+        if (!stackKey.empty()) {
+            ++stackPeerCounts[stackKey];
         }
     }
     for (Card& card : cards) {
-        const auto count = applicationCounts.find(card.applicationKey);
-        card.hasApplicationPeers = count != applicationCounts.end() && count->second > 1;
+        const auto count = stackPeerCounts.find(StackGroupKeyOf(card));
+        card.hasStackPeers = count != stackPeerCounts.end() && count->second > 1;
     }
     ClearIneligibleStackPlacements(cards);
     const auto members = CollectStackMembers(cards);

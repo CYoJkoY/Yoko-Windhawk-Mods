@@ -465,7 +465,11 @@ inline void DrawCard(const Card& card, int index, float scale) {
         return;
     }
     const float radius = kCardCornerRadiusPx * scale;
-    const bool emphasized = index == context.hoverCard || index == context.selectedCard;
+    // A card that would take an Alt+drop is highlighted like the hovered card,
+    // so the merge target is visible before the button comes up.
+    const bool emphasized = index == context.hoverCard ||
+                            index == context.selectedCard ||
+                            index == context.dropTargetCard;
     const RectF body = WorldToScreen(StackWorldRect(card), context.camera);
     const RectF header = CardHeaderRect(card);
     const bool transformed = card.stack.rotationRadians != 0.0f ||

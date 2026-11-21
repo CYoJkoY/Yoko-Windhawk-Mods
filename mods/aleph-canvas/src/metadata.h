@@ -4,7 +4,7 @@
 // @name:zh-CN      Aleph - 无限窗口画布
 // @description     Arrange open windows across a pannable canvas with live DWM previews.
 // @description:zh-CN 在可平移画布上管理已打开的窗口，并显示 DWM 实时预览。
-// @version         1.6.0
+// @version         1.7.0
 // @author          CYoJkoY
 // @github          https://github.com/CYoJkoY
 // @license         MIT
@@ -32,6 +32,10 @@ Drag cards to arrange them without moving the real desktop windows.
   application only), and close. Hovering a button shows its localized label.
 - Group joins the windows of one application into a stack; pressing it again
   splits the stack into a row. The grouped state is saved with the layout.
+- Hold Alt and drag a card onto another one to make a stack of your own, even
+  across different applications; a drop only counts when the cards overlap
+  solidly. Hold Alt and drag a member out to release just that window. A plain
+  drop never groups anything. Custom stacks are saved with the layout.
 - Close sends `WM_CLOSE` to the real window, so the application closes; the
   card leaves the canvas once the next scan reports the window gone.
 - Middle mouse drag: pan the canvas.

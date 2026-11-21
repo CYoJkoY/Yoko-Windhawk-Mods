@@ -188,7 +188,12 @@ struct Card {
     std::wstring fingerprint;
     std::wstring exePath;
     std::wstring applicationKey;
-    bool hasApplicationPeers = false;
+    // Hand-made stack membership, written by Alt-dropping one card onto
+    // another and saved with the layout. A custom stack may span different
+    // applications, so it wins over the automatic per-executable key. Empty
+    // means the card follows the automatic grouping.
+    std::wstring stackId;
+    bool hasStackPeers = false;
     // Scan index from EnumWindows, topmost window first (0 = topmost).
     // Copied from ScannedWindow on every merge so stack order follows
     // the desktop Z-order instead of card insertion order.
@@ -223,6 +228,13 @@ inline bool IsStackBackground(const Card& card) {
 inline bool SameActiveStack(const Card& left, const Card& right) {
     return left.stack.grouped && right.stack.grouped &&
            !left.stack.groupKey.empty() && left.stack.groupKey == right.stack.groupKey;
+}
+
+// The key that decides which stack a card belongs to. A hand-made stack wins
+// over the automatic per-executable key so a custom group never leaks into the
+// application-wide one.
+inline std::wstring StackGroupKeyOf(const Card& card) {
+    return card.stackId.empty() ? card.applicationKey : card.stackId;
 }
 
 struct ScannedWindow {
@@ -287,6 +299,9 @@ struct LayoutEntry {
     RectF world = {};
     bool pinned = false;
     bool grouped = true;
+    // Manual stack the card belongs to, saved so a hand-made group survives a
+    // restart. Empty for cards that follow the automatic application group.
+    std::wstring stackId;
 };
 
 struct LayoutSnapshot {

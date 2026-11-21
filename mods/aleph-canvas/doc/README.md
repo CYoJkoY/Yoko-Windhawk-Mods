@@ -70,6 +70,18 @@ instead of shrinking into a corner.
   It joins those windows into one stack, and pressing it again splits the stack
   into a row starting where the stack stood. The grouped state is saved with
   the layout, so a rescan or a restart keeps the group together or apart.
+- Alt+dragging one card onto another makes a stack of its own, even when the
+  two windows belong to different applications. A drop only counts when the
+  cards overlap solidly, so dragging a card across another one never glues them
+  together by accident. Dropping onto a member of an existing stack brings that
+  whole stack along instead of forming a second one. The stack keeps its own
+  key in the saved layout, so the same windows come back stacked together after
+  a restart.
+- Alt+dragging a member out of a stack releases just that window: it takes back
+  its own window size, keeps the place the stack stood, and stays out of the
+  automatic per-application group until the user stacks it again.
+- A plain drop never groups anything. Releasing a dragged card only leaves it
+  where it was dropped; the desktop Z-order decides which window covers which.
 - A stack is one shared rectangle, not a pile of differently sized windows. The
   frame is taken from the front card when the stack forms and then stays put, so
   every member is fanned inside the same size and centre even when its own
@@ -113,7 +125,11 @@ instead of shrinking into a corner.
    confirm the stack rotates as one card of constant size instead of the larger
    window covering the smaller one; confirm the smaller window's preview keeps
    its own aspect inside the shared frame.
-8. Check mixed-DPI displays, a window spanning monitors, 15 or more windows,
+8. Hold Alt, drag a window onto a window of another application, and confirm
+   the two fan into one stack that survives a restart; then hold Alt, drag one
+   member out, and confirm it keeps its own size and stays on its own. Drop a
+   card with Alt released and confirm nothing is grouped.
+9. Check mixed-DPI displays, a window spanning monitors, 15 or more windows,
    and repeated enable/disable cycles. Confirm Explorer desktop positions stay
    unchanged throughout.
 

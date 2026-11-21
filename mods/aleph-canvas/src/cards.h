@@ -181,6 +181,11 @@ inline void RemoveCardAt(size_t index) {
     } else if (context.draggedCard > static_cast<int>(index)) {
         --context.draggedCard;
     }
+    if (context.dropTargetCard == static_cast<int>(index)) {
+        context.dropTargetCard = -1;
+    } else if (context.dropTargetCard > static_cast<int>(index)) {
+        --context.dropTargetCard;
+    }
 }
 
 inline void ClearCards() {
@@ -223,6 +228,7 @@ inline bool UpdateCardFromScan(size_t index, const ScannedWindow& window) {
         saved != nullptr) {
         card.pinned = saved->pinned;
         card.stack.grouped = saved->grouped;
+        card.stackId = saved->stackId;
     }
     return changed;
 }
@@ -268,6 +274,7 @@ inline bool MergeScan(const std::vector<ScannedWindow>& scanned) {
             if (saved != nullptr) {
                 context.cards.back().pinned = saved->pinned;
                 context.cards.back().stack.grouped = saved->grouped;
+                context.cards.back().stackId = saved->stackId;
             }
             RememberLayoutEntry(window.fingerprint, world);
             changed = true;
