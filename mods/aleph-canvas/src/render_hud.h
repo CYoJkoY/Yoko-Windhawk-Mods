@@ -269,7 +269,9 @@ inline bool MeasureTooltipText(const wchar_t* text, size_t length,
     const float gap = 6.0f * scale;
     const float padding = 6.0f * scale;
     const float width = metrics.width + padding * 2.0f;
-    const float height = metrics.height + padding;
+    // Padding on all four sides; a single-sided value would leave the label
+    // flush against the top edge of its own box.
+    const float height = metrics.height + padding * 2.0f;
     const float screenWidth = static_cast<float>(VirtualScreenWidth());
     const float maxLeft = std::max(margin, screenWidth - margin - width);
     const float left =
@@ -320,8 +322,8 @@ inline void DrawTooltipBox(const RectF& box, const HeaderTooltip& tooltip,
     SetHudColor(context.settings.textColor);
     context.hudTarget->DrawTextW(
         tooltip.text, static_cast<UINT32>(tooltip.length), context.tooltipFormat,
-        D2D1::RectF(box.left + padding, box.top, box.right - padding,
-                    box.bottom),
+        D2D1::RectF(box.left + padding, box.top + padding, box.right - padding,
+                    box.bottom - padding),
         context.hudBrush, D2D1_DRAW_TEXT_OPTIONS_CLIP);
 }
 
