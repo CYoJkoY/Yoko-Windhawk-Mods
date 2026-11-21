@@ -135,6 +135,7 @@ inline void InsertCard(ScannedWindow&& window, RectF world) {
     card.title = std::move(window.title);
     card.fingerprint = std::move(window.fingerprint);
     card.exePath = std::move(window.exePath);
+    card.applicationKey = std::move(window.applicationKey);
     card.zOrder = window.zOrder;
     context.cards.push_back(std::move(card));
 }
@@ -197,9 +198,15 @@ inline void ClearCards() {
 // along; only the descriptive fields follow the window.
 inline bool UpdateCardFromScan(size_t index, const ScannedWindow& window) {
     Card& card = context.cards[index];
+    const bool applicationChanged = card.applicationKey != window.applicationKey;
     const bool changed = card.state != window.state || card.title != window.title ||
                          !EqualRect(&card.framePx, &window.framePx) ||
-                         card.zOrder != window.zOrder;
+                         card.zOrder != window.zOrder || applicationChanged;
+    if (applicationChanged) {
+        card.world = StackWorldRect(card);
+        ResetStackPlacement(card);
+        card.applicationKey = window.applicationKey;
+    }
     if (card.state != window.state) {
         card.thumbnail.reset();
     }
@@ -229,9 +236,6 @@ inline bool MergeScan(const std::vector<ScannedWindow>& scanned) {
     std::vector<ScannedWindow> additions;
     bool changed = false;
     for (const ScannedWindow& window : scanned) {
-        if (context.dismissedFingerprints.count(window.fingerprint) != 0) {
-            continue;
-        }
         const int existing = FindCardIndex(window);
         if (existing >= 0) {
             seen[static_cast<size_t>(existing)] = true;
@@ -336,8 +340,12 @@ inline SnapResult ComputeSnap(const RectF& moving, int ignoreIndex) {
     }
     std::pair<SnapAxis, SnapAxis> axes{SnapAxis{distance, distance + 1.0f},
                                       SnapAxis{distance, distance + 1.0f}};
+    const bool hasMovingCard = ignoreIndex >= 0 &&
+        static_cast<size_t>(ignoreIndex) < context.cards.size();
     for (size_t index = 0; index < context.cards.size(); ++index) {
-        if (static_cast<int>(index) == ignoreIndex) {
+        if (static_cast<int>(index) == ignoreIndex ||
+            (hasMovingCard && SameActiveStack(
+                context.cards[static_cast<size_t>(ignoreIndex)], context.cards[index]))) {
             continue;
         }
         SnapAgainstCard(moving, StackWorldRect(context.cards[index]), axes);

@@ -403,6 +403,11 @@ inline void DrawCardBadge(const Card& card, const RectF& rect) {
         context.hudBrush, D2D1_DRAW_TEXT_OPTIONS_CLIP);
 }
 
+inline bool CardShowsBadge(const Card& card) {
+    return card.state != WindowVisualState::Live ||
+           (card.thumbnailFailed && !IsStackBackground(card));
+}
+
 inline void DrawCardBody(const Card& card, const RectF& body, float scale) {
     if (body.empty() || (card.state == WindowVisualState::Live &&
                          card.thumbnail.valid() && card.thumbnailVisible)) {
@@ -411,7 +416,7 @@ inline void DrawCardBody(const Card& card, const RectF& body, float scale) {
     SetHudColor(context.settings.cardFillColor);
     context.hudTarget->FillRoundedRectangle(
         RoundedRect(body, kCardCornerRadiusPx * scale), context.hudBrush);
-    const RectF badge = CardBadgeBounds(body, scale);
+    const RectF badge = CardShowsBadge(card) ? CardBadgeBounds(body, scale) : RectF{};
     const float padding = kCardTitlePaddingPx * scale;
     RectF iconArea = GrowRect(body, -padding);
     if (!badge.empty()) {
@@ -455,22 +460,24 @@ inline void DrawCard(const Card& card, int index, float scale) {
                                      D2D1::Point2F(center.x, center.y)) *
             D2D1::Matrix3x2F::Rotation(degrees, D2D1::Point2F(center.x, center.y)));
     }
-    D2D1_LAYER_PARAMETERS layerParameters = {};
-    layerParameters.contentBounds = D2D1::InfiniteRect();
-    layerParameters.maskAntialiasMode = D2D1_ANTIALIAS_MODE_PER_PRIMITIVE;
-    layerParameters.maskTransform = D2D1::IdentityMatrix();
-    layerParameters.opacity = card.stack.opacity;
-    layerParameters.layerOptions = D2D1_LAYER_OPTIONS_NONE;
-    // ID2D1DeviceContext::PushLayer returns void, so the layer is always
-    // popped on the matching path below.
-    context.hudTarget->PushLayer(&layerParameters, nullptr);
+    const bool translucent = card.stack.opacity < 1.0f;
+    if (translucent) {
+        const RectF bounds = GrowRect(rect, scale + 1.0f);
+        const auto layer = D2D1::LayerParameters(
+            D2D1::RectF(bounds.left, bounds.top, bounds.right, bounds.bottom),
+            nullptr, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE, D2D1::IdentityMatrix(),
+            card.stack.opacity);
+        context.hudTarget->PushLayer(&layer, nullptr);
+    }
     DrawCardBody(card, body, scale);
     DrawCardHeader(card, index, header, scale);
     SetHudColor(emphasized ? context.settings.accentColor : context.settings.gridColor);
     context.hudTarget->DrawRoundedRectangle(
         RoundedRect(rect, radius), context.hudBrush,
         emphasized ? 2.0f * scale : 1.0f * scale);
-    context.hudTarget->PopLayer();
+    if (translucent) {
+        context.hudTarget->PopLayer();
+    }
     if (transformed) {
         context.hudTarget->SetTransform(savedTransform);
     }

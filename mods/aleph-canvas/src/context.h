@@ -92,7 +92,6 @@ struct CanvasContext {
     int hudHeight = 0;
     std::unordered_map<std::wstring, ID2D1Bitmap*> iconCache;
     std::unordered_map<std::wstring, DWORD> iconRetryTick;
-    std::unordered_set<std::wstring> dismissedFingerprints;
 
     // Settings and persisted layout.
     CanvasSettings settings{};

@@ -11,6 +11,7 @@
 #include "mods/aleph-canvas/src/settings.h"
 #include "mods/aleph-canvas/src/windows.h"
 #include "mods/aleph-canvas/src/interaction.h"
+#include "mods/aleph-canvas/src/worker.h"
 
 #include <array>
 #include <iostream>
@@ -321,12 +322,14 @@ static ScannedWindow SampleWindow(UINT_PTR handle) {
     window.threadId = 43;
     window.windowClass = L"sample-window";
     window.exePath = L"C:\\sample\\editor.exe";
+    window.applicationKey = L"editor.exe";
     window.title = L"Document";
     window.framePx = RECT{0, 0, 640, 480};
     return window;
 }
 
 static void FingerprintLifetime() {
+    context.settings.stacksEnabled = false;
     std::vector<ScannedWindow> initial{SampleWindow(0x100), SampleWindow(0x200)};
     AssignFingerprints(initial);
     Require(initial[0].fingerprint != initial[1].fingerprint, "initial duplicate collision");
@@ -606,52 +609,6 @@ static void LayoutPinnedCapacity() {
             "an unpinned entry displaced a pinned one");
 }
 
-static void DismissedCards() {
-    ScannedWindow window = SampleWindow(0x600);
-    window.fingerprint = L"dismissed#1";
-    const std::vector<ScannedWindow> scanned{window};
-    context.dismissedFingerprints.insert(window.fingerprint);
-    MergeScan(scanned);
-    Require(context.cards.empty(), "dismissed window returned during a scan");
-    context.dismissedFingerprints.clear();
-    MergeScan(scanned);
-    Require(context.cards.size() == 1,
-            "clearing the dismissal did not restore the card");
-}
-
-static void DismissedWindowsSkipCut() {
-    context.cards.clear();
-    context.layout = LayoutSnapshot{};
-    context.dismissedFingerprints.clear();
-    std::vector<ScannedWindow> windows;
-    windows.reserve(static_cast<size_t>(kMaxCards) + 1);
-    for (int index = 0; index <= kMaxCards; ++index) {
-        windows.push_back(SizedWindow(static_cast<UINT_PTR>(0x700 + index),
-                                      900 - index));
-    }
-
-    std::vector<ScannedWindow> probe = windows;
-    AssignFingerprints(probe);
-    context.dismissedFingerprints.insert(probe.front().fingerprint);
-    PrepareScanCandidates(windows);
-
-    Require(windows.size() == static_cast<size_t>(kMaxCards),
-            "dismissed window still consumed a card slot");
-    const HWND dismissed = reinterpret_cast<HWND>(0x700);
-    Require(std::none_of(windows.begin(), windows.end(),
-                         [&](const ScannedWindow& window) {
-                             return window.hwnd == dismissed;
-                         }),
-            "dismissed window survived candidate selection");
-    const HWND recovered = reinterpret_cast<HWND>(0x700 + kMaxCards);
-    Require(std::any_of(windows.begin(), windows.end(),
-                        [&](const ScannedWindow& window) {
-                            return window.hwnd == recovered;
-                        }),
-            "dismissing a window did not free a slot for the next one");
-    context.dismissedFingerprints.clear();
-}
-
 static void DesktopPullMoves() {
     FakeDesktopManager manager;
     const DesktopPullOutcome outcome =
@@ -869,6 +826,7 @@ static void AddStackCard(const wchar_t* fingerprint, const wchar_t* exePath) {
     AddCard(MakeRectF(0.0f, 0.0f, 320.0f, 240.0f));
     context.cards.back().fingerprint = fingerprint;
     context.cards.back().exePath = exePath;
+    context.cards.back().applicationKey = ExecutableName(exePath);
 }
 
 static void UseStackSettings() {
@@ -982,7 +940,8 @@ static void StackInvalid() {
     ReconcileCardStacks(context.cards, context.settings);
     Require(context.cards[0].stack.groupKey.empty(), "empty path joined a stack");
     Require(context.cards[1].stack.groupKey.empty(), "empty path joined a stack");
-    Require(context.cards[2].stack.groupKey == L"editor.exe", "single member lost its group key");
+    Require(context.cards[2].stack.groupKey.empty() && context.cards[2].stack.grouped,
+            "single member kept a stack or lost its grouping preference");
     context.cards.clear();
     AddStackCard(L"a#1", L"C:\\App\\Editor.exe");
     AddStackCard(L"b#1", L"C:\\App\\Editor.exe");
@@ -1117,23 +1076,76 @@ static void StackThumbnailOcclusionClips() {
                 "stack background was painted over the live front preview");
     }
 
-    const std::vector<bool> visible = SelectUnoccludedThumbnails(
-        {0, 1, 2, 3},
-        {MakeRectF(10.0f, 10.0f, 50.0f, 50.0f),
-         MakeRectF(40.0f, 40.0f, 50.0f, 50.0f), RectF{},
-         MakeRectF(120.0f, 120.0f, 40.0f, 40.0f)});
-    Require(!visible[0] && visible[1] && !visible[2] && visible[3],
-            "overlapping live previews ignored card draw priority");
+    const RectF destination = MakeRectF(10.0f, 10.0f, 50.0f, 50.0f);
+    const RectF visible = UnoccludedThumbnailRect(destination,
+        {MakeRectF(40.0f, 0.0f, 50.0f, 80.0f)});
+    SameRect(visible, MakeRectF(10.0f, 10.0f, 30.0f, 50.0f));
+    ThumbnailGeometry geometry{MakeRectF(5.0f, 5.0f, 100.0f, 100.0f), destination};
+    Require(ClipThumbnailGeometry(geometry, visible), "visible strip did not crop");
+    SameRect(geometry.destination, visible);
+    SameRect(geometry.source, MakeRectF(5.0f, 5.0f, 60.0f, 100.0f));
+    Require(UnoccludedThumbnailRect(destination, {destination}).empty(),
+            "fully covered thumbnail stayed visible");
+    Require(UnoccludedThumbnailRect(destination,
+        {MakeRectF(40.0f, 40.0f, 50.0f, 50.0f)}).empty(),
+        "a non-rectangular visible area was submitted as a thumbnail");
+    Card covered;
+    Require(!CardShowsBadge(covered), "a covered card reported a preview error");
+    covered.thumbnailFailed = true;
+    Require(CardShowsBadge(covered), "a failed live preview did not report its error");
 }
 
-static void HotkeyDefaultAltZ() {
-    Require(CanvasSettings{}.toggleHotkey == L"Alt+Z", "default toggle hotkey is not Alt+Z");
+static void HotkeyDefaultAndDisable() {
+    Require(CanvasSettings{}.toggleHotkey == L"Ctrl+Alt+Shift+F12", "wrong default hotkey");
     UINT modifiers = 0;
     UINT key = 0;
+    Require(ParseHotkeyText(CanvasSettings{}.toggleHotkey, modifiers, key),
+            "default hotkey was rejected");
+    Require(key >= VK_F1 && key <= VK_F24, "default hotkey uses a character key");
     Require(ParseHotkeyText(L"Alt+Z", modifiers, key), "Alt+Z hotkey was rejected");
     Require(modifiers == MOD_ALT && key == static_cast<UINT>('Z'), "Alt+Z parsed incorrectly");
     Require(ParseHotkeyText(L"alt+z", modifiers, key), "lowercase alt+z hotkey was rejected");
     Require(modifiers == MOD_ALT && key == static_cast<UINT>('Z'), "lowercase alt+z parsed incorrectly");
+    context.hotkeyRetryDelayMs = kHotkeyRetryInitialMs;
+    context.hotkeyRetryTick = 1;
+    context.settings.toggleHotkey.clear();
+    Require(RegisterCanvasHotkey(true), "blank setting was not accepted");
+    Require(!context.hotkeyRegistered && HotkeyRetryRemaining(2) == INFINITE,
+            "disabling did not cancel the hotkey retry");
+    context.settings.toggleHotkey = L"Ctrl+F99";
+    Require(!RegisterCanvasHotkey(true) && !HotkeyRetryPending(),
+            "invalid setting must not retry");
+}
+
+static void HotkeyRegistrationConflictAndRecovery() {
+    constexpr UINT probeId = 0x4a20;
+    constexpr UINT modifiers = MOD_CONTROL | MOD_SHIFT | MOD_ALT;
+    UINT probeKey = VK_F8;
+    while (probeKey <= VK_F11 &&
+           RegisterHotKey(nullptr, probeId, modifiers, probeKey) == FALSE) {
+        ++probeKey;
+    }
+    Require(probeKey <= VK_F11, "no free hotkey for the probe");
+    const std::wstring combination = L"Ctrl+Shift+Alt+F" +
+        std::to_wstring(probeKey - VK_F1 + 1);
+    context.settings.toggleHotkey = combination;
+    Require(!RegisterCanvasHotkey(true) && HotkeyRetryPending(),
+            "conflicting hotkey did not schedule a retry");
+    Require(UnregisterHotKey(nullptr, probeId) != FALSE, "could not release probe hotkey");
+    RetryCanvasHotkeyIfDue(context.hotkeyRetryTick + context.hotkeyRetryDelayMs);
+    Require(context.hotkeyRegistered && !HotkeyRetryPending(),
+            "released hotkey did not register on retry");
+    context.settings.toggleHotkey.clear();
+    Require(RegisterCanvasHotkey(true) && !context.hotkeyRegistered,
+            "blank setting did not unregister the active hotkey");
+    Require(RegisterHotKey(nullptr, probeId, modifiers, probeKey) != FALSE,
+            "disabled hotkey was still held");
+    Require(UnregisterHotKey(nullptr, probeId) != FALSE, "could not release probe hotkey");
+    context.settings.toggleHotkey = combination;
+    Require(RegisterCanvasHotkey(true) && context.hotkeyRegistered,
+            "new setting did not re-enable the hotkey");
+    context.settings.toggleHotkey.clear();
+    Require(RegisterCanvasHotkey(true), "could not release the test hotkey");
 }
 
 // A failed registration must schedule a capped exponential backoff so a hotkey
@@ -1230,11 +1242,12 @@ static void StackSameExeNameGroups() {
     }
     Require(!IsStackBackground(context.cards[0]), "stack front was marked as background");
     Require(IsStackBackground(context.cards[1]) && IsStackBackground(context.cards[2]), "stack background was not detected");
-    Require(context.cards[3].stack.groupKey == L"notepad.exe", "different exe joined the editor stack");
+    Require(context.cards[3].stack.groupKey.empty(), "a lone app got a stack");
     Require(context.cards[3].stack.slot == 0, "different exe lost its own front slot");
     SameRect(StackWorldRect(context.cards[3]), context.cards[3].world);
     const std::vector<size_t> order = CardDrawOrder(context.cards);
-    Require(order.size() == 4 && order[0] == 2 && order[1] == 1 && order[2] == 0, "stack background was not drawn before the front");
+    Require(order == std::vector<size_t>{2, 1, 3, 0},
+            "singleton was treated as a stack front or the stack was painted in reverse");
     const RectF bounds = CardScreenBounds(context.cards[0]);
     const Vec2 center{bounds.centerX(), bounds.centerY()};
     Require(HitTestCardInOrder(context.cards, center) == 0, "stack hit test did not reach the front card");
@@ -1276,6 +1289,71 @@ static void StackZOrderFront() {
     ReconcileCardStacks(context.cards, context.settings);
     Require(context.cards[1].stack.slot == 0, "rescan reverted the cycled front");
     Require(context.cards[2].stack.slot == 2, "rescan did not keep the old front at the back");
+}
+
+static void StackWindowSizes() {
+    PrepareGeometry();
+    UseStackSettings();
+    ScannedWindow wide = SampleWindow(0x601);
+    wide.fingerprint = L"wide#1";
+    ScannedWindow narrow = SampleWindow(0x602);
+    narrow.fingerprint = L"narrow#1";
+    narrow.framePx = RECT{0, 0, 240, 600};
+    narrow.zOrder = 1;
+    MergeScan({wide, narrow});
+    SameRect(StackWorldRect(context.cards[0]), context.cards[0].world);
+    const RectF anchor = context.cards[0].stack.anchorWorld;
+    Require(CycleCardStack(context.cards, context.settings, 0, 1), "cannot cycle to narrow card");
+    const RectF narrowWorld = StackWorldRect(context.cards[1]);
+    Near(narrowWorld.centerX(), anchor.centerX());
+    Near(narrowWorld.width(), 240.0f);
+    Near(narrowWorld.height(), 600.0f);
+    const SnapResult snap = ComputeSnap(narrowWorld, 1);
+    Require(!snap.snapVertical && !snap.snapHorizontal, "drag snapped to its own stack");
+
+    narrow.framePx = RECT{0, 0, 900, 320};
+    MergeScan({wide, narrow});
+    const RectF resized = StackWorldRect(context.cards[1]);
+    Near(resized.centerX(), anchor.centerX());
+    Near(resized.centerY(), anchor.centerY());
+    Near(resized.width(), 900.0f);
+    Near(resized.height(), 320.0f);
+    ToggleCardGroup(1);
+    Require(!RectsOverlap(context.cards[0].world, context.cards[1].world),
+            "different-width cards overlapped after split");
+    Near(context.cards[0].world.width(), 640.0f);
+    Near(context.cards[1].world.width(), 900.0f);
+    ToggleCardGroup(1);
+    const RectF beforeRemoval = StackWorldRect(context.cards[1]);
+    MergeScan({narrow});
+    Require(context.cards[0].stack.anchorWorld.empty() && context.cards[0].stack.grouped,
+            "lone card kept an anchor or lost its grouping preference");
+    SameRect(StackWorldRect(context.cards[0]), beforeRemoval);
+}
+
+static void StackApplicationIds() {
+    UseStackSettings();
+    ScannedWindow first = SampleWindow(0x601);
+    first.exePath = L"C:\\Windows\\ApplicationFrameHost.exe";
+    first.fingerprint = L"frame#1";
+    first.applicationKey = L"aumid:calculator";
+    ScannedWindow second = first;
+    second.hwnd = reinterpret_cast<HWND>(0x602);
+    second.fingerprint = L"frame#2";
+    second.applicationKey = L"aumid:settings";
+    ScannedWindow third = first;
+    third.hwnd = reinterpret_cast<HWND>(0x603);
+    third.fingerprint = L"frame#3";
+    MergeScan({first, second, third});
+    Require(SameActiveStack(context.cards[0], context.cards[2]),
+            "same application IDs did not stack");
+    Require(!IsGroupedStackCard(context.cards[1]) && !context.cards[1].hasApplicationPeers,
+            "different application IDs stacked because they share an executable");
+    third.applicationKey = second.applicationKey;
+    Require(MergeScan({first, second, third}), "app identity change did not invalidate stacks");
+    Require(!IsGroupedStackCard(context.cards[0]) &&
+                SameActiveStack(context.cards[1], context.cards[2]),
+            "app identity change did not reconcile peer groups");
 }
 
 static void StackDrawOrderGroups() {
@@ -1486,10 +1564,13 @@ static void LayoutGroupedRoundtrip() {
 // Two windows of one executable get the extra group button; a lone window and
 // an out-of-range index keep the two-button row.
 static void HeaderThreeButtons() {
+    UseStackSettings();
     context.cards.clear();
     AddStackCard(L"a#1", L"C:\\App\\Editor.exe");
     AddStackCard(L"b#1", L"C:\\App\\Editor.exe");
     AddStackCard(L"c#1", L"C:\\App\\Player.exe");
+    context.cards[1].stack.grouped = false;
+    ReconcileCardStacks(context.cards, context.settings);
     Require(CardHeaderButtonCount(context.cards, 0, true) == 3,
             "a grouped candidate lost its group button");
     Require(CardHeaderButtonCount(context.cards, 1, true) == 3,
@@ -1550,7 +1631,6 @@ static void GroupTogglePersistence() {
     UseStackSettings();
     context.cards.clear();
     context.layout = LayoutSnapshot{};
-    context.dismissedFingerprints.clear();
     context.stackTransitions.clear();
     AddStackCard(L"a#1", L"C:\\App\\Editor.exe");
     AddStackCard(L"b#1", L"C:\\App\\Editor.exe");
@@ -1597,7 +1677,6 @@ static void UngroupKeepsLooseWindow() {
     UseStackSettings();
     context.cards.clear();
     context.layout = LayoutSnapshot{};
-    context.dismissedFingerprints.clear();
     context.stackTransitions.clear();
     AddStackCard(L"a#1", L"C:\\App\\Editor.exe");
     AddStackCard(L"b#1", L"C:\\App\\Editor.exe");
@@ -1623,20 +1702,22 @@ static void UngroupKeepsLooseWindow() {
 }
 
 // Closing a card reaches the real window. Without a live window the card falls
-// back to a dismissal; with one the WM_CLOSE is posted and the card stays until
+// back to a local removal; with one WM_CLOSE is posted and the card stays until
 // a rescan reports the window gone.
 static void CloseRequestFallback() {
     context.cards.clear();
-    context.dismissedFingerprints.clear();
     context.scanRequested = false;
     AddStackCard(L"closeme#1", L"C:\\App\\Editor.exe");
     CloseCardWindow(0);
     Require(context.cards.empty(), "a card without a window was not dismissed");
-    Require(context.dismissedFingerprints.count(L"closeme#1") == 1,
-            "the dismissed fingerprint was not remembered");
+    Require(context.scanRequested, "removing a stale card did not request a scan");
     CloseCardWindow(-1);
     CloseCardWindow(99);
     Require(context.cards.empty(), "an out-of-range close changed the cards");
+    ScannedWindow replacement = SampleWindow(0x600);
+    replacement.fingerprint = L"closeme#1";
+    Require(MergeScan({replacement}) && context.cards.size() == 1,
+            "the replacement window's reused fingerprint was suppressed");
 
     // A window with no message pump keeps its queue, so a posted WM_CLOSE can
     // be observed without closing it. Skip the block when the session cannot
@@ -1648,10 +1729,10 @@ static void CloseRequestFallback() {
         return;
     }
     context.cards.clear();
-    context.dismissedFingerprints.clear();
     context.scanRequested = false;
     AddStackCard(L"live#1", L"C:\\App\\Editor.exe");
     context.cards[0].hwnd = probe;
+    context.cards[0].threadId = GetWindowThreadProcessId(probe, &context.cards[0].processId);
     CloseCardWindow(0);
     Require(context.cards.size() == 1,
             "a live window was dismissed before it closed");
@@ -1682,8 +1763,6 @@ static constexpr NativeCase kCases[] = {
     {"pin_survives_layout_move", PinSurvivesLayoutMove},
     {"layout_recency_order", LayoutRecencyOrder},
     {"layout_pinned_capacity", LayoutPinnedCapacity},
-    {"dismissed_cards", DismissedCards},
-    {"dismissed_windows_skip_cut", DismissedWindowsSkipCut},
     {"desktop_pull_moves", DesktopPullMoves},
     {"desktop_pull_same", DesktopPullSame},
     {"desktop_pull_null", DesktopPullNull},
@@ -1702,7 +1781,10 @@ static constexpr NativeCase kCases[] = {
     {"stack_geometry", StackGeometry}, {"stack_cycle", StackCycle},
     {"stack_removal", StackRemoval}, {"stack_invalid", StackInvalid},
     {"stack_same_exe_name_groups", StackSameExeNameGroups},
-    {"hotkey_default_alt_z", HotkeyDefaultAltZ},
+    {"stack_window_sizes", StackWindowSizes},
+    {"stack_app_ids", StackApplicationIds},
+    {"hotkey_default_and_disable", HotkeyDefaultAndDisable},
+    {"hotkey_registration_recovery", HotkeyRegistrationConflictAndRecovery},
     {"hotkey_retry_backoff", HotkeyRetryBackoff},
     {"stack_z_order_front", StackZOrderFront},
     {"stack_draw_order_groups", StackDrawOrderGroups},

@@ -90,29 +90,6 @@ struct CardDrawClips {
     std::vector<RectF> regions;
 };
 
-inline std::vector<bool> SelectUnoccludedThumbnails(
-    const std::vector<size_t>& drawOrder,
-    const std::vector<RectF>& destinations) {
-    std::vector<bool> selected(destinations.size(), false);
-    std::vector<RectF> visibleDestinations;
-    for (size_t position = drawOrder.size(); position-- > 0;) {
-        const size_t index = drawOrder[position];
-        if (index >= destinations.size() || destinations[index].empty()) {
-            continue;
-        }
-        const RectF& destination = destinations[index];
-        if (std::any_of(visibleDestinations.begin(), visibleDestinations.end(),
-                        [&destination](const RectF& visible) {
-                            return RectsOverlap(destination, visible);
-                        })) {
-            continue;
-        }
-        selected[index] = true;
-        visibleDestinations.push_back(destination);
-    }
-    return selected;
-}
-
 inline std::vector<RectF> CardOcclusionHoles(
     const RectF& viewport, const RectF& cardBounds,
     const std::vector<RectF>& holes) {
@@ -143,6 +120,23 @@ inline std::vector<RectF> SubtractCardOcclusionHoles(
         }
     }
     return regions;
+}
+
+inline RectF UnoccludedThumbnailRect(const RectF& destination,
+                                     const std::vector<RectF>& higherThumbnails) {
+    const auto occlusion = CardOcclusionHoles(destination, destination, higherThumbnails);
+    if (occlusion.empty()) {
+        return destination;
+    }
+    const auto visible = SubtractCardOcclusionHoles(destination, occlusion);
+    RectF bounds{};
+    double area = 0.0;
+    for (const RectF& region : visible) {
+        bounds = UnionRect(bounds, region);
+        area += static_cast<double>(region.width()) * static_cast<double>(region.height());
+    }
+    return area == static_cast<double>(bounds.width()) * static_cast<double>(bounds.height())
+               ? bounds : RectF{};
 }
 
 inline CardDrawClips CardDrawRegions(
@@ -197,7 +191,7 @@ inline void ClearAllStackPlacements(std::vector<Card>& cards) {
 
 inline void ClearIneligibleStackPlacements(std::vector<Card>& cards) {
     for (Card& card : cards) {
-        if (!card.stack.grouped || card.exePath.empty()) {
+        if (!card.stack.grouped || card.applicationKey.empty()) {
             ResetStackPlacement(card);
         }
     }
@@ -208,8 +202,8 @@ inline std::vector<StackMember> CollectStackMembers(const std::vector<Card>& car
     members.reserve(cards.size());
     for (size_t index = 0; index < cards.size(); ++index) {
         const Card& card = cards[index];
-        if (card.stack.grouped && !card.exePath.empty()) {
-            members.push_back({index, ExecutableName(card.exePath)});
+        if (card.stack.grouped && !card.applicationKey.empty()) {
+            members.push_back({index, card.applicationKey});
         }
     }
     return members;
@@ -246,7 +240,10 @@ inline void ApplyStackOrder(std::vector<Card>& cards,
 inline void AssignStack(std::vector<Card>& cards,
                         const std::vector<StackMember>& members,
                         const CanvasSettings& settings) {
-    if (members.empty()) {
+    if (members.size() == 1) {
+        Card& card = cards[members.front().index];
+        card.world = StackWorldRect(card);
+        ResetStackPlacement(card);
         return;
     }
     const std::wstring groupKey = members.front().groupKey;
@@ -259,19 +256,12 @@ inline void AssignStack(std::vector<Card>& cards,
         cards[member.index].stack.grouped = true;
         order.push_back(member.index);
     }
-    // Keep the stack at one place: reuse the anchor captured when the
-    // stack was formed, and only capture the front card's world rectangle
-    // the first time. Recapturing on every rescan or cycle would move the
-    // stack to the new front card's unrelated window position.
-    RectF anchor{};
+    RectF anchor = cards[order.front()].world;
     for (const size_t index : order) {
         if (!cards[index].stack.anchorWorld.empty()) {
             anchor = cards[index].stack.anchorWorld;
             break;
         }
-    }
-    if (anchor.empty() && !order.empty()) {
-        anchor = cards[order.front()].world;
     }
     for (const size_t index : order) {
         cards[index].stack.anchorWorld = anchor;
@@ -310,6 +300,16 @@ inline void ReconcileCardStacks(std::vector<Card>& cards, const CanvasSettings& 
     if (!settings.stacksEnabled) {
         ClearAllStackPlacements(cards);
         return;
+    }
+    std::unordered_map<std::wstring, size_t> applicationCounts;
+    for (const Card& card : cards) {
+        if (!card.applicationKey.empty()) {
+            ++applicationCounts[card.applicationKey];
+        }
+    }
+    for (Card& card : cards) {
+        const auto count = applicationCounts.find(card.applicationKey);
+        card.hasApplicationPeers = count != applicationCounts.end() && count->second > 1;
     }
     ClearIneligibleStackPlacements(cards);
     const auto members = CollectStackMembers(cards);

@@ -166,10 +166,9 @@ static void LoadSettings() {
     WindhawkUtils::StringSetting hotkey =
         WindhawkUtils::StringSetting::make(L"Behavior.toggle_hotkey");
     const wchar_t* hotkeyText = hotkey.get();
-    settings.toggleHotkey =
-        hotkeyText != nullptr && *hotkeyText != L'\0'
-            ? TrimText(hotkeyText)
-            : L"Alt+Z";
+    if (hotkeyText != nullptr) {
+        settings.toggleHotkey = TrimText(hotkeyText);
+    }
 
     settings.openOnStart =
         yoko::GetClampedIntSetting(L"Behavior.open_on_start", 0, 1) != 0;

@@ -100,8 +100,11 @@ inline bool ReadThumbnailSource(const Card& card, RectF& source) {
     return !source.empty();
 }
 
-inline bool ClipThumbnailGeometry(ThumbnailGeometry& geometry) {
-    const RectF clipped = ThumbnailViewportClip(geometry.destination);
+inline bool ClipThumbnailGeometry(ThumbnailGeometry& geometry, const RectF& clip) {
+    const RectF clipped{std::max(clip.left, geometry.destination.left),
+                        std::max(clip.top, geometry.destination.top),
+                        std::min(clip.right, geometry.destination.right),
+                        std::min(clip.bottom, geometry.destination.bottom)};
     if (clipped.empty() || geometry.destination.empty() || geometry.source.empty()) {
         return false;
     }
@@ -188,31 +191,42 @@ inline bool PrepareThumbnail(Card& card, DWORD now,
         FailThumbnail(card, now);
         return false;
     }
-    if (!ClipThumbnailGeometry(geometry)) {
+    if (!ClipThumbnailGeometry(geometry, ThumbnailViewportClip(geometry.destination))) {
         HideThumbnail(card, now);
         return false;
     }
     return true;
 }
 
+inline void UpdateCardThumbnail(Card& card, DWORD now,
+                                const std::vector<RectF>& higherThumbnails) {
+    ThumbnailGeometry geometry;
+    if (!PrepareThumbnail(card, now, geometry)) {
+        return;
+    }
+    const RECT destination = ThumbnailRect(geometry.destination);
+    const RectF visible = UnoccludedThumbnailRect(RectFromRect(destination), higherThumbnails);
+    const RECT cropped = ThumbnailRect(visible);
+    if (EqualRect(&destination, &cropped) == FALSE &&
+        !ClipThumbnailGeometry(geometry, visible)) {
+        if (card.thumbnailVisible) {
+            HideThumbnail(card, now);
+        }
+        return;
+    }
+    SubmitThumbnail(card, geometry, now);
+}
+
 inline void UpdateThumbnails() {
     const DWORD now = GetTickCount();
-    std::vector<ThumbnailGeometry> geometries(context.cards.size());
-    std::vector<RectF> destinations(context.cards.size());
-    for (size_t index = 0; index < context.cards.size(); ++index) {
-        if (PrepareThumbnail(context.cards[index], now, geometries[index])) {
-            destinations[index] =
-                RectFromRect(ThumbnailRect(geometries[index].destination));
-        }
-    }
-    const std::vector<bool> selected = SelectUnoccludedThumbnails(
-        CardDrawOrder(context.cards), destinations);
-    for (size_t index = 0; index < context.cards.size(); ++index) {
-        Card& card = context.cards[index];
-        if (selected[index]) {
-            SubmitThumbnail(card, geometries[index], now);
-        } else if (card.thumbnail.valid() && card.thumbnailVisible) {
-            HideThumbnail(card, now);
+    const auto drawOrder = CardDrawOrder(context.cards);
+    std::vector<RectF> higherThumbnails;
+    higherThumbnails.reserve(drawOrder.size());
+    for (auto index = drawOrder.rbegin(); index != drawOrder.rend(); ++index) {
+        Card& card = context.cards[*index];
+        UpdateCardThumbnail(card, now, higherThumbnails);
+        if (card.thumbnailVisible) {
+            higherThumbnails.push_back(RectFromRect(card.thumbnailDestination));
         }
     }
 }

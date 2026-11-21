@@ -4,7 +4,7 @@
 // @name:zh-CN      Aleph - 无限窗口画布
 // @description     Arrange open windows across a pannable canvas with live DWM previews.
 // @description:zh-CN 在可平移画布上管理已打开的窗口，并显示 DWM 实时预览。
-// @version         1.5.0
+// @version         1.6.0
 // @author          CYoJkoY
 // @github          https://github.com/CYoJkoY
 // @license         MIT
@@ -23,7 +23,8 @@ Drag cards to arrange them without moving the real desktop windows.
 
 ## Controls
 
-- `Alt+Z`: toggle the canvas (configurable). If the hotkey does
+- `Ctrl+Alt+Shift+F12`: toggle the canvas. Leave the setting empty to disable
+  the hotkey. If the hotkey does
   nothing, another program may already use it; pick a different combination.
 - Mouse wheel: zoom around the pointer.
 - Alt+wheel over a stacked card: cycle the stack; plain wheel still zooms.
@@ -37,7 +38,7 @@ Drag cards to arrange them without moving the real desktop windows.
 - Hold Space and drag empty canvas: pan.
 - Drag a card: arrange it; nearby edges snap into alignment.
 - Shift+click a stacked card: bring the next window of the same app to the front.
-- Double-click a card or press Enter: focus the window; an other-desktop window is pulled onto this desktop first.
+- Double-click a card or press Enter: focus the window; for an other-desktop window, first try to move it here.
 - Tab / Shift+Tab: select a card; arrow keys pan; Home fits all cards; Escape hides the canvas.
 - Click or drag the minimap: navigate the canvas.
 - The canvas hides when another window takes input focus.
@@ -54,9 +55,9 @@ Icon cards ask the shell for the largest available icon (256 px when the jumbo
 image list exists) and fall back to smaller lists, then to the window icon.
 Arranging cards never moves real application windows. Activating an
 other-desktop card asks the documented `IVirtualDesktopManager` interface to
-move that window onto the desktop that displays the canvas, then focuses it. A
-window that refuses the move is reported in the Windhawk log; foreground
-activation then follows the normal rules for the current process.
+move that window onto the desktop displaying the canvas. Windows can reject
+requests for windows owned by another process. A failed move is logged and
+the mod still attempts normal foreground activation, which can also fail.
 */
 // ==/WindhawkModReadme==
 
@@ -98,11 +99,11 @@ activation then follows the normal rules for the current process.
         - de: Deutsch
         - tr: Türkçe
         - it: Italiano
-    - toggle_hotkey: Alt+Z
+    - toggle_hotkey: Ctrl+Alt+Shift+F12
       $name: Toggle hotkey
       $name:zh-CN: 显示/隐藏快捷键
-      $description: Global hotkey used to show or hide the canvas. Use modifiers such as Ctrl, Alt, Shift, or Win plus one key. Avoid AltGr combinations. If it does nothing, another program may already use the combination.
-      $description:zh-CN: 用于显示或隐藏画布的全局快捷键。可组合 Ctrl、Alt、Shift 或 Win 与一个按键；避免使用 AltGr 组合。若快捷键无效，可能是其他程序已占用该组合。
+      $description: Global hotkey used to show or hide the canvas. Leave blank to disable. Prefer modifiers plus a function key; Ctrl+Alt with a letter can collide with AltGr.
+      $description:zh-CN: 用于显示或隐藏画布的全局快捷键，留空禁用。建议使用修饰键加功能键；Ctrl+Alt 加字母可能与 AltGr 冲突。
     - open_on_start: false
       $name: Open on startup
       $name:zh-CN: 启动时打开
@@ -169,18 +170,18 @@ activation then follows the normal rules for the current process.
       $description: Group windows from the same application and fan older members behind the active card.
       $description:zh-CN: 将同一应用程序的窗口分为一组，并把较早的成员展开到当前卡片后方。
     - card_stack_step_degrees: 65
-      $name: Stack angle step
-      $name:zh-CN: 堆叠角度步进
+      $name: Stack angle step (tenths of a degree)
+      $name:zh-CN: 堆叠角度步进（十分之一度）
       $description: Rotation added by each stack position, in tenths of a degree. Range 0-900.
       $description:zh-CN: 每个堆叠位置增加的旋转角度，单位为十分之一度。范围 0-900。
     - card_stack_max_degrees: 240
-      $name: Stack maximum angle
-      $name:zh-CN: 堆叠最大角度
+      $name: Stack maximum angle (tenths of a degree)
+      $name:zh-CN: 堆叠最大角度（十分之一度）
       $description: Maximum rotation applied to a stack member, in tenths of a degree. Range 0-900.
       $description:zh-CN: 堆叠成员可用的最大旋转角度，单位为十分之一度。范围 0-900。
     - card_stack_scale_percent: 975
-      $name: Stack scale factor
-      $name:zh-CN: 堆叠缩放系数
+      $name: Stack scale factor (thousandths)
+      $name:zh-CN: 堆叠缩放系数（千分之一）
       $description: Per-level scale multiplier, in thousandths. Range 800-1000.
       $description:zh-CN: 每一级堆叠使用的缩放系数，单位为千分之一。范围 800-1000。
     - card_stack_max_depth: 5

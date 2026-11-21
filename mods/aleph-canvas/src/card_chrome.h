@@ -48,17 +48,7 @@ inline int CardHeaderButtonCount(const std::vector<Card>& cards, size_t index,
     if (!stacksEnabled || index >= cards.size()) {
         return 2;
     }
-    const std::wstring name = ExecutableName(cards[index].exePath);
-    if (name.empty()) {
-        return 2;
-    }
-    size_t sameName = 0;
-    for (const Card& card : cards) {
-        if (ExecutableName(card.exePath) == name) {
-            ++sameName;
-        }
-    }
-    return sameName >= 2 ? 3 : 2;
+    return cards[index].hasApplicationPeers ? 3 : 2;
 }
 
 inline float CardHeaderButtonRowWidth(const RectF& header, float scale,

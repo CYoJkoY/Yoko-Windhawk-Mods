@@ -10,6 +10,29 @@
 
 #include "cards_layout.h"
 
+#include <propkey.h>
+
+static std::wstring ReadApplicationKey(HWND window, const std::wstring& exeName) {
+    IPropertyStore* store = nullptr;
+    if (FAILED(SHGetPropertyStoreForWindow(window, IID_PPV_ARGS(&store)))) {
+        return exeName;
+    }
+    PROPVARIANT value{};
+    const HRESULT result = store->GetValue(PKEY_AppUserModel_ID, &value);
+    store->Release();
+    std::wstring key;
+    if (SUCCEEDED(result) && value.vt == VT_LPWSTR &&
+        value.pwszVal != nullptr && value.pwszVal[0] != L'\0') {
+        key = L"aumid:" + ToLowerText(value.pwszVal);
+    }
+    const HRESULT clearResult = PropVariantClear(&value);
+    if (FAILED(clearResult)) {
+        Wh_Log(L"Aleph: PropVariantClear failed: 0x%08X",
+               static_cast<unsigned>(clearResult));
+    }
+    return key.empty() ? exeName : key;
+}
+
 static bool IsOwnProcessWindow(HWND window) {
     DWORD pid = 0;
     GetWindowThreadProcessId(window, &pid);
@@ -346,22 +369,8 @@ static void AssignFingerprints(std::vector<ScannedWindow>& windows) {
     }
 }
 
-static void EraseDismissedWindows(std::vector<ScannedWindow>& windows) {
-    windows.erase(
-        std::remove_if(windows.begin(), windows.end(),
-                       [](const ScannedWindow& window) {
-                           return context.dismissedFingerprints.count(
-                                      window.fingerprint) != 0;
-                       }),
-        windows.end());
-}
-
-// Dismissed windows must not occupy a card slot, and a dismissal can only be
-// recognized after the window has a fingerprint, so identity assignment runs
-// before both the dismissal filter and the card cut.
 inline void PrepareScanCandidates(std::vector<ScannedWindow>& windows) {
     AssignFingerprints(windows);
-    EraseDismissedWindows(windows);
     SelectScanCandidates(windows);
 }
 
@@ -374,7 +383,12 @@ static std::vector<ScannedWindow> ScanWindows(IVirtualDesktopManager* manager) {
     // the desktop Z-order rank. Record it before MergeScan reorders
     // additions by area, or stacks would lose which window is on top.
     for (size_t index = 0; index < pass.windows.size(); ++index) {
-        pass.windows[index].zOrder = index;
+        ScannedWindow& window = pass.windows[index];
+        window.zOrder = index;
+        if (context.settings.stacksEnabled) {
+            window.applicationKey = ReadApplicationKey(window.hwnd,
+                                                       ExecutableName(window.exePath));
+        }
     }
     return std::move(pass.windows);
 }

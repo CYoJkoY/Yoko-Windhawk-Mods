@@ -15,13 +15,12 @@ DPI. UI chrome scales with the monitor under the pointer. The mod never moves
 real windows while arranging cards; dragging a canvas card only changes the
 saved canvas layout.
 
-The public `IVirtualDesktopManager` interface both identifies windows on other
-desktops and moves them. Activating an other-desktop card therefore asks
+Activating an other-desktop card asks the public virtual desktop manager's
 `MoveWindowToDesktop` for the desktop that `GetWindowDesktopId` reports for the
 canvas host window, which is the desktop showing the canvas the user just
-clicked. A window that already sits there is never moved. A refused request is
-reported in the Windhawk log; foreground activation then follows the normal
-rules for the current process and may still fail for a higher-integrity target.
+clicked. A window that already sits there is never moved. Windows can reject
+requests for windows owned by another process. The mod logs a refused move
+and still attempts normal foreground activation, which can also fail.
 
 Duplicate windows keep their assigned executable/class slots while alive.
 Icon cards draw the largest icon the shell offers - the 256 px jumbo image list
@@ -35,13 +34,14 @@ focus. Hidden canvases wait for events and pending layout saves.
 
 ## Controls
 
-- The configured toggle hotkey shows and hides the canvas.
+- `Ctrl+Alt+Shift+F12`: toggle the canvas by default. Leave the hotkey setting
+  empty to disable it.
 - Mouse wheel: zoom around the pointer.
 - Middle mouse drag: pan the canvas.
 - Hold Space and drag empty canvas: pan.
 - Drag a card: arrange it; nearby edges snap into alignment.
-- Double-click a card or press Enter: focus the window; an other-desktop
-  window is pulled onto this desktop first.
+- Double-click a card or press Enter: focus the window; for an other-desktop
+  window, first try to move it here.
 - Tab / Shift+Tab: select a card; arrow keys pan; Home fits all cards;
   Escape hides the canvas.
 - Click or drag the minimap: navigate the canvas.
@@ -89,9 +89,9 @@ narrow for the row drops the group button first and then the whole row.
 4. Navigate via the minimap, select with Tab, pan with arrows, fit with Home,
    and activate with Enter or double-click.
 5. Open a window on another virtual desktop, double-click its icon card, and
-   confirm the window arrives on the current desktop, is restored if it was
-   minimized, and receives the focus. Check that a window owned by an elevated
-   process still fails gracefully and only gets foreground activation.
+   check that the window is restored and focused when Windows permits the
+   move. If Windows refuses, check the Windhawk log and confirm the canvas
+   continues to work.
 6. Pin two cards and confirm both stay above the rest, restart the tool process
    and confirm they are still pinned. Hover each header button and confirm the
    tooltip names it, then close one card and confirm the real window closes
