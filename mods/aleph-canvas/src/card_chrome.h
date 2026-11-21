@@ -87,6 +87,18 @@ inline bool CardHeaderButtonsFit(const RectF& header, float scale,
     return header.width() >= needed;
 }
 
+// A narrow card gives up the optional group button first, so a small window of
+// a repeated application still keeps its pin and close buttons instead of
+// losing the whole row.
+inline int CardHeaderButtonCountForWidth(const RectF& header, float scale,
+                                         int buttons) {
+    if (buttons > 2 && !CardHeaderButtonsFit(header, scale, buttons) &&
+        CardHeaderButtonsFit(header, scale, 2)) {
+        return 2;
+    }
+    return buttons;
+}
+
 inline RectF CardCloseButtonRect(const RectF& header, float scale, int buttons) {
     if (!CardHeaderButtonsFit(header, scale, buttons)) {
         return {};

@@ -26,10 +26,13 @@ inline CardHeaderAction HeaderActionAt(int index, Vec2 point) {
         return CardHeaderAction::None;
     }
     const size_t cardIndex = static_cast<size_t>(index);
-    return HitTestCardHeader(CardHeaderRect(context.cards[cardIndex]), point,
-                             ChromeScale(),
-                             CardHeaderButtonCount(context.cards, cardIndex,
-                                                   context.settings.stacksEnabled));
+    const RectF header = CardHeaderRect(context.cards[cardIndex]);
+    const float scale = ChromeScale();
+    const int buttons = CardHeaderButtonCountForWidth(
+        header, scale,
+        CardHeaderButtonCount(context.cards, cardIndex,
+                              context.settings.stacksEnabled));
+    return HitTestCardHeader(header, point, scale, buttons);
 }
 
 inline void DismissCard(int index) {

@@ -1531,12 +1531,15 @@ static void HeaderThreeButtons() {
     Card narrow;
     narrow.world = MakeRectF(0.0f, 0.0f, 140.0f, 300.0f);
     const RectF narrowHeader = CardHeaderRect(narrow);
-    Require(!CardCloseButtonRect(narrowHeader, scale, 2).empty(),
-            "a 140 px card lost its two-button row");
-    Require(CardCloseButtonRect(narrowHeader, scale, 3).empty(),
-            "a 140 px card kept a three-button row");
+    const int narrowButtons =
+        CardHeaderButtonCountForWidth(narrowHeader, scale, 3);
+    Require(narrowButtons == 2,
+            "a 140 px card did not drop the group button");
+    Require(!CardCloseButtonRect(narrowHeader, scale, narrowButtons).empty(),
+        "a 140 px card lost the buttons it can still fit");
     narrow.world = MakeRectF(0.0f, 0.0f, 70.0f, 300.0f);
-    Require(CardCloseButtonRect(CardHeaderRect(narrow), scale, 2).empty(),
+    const RectF tinyHeader = CardHeaderRect(narrow);
+    Require(CardCloseButtonRect(tinyHeader, scale, 2).empty(),
             "a 70 px card kept header buttons");
 }
 

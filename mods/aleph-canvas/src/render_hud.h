@@ -182,9 +182,10 @@ inline void DrawCardHeader(const Card& card, int index, const RectF& header,
     context.hudTarget->FillRectangle(
         D2D1::RectF(header.left, header.top, header.right, header.bottom),
         context.hudBrush);
-    const int buttons = CardHeaderButtonCount(
-        context.cards, static_cast<size_t>(index),
-        context.settings.stacksEnabled);
+    const int buttons = CardHeaderButtonCountForWidth(
+        header, scale,
+        CardHeaderButtonCount(context.cards, static_cast<size_t>(index),
+                              context.settings.stacksEnabled));
     const CardHeaderRow row = CardHeaderRowFor(header, scale, buttons);
     DrawCardTitle(card, CardHeaderTitleRect(header, row), scale);
     const CardHeaderAction hovered =
@@ -300,10 +301,13 @@ struct HeaderTooltip {
     }
     const size_t cardIndex = static_cast<size_t>(context.hoverCard);
     const Card& card = context.cards[cardIndex];
-    const int buttons = CardHeaderButtonCount(
-        context.cards, cardIndex, context.settings.stacksEnabled);
-    tooltip.anchor = HeaderActionRect(CardHeaderRect(card), scale,
-                                      context.hoverHeaderAction, buttons);
+    const RectF header = CardHeaderRect(card);
+    const int buttons = CardHeaderButtonCountForWidth(
+        header, scale,
+        CardHeaderButtonCount(context.cards, cardIndex,
+                              context.settings.stacksEnabled));
+    tooltip.anchor =
+        HeaderActionRect(header, scale, context.hoverHeaderAction, buttons);
     const CanvasTextId textId = HeaderTooltipText(card);
     tooltip.text = CanvasText(textId, context.settings.language);
     tooltip.length = CanvasTextLength(textId, context.settings.language);
