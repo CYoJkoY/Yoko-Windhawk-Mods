@@ -6,6 +6,8 @@ a transparent layered HUD for card chrome, labels, status badges, guides, and
 the minimap. No Explorer implementation details or private virtual-desktop
 interfaces are used.
 
+[![Aleph Canvas demo](assets/aleph-canvas-demo.gif)](https://imgur.com/a/qpERhgR)
+
 ## Coordinate and window policy
 
 Canvas coordinates are physical pixels relative to the virtual-screen origin.

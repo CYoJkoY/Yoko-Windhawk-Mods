@@ -21,6 +21,8 @@ Aleph presents eligible application windows on a navigable canvas. Live
 windows use DWM thumbnails; minimized and other-desktop windows use icon cards.
 Drag cards to arrange them without moving the real desktop windows.
 
+[![Aleph Canvas demo](https://cdn.jsdelivr.net/gh/CYoJkoY/Yoko-Windhawk-Mods@main/mods/aleph-canvas/doc/assets/aleph-canvas-demo.gif)](https://imgur.com/a/qpERhgR)
+
 ## Controls
 
 - `Ctrl+Alt+Shift+F12`: toggle the canvas. Leave the setting empty to disable
